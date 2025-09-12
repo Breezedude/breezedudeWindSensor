@@ -1,9 +1,9 @@
 # BreezeDude
 ### An Open source low power FANET wind sensor.
 
-Map of almost all wind stations: https://breezedude.de/
+Map of almost all wind stations: [breezedude.de](https://breezedude.de/)
 
-For more info and docs see the [Wiki](https://github.com/thezenox/breezedude/wiki)
+For more info and docs see the [Wiki](https://github.com/Breezedude/breezedudeWindSensor/wiki)
 
 ----
 <p align="center">
@@ -16,18 +16,18 @@ For more info and docs see the [Wiki](https://github.com/thezenox/breezedude/wik
 A low cost FANET wind station using Ecowitt WS80/WS85 ultrasonic or DAVIS 6410 analog sensor.     
 USB MSC Settings file and Drag&Drop Firmware upgrade. 
 
-- wind sensor: Ecowitt WS80/WS85 or analog with reed/potentiometer (e.g. DAVIS 6410)
-- pressure sensor: HP303B, BMP280, BMP3xx or SPL06-001
+- Wind sensor: Ecowitt WS80/WS85 or analog with reed/potentiometer (e.g. DAVIS 6410)
+- Barometric pressure sensor: HP303B, BMP280, BMP3xx or SPL06-001
 - LoRa module: RFM95W (SX1276), G-NiceRF SX1262, LLCC68
-- antenna connector: SMA
-- microcontroller: SAMD21
-- connectivity: USB-C, I2C, 2x UART
-- battery: 1S Li-Ion 16340 750mAh (or 1-3x 18650 external)
-- solar: 5V
+- Antenna connector: SMA
+- Microcontroller: SAMD21
+- Connectivity: USB-C, I2C, 2x UART
+- Battery: 1S Li-Ion 16340 750mAh (or 1-3x 18650 external)
+- Solar: 5V
 - PCB Size: 53x22mm
 
 Currently using a 60x60 5V solar panel.     
-Avg. power consumption at 40s send interval @3.7V battery: 1.2mA with analog sensor, 2.22mA with WS80
+Avg. power consumption at 40s send interval @3.7V battery: <1mA with analog sensor, 1.22mA with WS85, 2.22mA with WS80
  
 Based on SMAD21 using [adafruits samd core](https://github.com/adafruit/ArduinoCore-samd) and itsybitsy M0 variant definitions and [bootloader](https://github.com/adafruit/uf2-samdx1).     
 
