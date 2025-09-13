@@ -9,6 +9,7 @@
 /**************************************************************************/
 #include "Arduino.h"
 
+extern Uart Serial2;
 #include <Wire.h>
 
 #include "HP203B.h"
@@ -93,7 +94,9 @@ bool HP203B::begin(uint8_t i2cAddress, hpOSR_t osr)
      //Reset();
     // delay(hp_conversionDelay);
     uint8_t ret = readSingleRegister(hp_i2cAddress, HP203B_CMD_READ_REG + HP203B_REG_PARA);
-    return (ret == 0x80);
+    //Serial2.println(ret,HEX);
+    Reset();
+    return (ret != 0x00); // should be 0x80, but not always is?
 }
 
 /**************************************************************************/

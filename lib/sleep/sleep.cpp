@@ -2,15 +2,6 @@
 #include "wiring_private.h"
 
 
-// sets gpio in low power unconnected floating state
-void pinDisable( uint32_t ulPin){
-  EPortType port = g_APinDescription[ulPin].ulPort;
-  uint32_t pin = g_APinDescription[ulPin].ulPin;
-  uint32_t pinMask = (1ul << pin);
-  // Set pin to reset value
-  PORT->Group[port].PINCFG[pin].reg = (uint8_t) (PORT_PINCFG_RESETVALUE);
-  PORT->Group[port].DIRCLR.reg = pinMask;
-}
 
 
 void WDT_Handler(void) {
@@ -34,6 +25,119 @@ if(div != divisor){
 return false;
 }
 
+// add void SERCOM0_Handler() __attribute__((weak)); in variant.cpp to overwrite 
+void SERCOM0_Handler(void) {
+    if (SERCOM0->USART.INTFLAG.bit.RXS) {
+        SERCOM0->USART.INTFLAG.reg = SERCOM_USART_INTFLAG_RXS; // clear start bit flag
+        // woke up
+    }
+    Serial1.IrqHandler();  // let Arduino core handle RXC
+}
+
+
+
+void SERCOM1_Handler(){
+  Serial2.IrqHandler();
+}
+
+
+void enable_sercom0_int(void) {
+    // 1) Make sure SERCOM0 APBC clock is enabled
+    PM->APBCMASK.reg |= PM_APBCMASK_SERCOM0;
+
+    // 2) Stop USART while we reconfigure
+    SERCOM0->USART.CTRLA.bit.ENABLE = 0;
+    while (SERCOM0->USART.SYNCBUSY.reg != 0); // wait any sync
+
+    // 3) Configure GCLK2 as OSCULP32K and RUNSTDBY (generator setup)
+    //    (assumes nothing else uses GCLK2 — adapt if it does)
+    GCLK->GENDIV.reg = GCLK_GENDIV_ID(2) | GCLK_GENDIV_DIV(0); // DIV=0 => no divide
+    while (GCLK->STATUS.bit.SYNCBUSY);
+
+    GCLK->GENCTRL.reg = GCLK_GENCTRL_ID(2) |
+                        GCLK_GENCTRL_SRC_OSCULP32K |
+                        GCLK_GENCTRL_RUNSTDBY |
+                        GCLK_GENCTRL_GENEN |
+                        GCLK_GENCTRL_IDC |
+                        GCLK_GENCTRL_DIVSEL; // DIVSEL not necessary with DIV 0 but OK
+    while (GCLK->STATUS.bit.SYNCBUSY);
+
+    // 4) Attach GCLK2 to SERCOM0 core and slow clocks (use CLKCTRL on SAMD21)
+    // core
+    GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(SERCOM0_GCLK_ID_CORE) |
+                        GCLK_CLKCTRL_GEN_GCLK2 |
+                        GCLK_CLKCTRL_CLKEN;
+    while (GCLK->STATUS.bit.SYNCBUSY);
+
+    // slow (important for wake/detection)
+    GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(SERCOM0_GCLK_ID_SLOW) |
+                        GCLK_CLKCTRL_GEN_GCLK2 |
+                        GCLK_CLKCTRL_CLKEN;
+    while (GCLK->STATUS.bit.SYNCBUSY);
+
+    // 5) Configure SERCOM CTRLA (MODE + RUNSTDBY) and wait for sync
+    SERCOM0->USART.CTRLA.reg = (SERCOM0->USART.CTRLA.reg & ~SERCOM_USART_CTRLA_MODE_Msk)
+                              | SERCOM_USART_CTRLA_MODE_USART_INT_CLK; // keep other bits
+    // set RUNSTDBY
+    SERCOM0->USART.CTRLA.bit.RUNSTDBY = 1;
+    while (SERCOM0->USART.SYNCBUSY.reg != 0); // wait until all SERCOM sync complete
+
+    // 6) CTRLB: enable RX/TX and SFDE (start-frame detection)
+    SERCOM0->USART.CTRLB.reg = SERCOM_USART_CTRLB_CHSIZE(0x0) |
+                               SERCOM_USART_CTRLB_TXEN |
+                               SERCOM_USART_CTRLB_RXEN |
+                               SERCOM_USART_CTRLB_SFDE;
+    while (SERCOM0->USART.SYNCBUSY.bit.CTRLB);
+
+    // 7) Enable interrupts (RX start + RX complete)
+    SERCOM0->USART.INTENSET.reg = SERCOM_USART_INTENSET_RXS | SERCOM_USART_INTENSET_RXC;
+
+    // 8) Enable NVIC for SERCOM0
+    NVIC_ClearPendingIRQ(SERCOM0_IRQn);
+    NVIC_SetPriority(SERCOM0_IRQn, 0);
+    NVIC_EnableIRQ(SERCOM0_IRQn);
+
+    // 9) Re-enable USART
+    SERCOM0->USART.CTRLA.bit.ENABLE = 1;
+    while (SERCOM0->USART.SYNCBUSY.bit.ENABLE);
+}
+
+
+void disable_sercom0_int(uint32_t baud) {
+    // Disable USART
+    SERCOM0->USART.CTRLA.bit.ENABLE = 0;
+    while (SERCOM0->USART.SYNCBUSY.bit.ENABLE);
+
+    // Reconnect SERCOM0 core to 48 MHz (GCLK0)
+    GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(SERCOM0_GCLK_ID_CORE) |
+                        GCLK_CLKCTRL_GEN_GCLK0 |
+                        GCLK_CLKCTRL_CLKEN;
+    while (GCLK->STATUS.bit.SYNCBUSY);
+
+    // Reconnect slow to GCLK0 too
+    GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(SERCOM0_GCLK_ID_SLOW) |
+                        GCLK_CLKCTRL_GEN_GCLK0 |
+                        GCLK_CLKCTRL_CLKEN;
+    while (GCLK->STATUS.bit.SYNCBUSY);
+
+    // Reprogram baud for 48 MHz and 115200
+    SERCOM0->USART.BAUD.reg = (uint16_t)(65536.0f * (1.0f - (16.0f * (float)baud / 48000000.0f)));
+
+    // Disable RUNSTDBY now (clear)
+    SERCOM0->USART.CTRLA.bit.RUNSTDBY = 0;
+
+    // Disable RXSTART interrupt, keep RXC
+    SERCOM0->USART.INTENCLR.bit.RXS = 1;
+
+    // Re-enable USART
+    SERCOM0->USART.CTRLA.bit.ENABLE = 1;
+    while (SERCOM0->USART.SYNCBUSY.bit.ENABLE);
+
+    NVIC_SetPriority(SERCOM0_IRQn, SERCOM_NVIC_PRIORITY);
+}
+// https://github.com/adafruit/ArduinoCore-samd/blob/05e83bcb71232684dc259131ac5c5d624db191f5/cores/arduino/SERCOM.cpp#L849C46-L849C66
+
+
 
 // Config GCLK6 for WDT and External Interrup to run at 1024Hz
 void configGCLK6(bool en_rtc){
@@ -45,7 +149,7 @@ void configGCLK6(bool en_rtc){
 
   GCLK->GENCTRL.reg = //GCLK_GENCTRL_OE |         // Test: enable GCLK output (on a selected pin)
                       GCLK_GENCTRL_IDC |          // Set the duty cycle to 50/50 HIGH/LOW
-                      GCLK_GENCTRL_GENEN |        // Enable GCLK0
+                      GCLK_GENCTRL_GENEN |        // Enable GCLK6
                       GCLK_GENCTRL_SRC_OSCULP32K| // Set the internal 32.768kHz clock source (GCLK_GENCTRL_SRC_OSCULP32K)
                       GCLK_GENCTRL_RUNSTDBY |
                       GCLK_GENCTRL_DIVSEL |
@@ -327,7 +431,8 @@ void PM_sleep(){
 void PM_wakeup(){
   PM->APBCMASK.reg |= PM_APBCMASK_ADC;
 
-  PM->APBCMASK.reg |= PM_APBCMASK_SERCOM0;
+  PM->APBCMASK.reg |= PM_APBCMASK_SERCOM0; // Serial1
+  PM->APBCMASK.reg |= PM_APBCMASK_SERCOM1; // Serial2
   PM->APBCMASK.reg |= PM_APBCMASK_SERCOM3;
   PM->APBCMASK.reg |= PM_APBCMASK_SERCOM4;
 }
@@ -341,7 +446,7 @@ void setup_PM(bool en_counter){
   PM->APBCMASK.reg &= ~PM_APBBMASK_DMAC;
 
   // Bd adafruit default all sercoms are enabled, disable the one we dont use
-  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM1;
+  //PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM1; // Serial2
   PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM2;
   PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM5;
 

@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include "logging.h"
+#include "defines.h"
 
 extern uint32_t time();
 
@@ -14,13 +15,7 @@ typedef struct g{
 } WindSample;
 
 
-#define HISTORY_INTERVAL 30*1000 // 30s 3600*1000 // 1h
-#define HISTORY_LEN 15*24 // in hours, 15 days
 
-#define WIND_AGE 1000*30 // 30s history
-#define GUST_AGE 1000*60*10 // 10 min history
-#define WIND_HIST_STEP 1000*4 //ms history slots, 22 sek
-#define WIND_HIST_LEN 150 // number so slots. should match GUST_AGE / GUST_HIST_STEP
 WindSample wind_history[WIND_HIST_LEN]; // gust ringbuffer
 uint8_t wind_hist_pos = 0; // current position in ringbuffer
 

@@ -3,6 +3,11 @@
 
 #include <Arduino.h>
 
+extern Uart Serial2;
+
+void SERCOM1_Handler();
+void enable_sercom0_int();
+void disable_sercom0_int(uint32_t baud);
 void pinDisable(uint32_t pin);
 void configGCLK6(bool en_rtc);
 void deepsleep(bool light);

@@ -1,5 +1,12 @@
  #pragma once
  #include <Arduino.h>
+ #include "defines.h"
+
+  enum {
+    FANET_PCK_TYPE_TRACKING = 0x01,
+    FANET_PCK_TYPE_NAME = 0x02,
+    FANET_PCK_TYPE_WEATHER = 0x04
+  };
   
   typedef struct {
     uint32_t tLastMsg; //timestamp of neighbour (if 0 --> empty slot)
