@@ -682,6 +682,197 @@
 			)
 			(embedded_fonts no)
 		)
+		(symbol "Battery_Management:TP4057"
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(property "Reference" "U"
+				(at -6.35 6.604 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Value" "TP4057"
+				(at 1.524 6.604 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left)
+				)
+			)
+			(property "Footprint" "Package_TO_SOT_SMD:TSOT-23-6"
+				(at 0 -12.7 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Datasheet" "http://toppwr.com/uploadfile/file/20230304/640302a47b738.pdf"
+				(at 0 -2.54 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Description" "Constant-current/constant-voltage linear charger for single cell lithium-ion batteries with 2.9V Trickle Charge, 4.5V to 6.5V VDD, -40 to +85 degree Celsius, TSOT-23-6"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "ki_keywords" "Constant-current constant-voltage linear charger single-cell lithium-ion battery"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "ki_fp_filters" "TSOT?23*"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(symbol "TP4057_0_1"
+				(rectangle
+					(start -7.62 5.08)
+					(end 7.62 -5.08)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type background)
+					)
+				)
+			)
+			(symbol "TP4057_1_1"
+				(pin open_collector line
+					(at -10.16 2.54 0)
+					(length 2.54)
+					(name "~{CHRG}"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin open_collector line
+					(at -10.16 -2.54 0)
+					(length 2.54)
+					(name "STDBY"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "5"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin power_in line
+					(at 0 7.62 270)
+					(length 2.54)
+					(name "V_{CC}"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "4"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin power_in line
+					(at 0 -7.62 90)
+					(length 2.54)
+					(name "GND"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin power_out line
+					(at 10.16 2.54 180)
+					(length 2.54)
+					(name "BAT"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "3"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 10.16 -2.54 180)
+					(length 2.54)
+					(name "PROG"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "6"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+			)
+			(embedded_fonts no)
+		)
 		(symbol "Connector:Conn_01x02_Pin"
 			(pin_names
 				(offset 1.016)
@@ -4230,338 +4421,6 @@
 			)
 			(embedded_fonts no)
 		)
-		(symbol "PMIC-CN3063_SOIC8_:PMIC-CN3063_SOIC8_"
-			(pin_names
-				(offset 1.016)
-			)
-			(exclude_from_sim no)
-			(in_bom yes)
-			(on_board yes)
-			(property "Reference" "U5"
-				(at 2.0194 12.7 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify left)
-				)
-			)
-			(property "Value" "CN3063-SOIC8"
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify bottom)
-					(hide yes)
-				)
-			)
-			(property "Footprint" "Package_SO:Infineon_PG-DSO-8-43"
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify bottom)
-					(hide yes)
-				)
-			)
-			(property "Datasheet" ""
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(property "Description" ""
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(property "MF" "Consonance"
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify bottom)
-					(hide yes)
-				)
-			)
-			(property "Description_1" "\n                        \n                            The CN3063 is a complete constant-current /constant voltage linear charger for single cell Li-ion and Li Polymer rech...\n                        \n"
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify bottom)
-					(hide yes)
-				)
-			)
-			(property "Package" "None"
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify bottom)
-					(hide yes)
-				)
-			)
-			(property "MPN" "CN3063"
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify bottom)
-					(hide yes)
-				)
-			)
-			(property "Price" "None"
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify bottom)
-					(hide yes)
-				)
-			)
-			(property "SnapEDA_Link" "https://www.snapeda.com/parts/CN3063/Consonance/view-part/?ref=snap"
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify bottom)
-					(hide yes)
-				)
-			)
-			(property "MP" "CN3063"
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify bottom)
-					(hide yes)
-				)
-			)
-			(property "Availability" "In Stock"
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify bottom)
-					(hide yes)
-				)
-			)
-			(property "Check_prices" "https://www.snapeda.com/parts/CN3063/Consonance/view-part/?ref=eda"
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(justify bottom)
-					(hide yes)
-				)
-			)
-			(property "LCSC" "C28078"
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(symbol "PMIC-CN3063_SOIC8__0_0"
-				(rectangle
-					(start -10.16 -15.24)
-					(end 10.16 7.62)
-					(stroke
-						(width 0.254)
-						(type default)
-					)
-					(fill
-						(type background)
-					)
-				)
-				(pin output line
-					(at -12.7 -7.62 0)
-					(length 2.54)
-					(name "~{CHRG}"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-					(number "7"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-				)
-				(pin input line
-					(at -12.7 -12.7 0)
-					(length 2.54)
-					(name "~{DONE}"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-					(number "6"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-				)
-				(pin input line
-					(at 0 10.16 270)
-					(length 2.54)
-					(name "VIN"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-					(number "4"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-				)
-				(pin power_in line
-					(at 0 -17.78 90)
-					(length 2.54)
-					(name "GND"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-					(number "3"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-				)
-				(pin input line
-					(at 12.7 5.08 180)
-					(length 2.54)
-					(name "FB"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-					(number "8"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-				)
-				(pin power_in line
-					(at 12.7 0 180)
-					(length 2.54)
-					(name "BAT"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-					(number "5"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-				)
-				(pin bidirectional line
-					(at 12.7 -5.08 180)
-					(length 2.54)
-					(name "TEMP"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-					(number "1"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-				)
-				(pin bidirectional line
-					(at 12.7 -10.16 180)
-					(length 2.54)
-					(name "ISET"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-					(number "2"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-				)
-			)
-			(symbol "PMIC-CN3063_SOIC8__1_1"
-				(pin power_in line
-					(at 3.81 -17.78 90)
-					(length 2.54)
-					(name "EP"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "9"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-			)
-			(embedded_fonts no)
-		)
 		(symbol "Regulator_Linear:AP2112K-3.3"
 			(pin_names
 				(offset 0.254)
@@ -6269,12 +6128,6 @@
 		(uuid "46d0524b-882b-406d-bbf1-b39b93f3e832")
 	)
 	(junction
-		(at 138.43 43.18)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "51d77ba6-9fbb-4335-8f33-af347271ec95")
-	)
-	(junction
 		(at 81.28 85.09)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -6311,12 +6164,6 @@
 		(uuid "a0333ebd-7ddd-4de2-a565-d9b2e83739eb")
 	)
 	(junction
-		(at 115.57 50.8)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "a4a2c262-0d74-4e89-aa48-c42c5ed24ca6")
-	)
-	(junction
 		(at 214.63 39.37)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -6339,12 +6186,6 @@
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "ceb9c5af-5e63-4e03-9aa6-1706d17b9ebe")
-	)
-	(junction
-		(at 128.27 27.94)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "d70d27d4-e064-4b85-a5e6-b3fec0894138")
 	)
 	(junction
 		(at 170.18 160.02)
@@ -6386,16 +6227,6 @@
 	)
 	(wire
 		(pts
-			(xy 128.27 38.1) (xy 138.43 38.1)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "0758c73b-4686-4901-a147-cb8fc7a83434")
-	)
-	(wire
-		(pts
 			(xy 214.63 34.29) (xy 214.63 39.37)
 		)
 		(stroke
@@ -6423,16 +6254,6 @@
 			(type default)
 		)
 		(uuid "09d85f1c-05f9-4b5c-99ad-e970de21343b")
-	)
-	(wire
-		(pts
-			(xy 95.25 22.86) (xy 115.57 22.86)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "10438b5f-00a7-407b-87fb-81bd6e5a4df1")
 	)
 	(wire
 		(pts
@@ -6646,16 +6467,6 @@
 	)
 	(wire
 		(pts
-			(xy 128.27 27.94) (xy 128.27 33.02)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "61e05773-1e7c-493e-8a2f-f351dd4876ed")
-	)
-	(wire
-		(pts
 			(xy 34.29 110.49) (xy 36.83 110.49)
 		)
 		(stroke
@@ -6693,16 +6504,6 @@
 			(type default)
 		)
 		(uuid "76007c64-8f78-4991-ace7-9c12e0eb5495")
-	)
-	(wire
-		(pts
-			(xy 115.57 50.8) (xy 119.38 50.8)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "76fe6dda-5e0c-4c0a-88bf-67da3cfc19e6")
 	)
 	(wire
 		(pts
@@ -6746,7 +6547,7 @@
 	)
 	(wire
 		(pts
-			(xy 128.27 43.18) (xy 130.81 43.18)
+			(xy 142.24 33.02) (xy 148.59 33.02)
 		)
 		(stroke
 			(width 0)
@@ -6936,16 +6737,6 @@
 	)
 	(wire
 		(pts
-			(xy 128.27 27.94) (xy 146.05 27.94)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "cb048c82-7936-46e1-a30c-6794e7e927f2")
-	)
-	(wire
-		(pts
 			(xy 71.12 80.01) (xy 71.12 76.2)
 		)
 		(stroke
@@ -7086,16 +6877,6 @@
 	)
 	(wire
 		(pts
-			(xy 138.43 38.1) (xy 138.43 43.18)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "e538a48a-6f8d-43e0-9e2c-00b2caa64f22")
-	)
-	(wire
-		(pts
 			(xy 242.57 30.48) (xy 245.11 30.48)
 		)
 		(stroke
@@ -7106,7 +6887,7 @@
 	)
 	(wire
 		(pts
-			(xy 140.97 43.18) (xy 138.43 43.18)
+			(xy 158.75 33.02) (xy 156.21 33.02)
 		)
 		(stroke
 			(width 0)
@@ -7214,6 +6995,28 @@
 					(size 1.27 1.27)
 				)
 				(justify left)
+				(hide yes)
+			)
+		)
+	)
+	(global_label "VCC_WS"
+		(shape input)
+		(at 237.49 134.62 180)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "66d2c3ae-a511-443a-a452-54b5f3409752")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 227.2477 134.62 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
 				(hide yes)
 			)
 		)
@@ -7515,6 +7318,17 @@
 		)
 		(uuid "281d4f80-ca29-412c-b877-4609d445e6a2")
 	)
+	(hierarchical_label "BATT+"
+		(shape input)
+		(at 142.24 27.94 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "2d459164-d00d-433f-bacf-c28f89d87f35")
+	)
 	(hierarchical_label "LORA_MISO"
 		(shape input)
 		(at 96.52 154.94 180)
@@ -7613,6 +7427,17 @@
 			(justify left)
 		)
 		(uuid "42e273fd-c0e8-4e6a-8c17-8fbcb3a55718")
+	)
+	(hierarchical_label "RX"
+		(shape input)
+		(at 237.49 127 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "455925e4-528b-4efa-bf37-46d7a618cb70")
 	)
 	(hierarchical_label "SDA"
 		(shape input)
@@ -7822,17 +7647,6 @@
 			(justify right)
 		)
 		(uuid "72bc89c2-d74e-4e5e-aa7f-b70c7137a949")
-	)
-	(hierarchical_label "BATT+"
-		(shape input)
-		(at 146.05 27.94 0)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left)
-		)
-		(uuid "759147b8-4453-4f03-89cc-47d3e3745af4")
 	)
 	(hierarchical_label "3V3"
 		(shape input)
@@ -8142,6 +7956,17 @@
 		)
 		(uuid "b7f77eff-7b04-41a5-bdb7-57d3fbb3e3d1")
 	)
+	(hierarchical_label "SOLAR+"
+		(shape input)
+		(at 132.08 22.86 90)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "b967f18f-179f-44e9-8121-963bfbf1519c")
+	)
 	(hierarchical_label "RX"
 		(shape input)
 		(at 193.04 74.93 180)
@@ -8163,6 +7988,28 @@
 			(justify right)
 		)
 		(uuid "c19f0212-c9f0-4151-93db-f67a02e56b5c")
+	)
+	(hierarchical_label "PV_DONE"
+		(shape input)
+		(at 121.92 33.02 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "c1b70d50-8852-4f4a-b0d7-9e293731365a")
+	)
+	(hierarchical_label "PV_CHARGE"
+		(shape input)
+		(at 121.92 27.94 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "c26a74a5-e78e-4eb5-8956-22e334bb5f7e")
 	)
 	(hierarchical_label "DAVIS_POWER"
 		(shape input)
@@ -8188,7 +8035,7 @@
 	)
 	(hierarchical_label "SOLAR+"
 		(shape input)
-		(at 107.95 22.86 90)
+		(at 95.25 22.86 90)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -9551,17 +9398,35 @@
 		)
 	)
 	(symbol
-		(lib_id "power:GND")
-		(at 115.57 50.8 0)
+		(lib_id "Device:R")
+		(at 237.49 130.81 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
 		(on_board yes)
 		(dnp no)
 		(fields_autoplaced yes)
-		(uuid "282b0a65-b732-4d43-a7f5-e866137501a7")
-		(property "Reference" "#PWR08"
-			(at 115.57 57.15 0)
+		(uuid "228e7345-4558-4c01-916b-4b7b73fd996a")
+		(property "Reference" "R12"
+			(at 240.03 129.5399 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "10k"
+			(at 240.03 132.0799 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+			(at 235.712 130.81 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -9569,16 +9434,8 @@
 				(hide yes)
 			)
 		)
-		(property "Value" "GND"
-			(at 115.57 55.88 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 115.57 50.8 0)
+		(property "Datasheet" "~"
+			(at 237.49 130.81 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -9586,8 +9443,8 @@
 				(hide yes)
 			)
 		)
-		(property "Datasheet" ""
-			(at 115.57 50.8 0)
+		(property "Description" "Resistor"
+			(at 237.49 130.81 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -9595,22 +9452,25 @@
 				(hide yes)
 			)
 		)
-		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 115.57 50.8 0)
+		(property "LCSC" "C25744"
+			(at 237.49 130.81 90)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
 				(hide yes)
 			)
+		)
+		(pin "2"
+			(uuid "eebd0360-8bad-4077-9a82-137a8a3e16eb")
 		)
 		(pin "1"
-			(uuid "a080f7f4-3a97-4d79-b05f-c21ecd78f667")
+			(uuid "8cedc137-9883-46c8-addc-e8fe21dc2047")
 		)
 		(instances
 			(project "breezedude_mini"
 				(path "/ddd1d94b-eff7-47cf-9545-456ea4f2cb54"
-					(reference "#PWR08")
+					(reference "R12")
 					(unit 1)
 				)
 			)
@@ -11258,6 +11118,71 @@
 		)
 	)
 	(symbol
+		(lib_id "power:GND")
+		(at 132.08 38.1 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "5df417ba-7969-4d63-9c48-67982f99a045")
+		(property "Reference" "#PWR035"
+			(at 132.08 44.45 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Value" "GND"
+			(at 132.08 43.18 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 132.08 38.1 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 132.08 38.1 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at 132.08 38.1 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "7c8a30b7-9035-43de-be80-820ddb97d6a4")
+		)
+		(instances
+			(project "breezedude_mini"
+				(path "/ddd1d94b-eff7-47cf-9545-456ea4f2cb54"
+					(reference "#PWR035")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "Connector:Conn_01x02_Pin")
 		(at 259.08 158.75 180)
 		(unit 1)
@@ -11329,7 +11254,7 @@
 	)
 	(symbol
 		(lib_id "Device:R")
-		(at 134.62 43.18 90)
+		(at 152.4 33.02 90)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -11338,7 +11263,7 @@
 		(fields_autoplaced yes)
 		(uuid "65657199-e4f2-4b5d-a98e-8b2483e83726")
 		(property "Reference" "R1"
-			(at 134.62 36.83 90)
+			(at 152.4 26.67 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -11346,7 +11271,7 @@
 			)
 		)
 		(property "Value" "10k"
-			(at 134.62 39.37 90)
+			(at 152.4 29.21 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -11354,7 +11279,7 @@
 			)
 		)
 		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
-			(at 134.62 44.958 90)
+			(at 152.4 34.798 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -11363,7 +11288,7 @@
 			)
 		)
 		(property "Datasheet" "~"
-			(at 134.62 43.18 0)
+			(at 152.4 33.02 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -11372,7 +11297,7 @@
 			)
 		)
 		(property "Description" "Resistor"
-			(at 134.62 43.18 0)
+			(at 152.4 33.02 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -11381,7 +11306,7 @@
 			)
 		)
 		(property "LCSC" "C25744"
-			(at 134.62 43.18 90)
+			(at 152.4 33.02 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -12490,6 +12415,97 @@
 		)
 	)
 	(symbol
+		(lib_id "Battery_Management:TP4057")
+		(at 132.08 30.48 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "97a46d11-f34f-4897-9da8-351592a49c8c")
+		(property "Reference" "U9"
+			(at 134.2233 20.32 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "TP4057"
+			(at 134.2233 22.86 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Package_TO_SOT_SMD:TSOT-23-6"
+			(at 132.08 43.18 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "http://toppwr.com/uploadfile/file/20230304/640302a47b738.pdf"
+			(at 132.08 33.02 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Constant-current/constant-voltage linear charger for single cell lithium-ion batteries with 2.9V Trickle Charge, 4.5V to 6.5V VDD, -40 to +85 degree Celsius, TSOT-23-6"
+			(at 132.08 30.48 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C725791"
+			(at 132.08 30.48 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "4"
+			(uuid "46391bdb-2e4d-4120-a2a3-41d4d5eaeaad")
+		)
+		(pin "3"
+			(uuid "66e06761-aef1-4ee4-b79e-193029672d85")
+		)
+		(pin "1"
+			(uuid "fea04f31-691c-499b-9fd7-8fe893e44d8f")
+		)
+		(pin "5"
+			(uuid "d2364a2f-cfd9-4e5f-ac7c-acf140159f73")
+		)
+		(pin "2"
+			(uuid "5cb07b26-21fb-40ae-8dde-c5ab731c65e1")
+		)
+		(pin "6"
+			(uuid "44ae39cf-5bcd-49bf-8184-e7bdd4d6f17e")
+		)
+		(instances
+			(project ""
+				(path "/ddd1d94b-eff7-47cf-9545-456ea4f2cb54"
+					(reference "U9")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "Device:C")
 		(at 203.2 160.02 270)
 		(unit 1)
@@ -12638,207 +12654,6 @@
 			(project "breezedude_mini"
 				(path "/ddd1d94b-eff7-47cf-9545-456ea4f2cb54"
 					(reference "R8")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "PMIC-CN3063_SOIC8_:PMIC-CN3063_SOIC8_")
-		(at 115.57 33.02 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "a3f98b42-7d99-408d-b5c3-1e6548d13817")
-		(property "Reference" "U1"
-			(at 117.5894 20.32 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "PMIC-CN3063_SOIC8_"
-			(at 117.5894 22.86 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "Package_SO:Infineon_PG-DSO-8-43"
-			(at 115.57 33.02 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" ""
-			(at 115.57 33.02 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" ""
-			(at 115.57 33.02 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "MF" "Consonance"
-			(at 115.57 33.02 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-				(hide yes)
-			)
-		)
-		(property "Description_1" "\n                        \n                            The CN3063 is a complete constant-current /constant voltage linear charger for single cell Li-ion and Li Polymer rech...\n                        \n"
-			(at 115.57 33.02 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-				(hide yes)
-			)
-		)
-		(property "Package" "None"
-			(at 115.57 33.02 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-				(hide yes)
-			)
-		)
-		(property "MPN" "CN3063"
-			(at 115.57 33.02 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-				(hide yes)
-			)
-		)
-		(property "Price" "None"
-			(at 115.57 33.02 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-				(hide yes)
-			)
-		)
-		(property "VALUE" "CN3063-SOIC8"
-			(at 115.57 33.02 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-				(hide yes)
-			)
-		)
-		(property "SnapEDA_Link" "https://www.snapeda.com/parts/CN3063/Consonance/view-part/?ref=snap"
-			(at 115.57 33.02 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-				(hide yes)
-			)
-		)
-		(property "MP" "CN3063"
-			(at 115.57 33.02 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-				(hide yes)
-			)
-		)
-		(property "Availability" "In Stock"
-			(at 115.57 33.02 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-				(hide yes)
-			)
-		)
-		(property "Check_prices" "https://www.snapeda.com/parts/CN3063/Consonance/view-part/?ref=eda"
-			(at 115.57 33.02 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify bottom)
-				(hide yes)
-			)
-		)
-		(property "LCSC" "C28078"
-			(at 115.57 33.02 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "3"
-			(uuid "887a122b-440b-42ae-8b67-c42411482dad")
-		)
-		(pin "8"
-			(uuid "3b1a4b42-3a08-4ae7-a253-2e0d26a0b8fd")
-		)
-		(pin "6"
-			(uuid "a103a27e-0d08-4f3f-8614-361a6983ea05")
-		)
-		(pin "5"
-			(uuid "171cd78c-179b-4ec4-bd92-9253f0181a8d")
-		)
-		(pin "7"
-			(uuid "37bcb0b1-2679-4c28-8513-203d92c19052")
-		)
-		(pin "4"
-			(uuid "16cfc83a-2f99-49f0-9a1b-92d76d55666d")
-		)
-		(pin "1"
-			(uuid "53475b00-5e5c-4420-a914-e85d26b655b4")
-		)
-		(pin "2"
-			(uuid "b702bca2-7ffc-42ca-a7a6-de3dd0a0432f")
-		)
-		(pin "9"
-			(uuid "fe143b8b-8c89-46cc-a2fb-e43543dc20cb")
-		)
-		(instances
-			(project ""
-				(path "/ddd1d94b-eff7-47cf-9545-456ea4f2cb54"
-					(reference "U1")
 					(unit 1)
 				)
 			)
@@ -14232,7 +14047,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 140.97 43.18 0)
+		(at 158.75 33.02 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -14241,7 +14056,7 @@
 		(fields_autoplaced yes)
 		(uuid "d521ae32-f814-40d2-ae58-ecda4505879f")
 		(property "Reference" "#PWR06"
-			(at 140.97 49.53 0)
+			(at 158.75 39.37 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -14250,7 +14065,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 140.97 48.26 0)
+			(at 158.75 38.1 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -14258,7 +14073,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 140.97 43.18 0)
+			(at 158.75 33.02 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -14267,7 +14082,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 140.97 43.18 0)
+			(at 158.75 33.02 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -14276,7 +14091,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 140.97 43.18 0)
+			(at 158.75 33.02 0)
 			(effects
 				(font
 					(size 1.27 1.27)

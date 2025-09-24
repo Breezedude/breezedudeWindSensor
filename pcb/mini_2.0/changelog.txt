@@ -1,3 +1,16 @@
+
+2025-09-24:
+V2.3:
+* Added 10k pullup to Ssensor UART RX to aboid wakeup when no sensor is connected/cable failiure
+* Replaced CN3063 with TP4057 for better avaliability.
+* Moved SWD connector for better acessibility
+* RF optimisation
+
+
+2025-04-17:
+V2.2:
+* economic version with HP203B barometer and Vollgo CC68 868MHz LoRa radio module
+
 2024-12-18: 
 Mini V2.0
 * Based on alpha 1.4, remade in KiCAD
