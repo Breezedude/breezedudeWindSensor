@@ -445,18 +445,38 @@ void read_baro(){
 // while USB is connected, forward ws80 data to usb serial port
 void forward_wsxx_serial(){
   if(settings.forward_serial_while_usb){
-    static char buffer [512];
+    uint8_t buffer [512];
     static int bufferpos = 0;
-    while (SENSOR_UART.available()){
-      buffer[bufferpos] = SENSOR_UART.read();
-      bufferpos++;
-      if(bufferpos > 512){bufferpos =0;}
-    
 
-      if(bufferpos && (buffer[bufferpos] == '\n')){
-        if(usb_connected){Serial.write(buffer, bufferpos);}
-        Serial1.write(buffer, bufferpos);
+    if(is_wsxx()){
+      while (SENSOR_UART.available()){
+        buffer[bufferpos] = SENSOR_UART.read();
+        bufferpos++;
+        if(bufferpos > 512){bufferpos =0;}
+      
+
+        if(bufferpos && (buffer[bufferpos] == '\n')){
+          if(usb_connected){Serial.write(buffer, bufferpos);}
+          Serial1.write(buffer, bufferpos);
+          bufferpos = 0;
+        }
+      }
+    } else if(settings.sensor_type == s_WS85_UART){
+      // Read data block first
+      while(ws85uart.get_char(&(buffer[bufferpos]))){
+        bufferpos++;
+        delay(1); // wast some time to wait for the serial data to complete receiving
+      }
+      // Outpiut the data
+      if(bufferpos){
+        if(usb_connected){
+          for(int i = 0; i < bufferpos; i++){
+            Serial.print(buffer[i], HEX);
+            Serial.print(" "); // todo: replace by proper string building
+          }
+        }
         bufferpos = 0;
+        Serial.println();
       }
     }
   }

@@ -110,6 +110,16 @@ public:
   }
 
 
+  // for debug reading
+  int get_char(uint8_t * buf){
+    int n = serial->available();
+    if (n) {
+      *buf = serial->read();
+    }
+    return n;
+  }
+
+
   bool available() const { return measurement.valid; }
   
   WS85Measurement get() {  
