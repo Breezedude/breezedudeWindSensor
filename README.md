@@ -3,7 +3,7 @@
 
 Map of almost all wind stations: [breezedude.de](https://breezedude.de/)
 
-For more info and docs see the [Wiki](https://github.com/Breezedude/breezedudeWindSensor/wiki)
+For more info and documentation see the [Wiki](https://github.com/Breezedude/breezedudeWindSensor/wiki) and also [Discussion](https://github.com/Breezedude/breezedudeWindSensor/discussions)
 
 ----
 <p align="center">
