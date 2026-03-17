@@ -209,6 +209,7 @@ uint16_t crc16(const uint8_t* data, size_t len) {
   bool parseResponse() {
     measurement.valid = false;
     if (rxPos < 27) {
+      log_i("WS85 UART only got: ", (uint32_t) rxPos);
       return false;
     }
 

@@ -7,7 +7,7 @@ extern Uart Serial2;
 
 void SERCOM1_Handler();
 void enable_sercom0_int();
-void disable_sercom0_int(uint32_t baud);
+void disable_sercom0_int();
 void pinDisable(uint32_t pin);
 void configGCLK6(bool en_rtc);
 void deepsleep(bool light);
@@ -19,12 +19,12 @@ void wdt_reset();
 bool set_cpu_div(int divisor);
 
 void attachInterruptWakeup(uint32_t pin, voidFuncPtr callback, uint32_t mode, bool en_rtc);
-void setup_PM(bool en_counter);
+void setup_PM(bool en_pulse_counter, bool en_rtc_counter);
 void PM_sleep();
-void PM_wakeup();
+//void PM_wakeup();
 
 void setup_pulse_counter();
-uint32_t read_pulse_counter();
+uint16_t read_pulse_counter();
 void reset_pulse_counter();
 void stop_pulse_counter();
 

@@ -103,25 +103,33 @@ void enable_sercom0_int(void) {
 }
 
 
-void disable_sercom0_int(uint32_t baud) {
-    // Disable USART
-    SERCOM0->USART.CTRLA.bit.ENABLE = 0;
-    while (SERCOM0->USART.SYNCBUSY.bit.ENABLE);
+void disable_sercom0_int() {
 
-    // Reconnect SERCOM0 core to 48 MHz (GCLK0)
-    GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(SERCOM0_GCLK_ID_CORE) |
-                        GCLK_CLKCTRL_GEN_GCLK0 |
-                        GCLK_CLKCTRL_CLKEN;
-    while (GCLK->STATUS.bit.SYNCBUSY);
+  #define fcpu 48
+  #define baud 115200
+  // calculate baudrate register for 48Mhz and 115200
+  const uint16_t baudreg = (uint16_t)(65536.0f * (1.0f - (16.0f * (float)baud / (fcpu * 1000000.0f))));
 
-    // Reconnect slow to GCLK0 too
-    GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(SERCOM0_GCLK_ID_SLOW) |
-                        GCLK_CLKCTRL_GEN_GCLK0 |
-                        GCLK_CLKCTRL_CLKEN;
-    while (GCLK->STATUS.bit.SYNCBUSY);
+  // Disable USART
+  SERCOM0->USART.CTRLA.bit.ENABLE = 0;
+  while (SERCOM0->USART.SYNCBUSY.bit.ENABLE);
 
-    // Reprogram baud for 48 MHz and 115200
-    SERCOM0->USART.BAUD.reg = (uint16_t)(65536.0f * (1.0f - (16.0f * (float)baud / 48000000.0f)));
+   // Reconnect SERCOM0 core to 48 MHz (GCLK0)
+   GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(SERCOM0_GCLK_ID_CORE) |
+                       GCLK_CLKCTRL_GEN_GCLK0 |
+                       GCLK_CLKCTRL_CLKEN;
+    while (GCLK->STATUS.bit.SYNCBUSY); // save time
+  
+  // Seems not required
+  //  // Reconnect slow to GCLK0 too
+  //  GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(SERCOM0_GCLK_ID_SLOW) |
+  //                      GCLK_CLKCTRL_GEN_GCLK0 |
+  //                      GCLK_CLKCTRL_CLKEN;
+  //  while (GCLK->STATUS.bit.SYNCBUSY);
+
+    // Reprogram baud only if required
+    if (SERCOM0->USART.BAUD.reg != baudreg)
+    SERCOM0->USART.BAUD.reg = baudreg;
 
     // Disable RUNSTDBY now (clear)
     SERCOM0->USART.CTRLA.bit.RUNSTDBY = 0;
@@ -133,7 +141,7 @@ void disable_sercom0_int(uint32_t baud) {
     SERCOM0->USART.CTRLA.bit.ENABLE = 1;
     while (SERCOM0->USART.SYNCBUSY.bit.ENABLE);
 
-    NVIC_SetPriority(SERCOM0_IRQn, SERCOM_NVIC_PRIORITY);
+    NVIC_SetPriority(SERCOM0_IRQn, SERCOM_NVIC_PRIORITY); // save time
 }
 // https://github.com/adafruit/ArduinoCore-samd/blob/05e83bcb71232684dc259131ac5c5d624db191f5/cores/arduino/SERCOM.cpp#L849C46-L849C66
 
@@ -237,19 +245,7 @@ uint32_t rtc_sleep_cfg(uint32_t milliseconds){
     return (counts+1)*8;
     //return milliseconds;
   }
-
-
-
-void attachInterruptWakeup(uint32_t pin, voidFuncPtr callback, uint32_t mode, bool en_rtc) {
-	EExt_Interrupts in = g_APinDescription[pin].ulExtInt;
-	if (in == NOT_AN_INTERRUPT || in == EXTERNAL_INT_NMI){
-    return;
-  }
-	attachInterrupt(pin, callback, mode);
-	configGCLK6(en_rtc);
-	// Enable wakeup capability on pin in case being used during sleep
-	EIC->WAKEUP.reg |= (1 << in);
-}
+  
 
 void wdt_reset(){
   while (WDT->STATUS.bit.SYNCBUSY){};
@@ -387,57 +383,7 @@ void deepsleep(bool light) {
 // https://ww1.microchip.com/downloads/en/DeviceDoc/Atmel-42248-SAM-D20-Power-Measurements_ApplicationNote_AT04188.pdf
 }
 
-void PM_sleep(){
-  PM->APBCMASK.reg &= ~PM_APBCMASK_ADC;
-  PM->APBCMASK.reg &= ~PM_APBBMASK_DMAC;
-  PM->APBCMASK.reg &= ~PM_APBBMASK_DSU;
-  PM->APBCMASK.reg &= ~PM_APBBMASK_USB; // this kills I2C. No
-
-  PM->APBCMASK.reg &= ~PM_APBBMASK_PAC1;
-  PM->APBCMASK.reg &= ~PM_APBBMASK_HMATRIX;
-
-  PM->AHBMASK.reg  &= ~PM_AHBMASK_DMAC;
-  PM->AHBMASK.reg  &= ~PM_AHBMASK_DSU;
-  PM->AHBMASK.reg  &= ~PM_AHBMASK_USB; // this kills I2C after sleep
-
-  PM->AHBMASK.reg  &= ~PM_APBCMASK_I2S;
-  PM->AHBMASK.reg  &= ~PM_APBCMASK_PTC;
-  PM->AHBMASK.reg  &= ~PM_APBCMASK_DAC;
-  PM->AHBMASK.reg  &= ~PM_APBCMASK_AC;
-  PM->AHBMASK.reg  &= ~PM_APBCMASK_ADC;
-
-  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM0;
-  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM1;
-  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM2;
-  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM3;
-  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM4;
-  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM5;
-
-  PM->APBCMASK.reg &= ~PM_APBCMASK_TCC0;
-  PM->APBCMASK.reg &= ~PM_APBCMASK_TCC1;
-  PM->APBCMASK.reg &= ~PM_APBCMASK_TCC2;
-  PM->APBCMASK.reg &= ~PM_APBCMASK_TC3;
-  
-  PM->APBCMASK.reg &= ~PM_APBCMASK_TC5;
-  PM->APBCMASK.reg &= ~PM_APBCMASK_TC6;
-  PM->APBCMASK.reg &= ~PM_APBCMASK_TC7;
-
-
-  USB->DEVICE.CTRLA.bit.ENABLE = 0;
-  USB->DEVICE.CTRLA.bit.RUNSTDBY = 0;
-  while(USB->DEVICE.SYNCBUSY.bit.ENABLE){};
-}
-
-void PM_wakeup(){
-  PM->APBCMASK.reg |= PM_APBCMASK_ADC;
-
-  PM->APBCMASK.reg |= PM_APBCMASK_SERCOM0; // Serial1
-  PM->APBCMASK.reg |= PM_APBCMASK_SERCOM1; // Serial2
-  PM->APBCMASK.reg |= PM_APBCMASK_SERCOM3;
-  PM->APBCMASK.reg |= PM_APBCMASK_SERCOM4;
-}
-
-void setup_PM(bool en_counter){
+void setup_PM(bool en_pulse_counter, bool en_rtc_counter){
 // We use this one { PORTB,  8, PIO_ANALOG, (PIN_ATTR_PWM|PIN_ATTR_TIMER), ADC_Channel2, PWM4_CH0, TC4_CH0, EXTERNAL_INT_8 }, // ADC/AIN[2]
 // disable Clock ADC/DAC for Analog
   //PM->APBCMASK.reg &= ~PM_APBCMASK_ADC;
@@ -453,131 +399,186 @@ void setup_PM(bool en_counter){
   // Disable Clock TC/TCC for Pulse and Analog
   PM->APBCMASK.reg &= ~PM_APBCMASK_TCC0;
   PM->APBCMASK.reg &= ~PM_APBCMASK_TCC1;
-  PM->APBCMASK.reg &= ~PM_APBCMASK_TCC2;
-  PM->APBCMASK.reg &= ~PM_APBCMASK_TC3;
+  //PM->APBCMASK.reg &= ~PM_APBCMASK_TCC2;
+  //PM->APBCMASK.reg &= ~PM_APBCMASK_TC3;
 
-  //PM->APBCMASK.reg &= ~PM_APBCMASK_TC4; // used for rtc & pulsecounter, keep it running
-  if(!en_counter){
-    PM->APBCMASK.reg &= ~PM_APBCMASK_TC5; //only used if 32bit rtc counter is used (ws80), not for 16bit davis6410 pulse counter
+  if(en_pulse_counter){
+    PM->APBCMASK.reg |= PM_APBCMASK_TC3; // used for pulsecounter, 16bit mode
+    PM->APBCMASK.reg |= PM_APBCMASK_TCC2; // todo: required?
+  } else {
+    PM->APBCMASK.reg &= ~PM_APBCMASK_TC3;
   }
-  PM->APBCMASK.reg &= ~PM_APBCMASK_TC6;
-  PM->APBCMASK.reg &= ~PM_APBCMASK_TC7;
+
+  if(en_rtc_counter){
+    PM->APBCMASK.reg |= PM_APBCMASK_TC4; // used for rtc counting sleeptime
+    PM->APBCMASK.reg |= PM_APBCMASK_TC5; // 32 bit
+  } else {
+    PM->APBCMASK.reg &= ~PM_APBCMASK_TC4;
+    PM->APBCMASK.reg &= ~PM_APBCMASK_TC5;
+  }
+
 }
 
 
 
-void setup_pulse_counter(){
-  uint32_t ulPin = 17; // PA04 PIN_DAVIS_SPEED, Uses Interrupt 4
+/***************************************************************************
+  TC3 External Pulse Counter (16-bit)
+  Target MCU : ATSAMD21G18
+  Function   : Count falling edges on PA04 (EXTINT4)
+               using EIC -> EVSYS -> TC3
+               Runs in STANDBY sleep mode
+***************************************************************************/
+
+void setup_pulse_counter()
+{
+  uint32_t ulPin = 17;          // Arduino pin 17 = PA04 = EXTINT4
+
+  // Configure GCLK6 (32kHz derived ~1024 Hz) for low-power peripherals
   configGCLK6(true);
-  // https://forum.arduino.cc/t/arduino-zero-sam-d21-hardware-counter-as-simple-input-counter-intialization/630306/2
-  // Generic Clock /////////////////////////////////////////////////////////////////////////
- 
-  GCLK->CLKCTRL.reg = GCLK_CLKCTRL_CLKEN |        // Enable the generic clock...
-                      GCLK_CLKCTRL_GEN_GCLK6 |    // On GCLK6 at 1024Hz
-                      GCLK_CLKCTRL_ID_TC4_TC5;    // Route GCLK6 to TC4 and TC5
-  while (GCLK->STATUS.bit.SYNCBUSY);              // Wait for synchronization
 
-  // Port Configuration ///////////////////////////////////////////////////////////////////
+  /***********************************************************************
+    1) ROUTE GENERIC CLOCK TO TC3
+       TC3 shares clock ID with TCC2 (NOT with TC4/5!)
+  ***********************************************************************/
+  GCLK->CLKCTRL.reg =
+      GCLK_CLKCTRL_CLKEN |
+      GCLK_CLKCTRL_GEN_GCLK6 |        // Use GCLK6
+      GCLK_CLKCTRL_ID_TCC2_TC3;       // Clock ID for TC3
+  while (GCLK->STATUS.bit.SYNCBUSY);
 
-//pinPeripheral(ulPin, PIO_EXTINT); 
-
-  // Enable the port multiplexer on digital pin PIN_DAVIS_SPEED (port pin PA04)
+  /***********************************************************************
+    2) PORT CONFIGURATION
+       Configure PA04 as EIC (external interrupt controller) input
+  ***********************************************************************/
   EPortType port = g_APinDescription[ulPin].ulPort;
-  uint32_t pin = g_APinDescription[ulPin].ulPin;
-  uint32_t pinMask = (1ul << pin);
-  // Set pin to reset value
-  PORT->Group[port].PINCFG[pin].reg = PORT_PINCFG_PMUXEN | PORT_PINCFG_INEN ; // | PORT_PINCFG_DRVSTR;
+  uint32_t  pin  = g_APinDescription[ulPin].ulPin;
+  uint32_t  pinMask = (1ul << pin);
+
+  // Enable peripheral multiplexer + input buffer
+  PORT->Group[port].PINCFG[pin].reg =
+      PORT_PINCFG_PMUXEN | PORT_PINCFG_INEN;
+
+  // Make pin input
   PORT->Group[port].DIRCLR.reg = pinMask;
 
-  // Set-up the pin as an EIC (interrupt) peripheral on PIN_DAVIS_SPEED
-  if ( g_APinDescription[ulPin].ulPin & 1 ){  // is pin odd?
-     PORT->Group[port].PMUX[pin >> 1].reg |= PORT_PMUX_PMUXO_A;
-  } else { // even
-       PORT->Group[port].PMUX[pin >> 1].reg |= PORT_PMUX_PMUXE_A;
-  }
+  // Connect pin to EIC peripheral (MUX function A)
+  if (pin & 1)
+      PORT->Group[port].PMUX[pin >> 1].bit.PMUXO = PORT_PMUX_PMUXO_A;
+  else
+      PORT->Group[port].PMUX[pin >> 1].bit.PMUXE = PORT_PMUX_PMUXE_A;
 
-// External Interrupt Controller (EIC) ///////////////////////////////////////////////////
+  /***********************************************************************
+    3) EXTERNAL INTERRUPT CONTROLLER (EIC)
+       Configure EXTINT4 to:
+       - Detect falling edge
+       - Generate event (not interrupt)
+  ***********************************************************************/
+  EExt_Interrupts in = g_APinDescription[ulPin].ulExtInt;
 
-EExt_Interrupts in = g_APinDescription[ulPin].ulExtInt;
+  uint32_t config = (in > 7) ? 1 : 0;
+  uint32_t pos    = (in > 7) ? (in - 8) * 4 : in * 4;
 
-// Look for right CONFIG register to be addressed
-uint32_t config;
-uint32_t pos;
-if (in > EXTERNAL_INT_7) {
-    config = 1;
-    pos = (in - 8) << 2;
-  } else {
-    config = 0;
-    pos = in << 2;
-  }
+  PM->APBAMASK.reg |= PM_APBAMASK_EIC;   // Enable EIC clock
 
-  EIC->WAKEUP.reg &= ~(1 << in); // Disable wakeup capability on pin in case being used during sleep
-  EIC->CONFIG[config].reg &=~ (EIC_CONFIG_SENSE0_Msk << pos);
+  // Disable EIC before configuration
+  EIC->CTRL.bit.ENABLE = 0;
+  while (EIC->STATUS.bit.SYNCBUSY);
+
+  // Configure falling edge detection
+  EIC->CONFIG[config].reg &= ~(0xF << pos);
   EIC->CONFIG[config].reg |= EIC_CONFIG_SENSE0_FALL_Val << pos;
-  // EIC->CONFIG[0].reg |= EIC_CONFIG_SENSE4_FALL;                        // Set event detecting a FALL level on interrupt 
 
-  EIC->EVCTRL.reg |= (1 << in);                                           // Enable event output on external interrupt
+  // Enable event output on this EXTINT line
+  EIC->EVCTRL.reg |= (1 << in);
 
-  //EIC->INTENCLR.reg = EIC_INTENCLR_EXTINT4;                             // Disable interrupts on interrupt 4
-  EIC->INTENCLR.reg = EIC_INTENCLR_EXTINT(1 << in);
+  // Disable CPU interrupt (we only want events)
+  EIC->INTENCLR.reg = (1 << in);
 
-  EIC->CTRL.bit.ENABLE = 1;                                               // Enable the EIC peripheral
-  while (EIC->STATUS.bit.SYNCBUSY);                                       // Wait for synchronization
+  // Re-enable EIC
+  EIC->CTRL.bit.ENABLE = 1;
+  while (EIC->STATUS.bit.SYNCBUSY);
 
-  // Event System //////////////////////////////////////////////////////////////////////////
+  /***********************************************************************
+    4) EVENT SYSTEM
+       Route EIC EXTINT4 -> TC3
+       Path is asynchronous so it works in STANDBY
+  ***********************************************************************/
+  PM->APBCMASK.reg |= PM_APBCMASK_EVSYS;
 
-  PM->APBCMASK.reg |= PM_APBCMASK_EVSYS;                                  // Switch on the event system peripheral
+  // Connect event channel 0 to TC3
+  EVSYS->USER.reg =
+      EVSYS_USER_CHANNEL(1) |             // Channel 0 = n+1
+      EVSYS_USER_USER(EVSYS_ID_USER_TC3_EVU);
 
-  EVSYS->USER.reg = EVSYS_USER_CHANNEL(1) |                               // Attach the event user (receiver) to channel 0 (n + 1)
-                    EVSYS_USER_USER(EVSYS_ID_USER_TC4_EVU);               // Set the event user (receiver) as timer TC4
-  
-  EVSYS->CHANNEL.reg = EVSYS_CHANNEL_EDGSEL_NO_EVT_OUTPUT |               // No event edge detection
-                       EVSYS_CHANNEL_PATH_ASYNCHRONOUS |                  // Set event path as asynchronous
-                       EVSYS_CHANNEL_EVGEN(EVSYS_ID_GEN_EIC_EXTINT_4) |   // Set event generator (sender) as external interrupt 4
-                       EVSYS_CHANNEL_CHANNEL(0);                          // Attach the generator (sender) to channel 0                                 
-  
-  // Timer Counter TC4 /////////////////////////////////////////////////////////////////////
+  // Configure channel 0:
+  // Generator = EXTINT4
+  // Asynchronous path
+  EVSYS->CHANNEL.reg =
+      EVSYS_CHANNEL_CHANNEL(0) |
+      EVSYS_CHANNEL_EVGEN(EVSYS_ID_GEN_EIC_EXTINT_4) |
+      EVSYS_CHANNEL_PATH_ASYNCHRONOUS |
+      EVSYS_CHANNEL_EDGSEL_NO_EVT_OUTPUT;
 
-  PM->APBCMASK.reg |= PM_APBCMASK_TC4; // PM enable TC4 & TC5
-  //PM->APBCMASK.reg |= PM_APBCMASK_TC5; // saves 10uA
+  /***********************************************************************
+    5) TIMER COUNTER TC3
+       Configure as 16-bit event counter
+  ***********************************************************************/
+  PM->APBCMASK.reg |= PM_APBCMASK_TC3;
 
- 
-  TC4->COUNT16.EVCTRL.reg |= TC_EVCTRL_TCEI |              // Enable asynchronous events on the TC timer
-                             TC_EVCTRL_EVACT_COUNT;        // Increment the TC timer each time an event is received
+  // Software reset (important!)
+  TC3->COUNT16.CTRLA.bit.SWRST = 1;
+  while (TC3->COUNT16.STATUS.bit.SYNCBUSY);
+  while (TC3->COUNT16.CTRLA.bit.SWRST);
 
-  TC4->COUNT16.CTRLA.reg = TC_CTRLA_MODE_COUNT16 |         // Configure TC4 (if 32: together with TC5 to operate in 32-bit mode)
-                           TC_CTRLA_RUNSTDBY |             // Set timer to run in standby
-                           TC_CTRLA_PRESCALER_DIV1 |       // Prescaler: GCLK_TC/1
-                           TC_CTRLA_PRESCSYNC_GCLK;        // Reload or reset the counter on next generic clock 
-                      
-  TC4->COUNT16.CTRLA.bit.ENABLE = 1;                       // Enable TC4
-  while (TC4->COUNT16.STATUS.bit.SYNCBUSY);                // Wait for synchronization
+  // Count one increment per incoming event
+  TC3->COUNT16.EVCTRL.reg =
+      TC_EVCTRL_TCEI |            // Enable event input
+      TC_EVCTRL_EVACT_COUNT;      // Increment on event
 
-  TC4->COUNT16.READREQ.reg = TC_READREQ_RCONT |            // Enable a continuous read request
-                             TC_READREQ_ADDR(0x10);        // Offset of the 32-bit COUNT register
-  while (TC4->COUNT16.STATUS.bit.SYNCBUSY);                // Wait for synchronization
+  // Configure timer:
+  // - 16-bit mode
+  // - Run in standby
+  // - No prescaling
+  // - Prescaler sync mode
+  TC3->COUNT16.CTRLA.reg =
+      TC_CTRLA_MODE_COUNT16 |
+      TC_CTRLA_RUNSTDBY |
+      TC_CTRLA_PRESCALER_DIV1 |
+      TC_CTRLA_PRESCSYNC_PRESC;
 
+  // Enable TC3
+  TC3->COUNT16.CTRLA.bit.ENABLE = 1;
+  while (TC3->COUNT16.STATUS.bit.SYNCBUSY);
+
+  // Continuous read synchronization
+  TC3->COUNT16.READREQ.reg =
+      TC_READREQ_RCONT |
+      TC_READREQ_ADDR(TC_COUNT16_COUNT_OFFSET);
+
+  while (TC3->COUNT16.STATUS.bit.SYNCBUSY);
 }
 
-uint32_t read_pulse_counter(){
-  TC4->COUNT16.READREQ.reg = TC_READREQ_RREQ;         // Request a read synchronization
-  while (TC4->COUNT16.STATUS.bit.SYNCBUSY);           // Wait for read synchronization
-  return TC4->COUNT16.COUNT.reg;
+// Read current 16-bit counter value
+uint16_t read_pulse_counter()
+{
+  TC3->COUNT16.READREQ.reg = TC_READREQ_RREQ;
+  while (TC3->COUNT16.STATUS.bit.SYNCBUSY);
+  return TC3->COUNT16.COUNT.reg;
 }
 
-void reset_pulse_counter(){
-  TC4->COUNT16.COUNT.reg = 0x0000;                        // Output the result
-  while (TC4->COUNT16.STATUS.bit.SYNCBUSY);               // Wait for read synchronization
-  TC4->COUNT16.CTRLBSET.reg = TC_CTRLBSET_CMD_RETRIGGER;  // Retrigger the TC4 timer
-  while (TC4->COUNT16.STATUS.bit.SYNCBUSY);               // Wait for synchronization
+// Reset counter to zero
+void reset_pulse_counter()
+{
+  TC3->COUNT16.COUNT.reg = 0;
+  while (TC3->COUNT16.STATUS.bit.SYNCBUSY);
 }
 
-void stop_pulse_counter(){
-  TC4->COUNT16.CTRLBSET.reg = TC_CTRLBSET_CMD_STOP;    // Stop the TC4 timer
-  while (TC4->COUNT16.STATUS.bit.SYNCBUSY);            // Wait for synchronization
+// Stop counter
+void stop_pulse_counter()
+{
+  TC3->COUNT16.CTRLBSET.reg = TC_CTRLBSET_CMD_STOP;
+  while (TC3->COUNT16.STATUS.bit.SYNCBUSY);
 }
-
-
 
  // https://forum.arduino.cc/t/samd21-not-waking-up-using-timer-interrupt-from-deep-sleep/662100/2
 
@@ -655,3 +656,58 @@ void reset_time_counter(){
   TC4->COUNT32.CTRLBSET.reg = TC_CTRLBSET_CMD_RETRIGGER;  // Retrigger the TC4 timer
   while (TC4->COUNT32.STATUS.bit.SYNCBUSY);               // Wait for synchronization
 }
+
+
+void PM_sleep(){
+  /* NOT USED
+  PM->APBCMASK.reg &= ~PM_APBCMASK_ADC;
+  PM->APBCMASK.reg &= ~PM_APBBMASK_DMAC;
+  PM->APBCMASK.reg &= ~PM_APBBMASK_DSU;
+  PM->APBCMASK.reg &= ~PM_APBBMASK_USB; // this kills I2C. No
+
+  PM->APBCMASK.reg &= ~PM_APBBMASK_PAC1;
+  PM->APBCMASK.reg &= ~PM_APBBMASK_HMATRIX;
+
+  PM->AHBMASK.reg  &= ~PM_AHBMASK_DMAC;
+  PM->AHBMASK.reg  &= ~PM_AHBMASK_DSU;
+  PM->AHBMASK.reg  &= ~PM_AHBMASK_USB; // this kills I2C after sleep
+
+  PM->AHBMASK.reg  &= ~PM_APBCMASK_I2S;
+  PM->AHBMASK.reg  &= ~PM_APBCMASK_PTC;
+  PM->AHBMASK.reg  &= ~PM_APBCMASK_DAC;
+  PM->AHBMASK.reg  &= ~PM_APBCMASK_AC;
+  PM->AHBMASK.reg  &= ~PM_APBCMASK_ADC;
+
+  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM0;
+  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM1;
+  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM2;
+  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM3;
+  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM4;
+  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM5;
+
+  PM->APBCMASK.reg &= ~PM_APBCMASK_TCC0;
+  PM->APBCMASK.reg &= ~PM_APBCMASK_TCC1;
+  PM->APBCMASK.reg &= ~PM_APBCMASK_TCC2;
+  PM->APBCMASK.reg &= ~PM_APBCMASK_TC3;
+  
+  PM->APBCMASK.reg &= ~PM_APBCMASK_TC5;
+  PM->APBCMASK.reg &= ~PM_APBCMASK_TC6;
+  PM->APBCMASK.reg &= ~PM_APBCMASK_TC7;
+
+
+  USB->DEVICE.CTRLA.bit.ENABLE = 0;
+  USB->DEVICE.CTRLA.bit.RUNSTDBY = 0;
+  while(USB->DEVICE.SYNCBUSY.bit.ENABLE){};
+  */
+}
+
+/*
+void PM_wakeup(){
+  PM->APBCMASK.reg |= PM_APBCMASK_ADC;
+
+  PM->APBCMASK.reg |= PM_APBCMASK_SERCOM0; // Serial1
+  PM->APBCMASK.reg |= PM_APBCMASK_SERCOM1; // Serial2
+  PM->APBCMASK.reg |= PM_APBCMASK_SERCOM3;
+  PM->APBCMASK.reg |= PM_APBCMASK_SERCOM4;
+}
+*/

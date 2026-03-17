@@ -1,0 +1,41 @@
+#include <Arduino.h>
+#include <Adafruit_TinyUSB.h>
+#include "sleep.h"
+
+#define WDT_PERIOD 8000 // ms for wdt to wait to reset mcu if not reset in time
+
+// RTC Handler callback, do not rename. gets called on rtc (timer) interrupt
+void RTC_Handler(void){
+  if (RTC->MODE1.INTFLAG.bit.OVF && RTC->MODE1.INTENSET.bit.OVF) {  // Check if an overflow caused the interrupt
+    RTC->MODE1.INTFLAG.bit.OVF = 1;                                 // Reset the overflow interrupt flag
+    //wakeup_source = WAKEUP_RTC;
+  }
+}
+
+void setup(){
+    Serial1.begin(115200);
+    Serial1.println("\n\nReset");
+
+    setup_PM(false);
+    //configGCLK6(true);
+    wdt_enable(WDT_PERIOD,false); // setup clocks
+    wdt_disable();
+    setup_rtc_time_counter();
+}
+
+void loop(){
+
+    rtc_sleep_cfg(4000);
+    Serial1.println("sleep");
+    Serial1.flush();
+
+    //PM_sleep();
+    sleep(false);
+    //PM_wakeup();
+
+    Serial1.println("\nwakeup");
+    Serial1.println(millis());
+    Serial1.flush();
+    delay(1000);
+
+}

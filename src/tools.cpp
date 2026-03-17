@@ -1,14 +1,23 @@
 #include "tools.h"
 #include "defines.h"
 #include "logging.h"
+#include "sleep.h"
 #include "msc.h"
 
 uint32_t sleeptime_cum = 0; // cumulative time spend in sleepmode, used for time() calculation
-uint32_t sleep_offset =0; //time passed since last increment of time(). used for ws80 deepsleep reading time offset from rtc
-
-HW_Version bd_hw_version = HW_unknown;
 Settings settings;
 
+
+void attachInterruptWakeup(uint32_t pin, voidFuncPtr callback, uint32_t mode, bool en_rtc) {
+	EExt_Interrupts in = g_APinDescription[pin].ulExtInt;
+	if (in == NOT_AN_INTERRUPT || in == EXTERNAL_INT_NMI){
+    return;
+  }
+	attachInterrupt(pin, callback, mode);
+	configGCLK6(en_rtc);
+	// Enable wakeup capability on pin in case being used during sleep
+	EIC->WAKEUP.reg |= (1 << in);
+}
 
 // Helper ----------------------------------------------------------------------------------------------------------------------
 
@@ -17,6 +26,43 @@ const char* wakeup_source_string [4] = {"NONE", "RTC", "EIC", "WDT"};
 // if a WS80 or WS85 sensor with "DEBUG hack" is connected
 bool is_wsxx(){
   return settings.sensor_type == s_WS85 || settings.sensor_type == s_WS80;
+}
+
+// process line in 'key=value' format and hand to callback function
+bool process_line(char * in, int len, bool (*cb)(char*, char*)){
+  #define BUFFLEN 127
+  char name [BUFFLEN];
+  char value [BUFFLEN];
+  memset(name,'\0',BUFFLEN);
+  memset(value,'\0',BUFFLEN);
+  bool literal = false; // 
+  char* ptr = name; //start with name filed
+  int c = 0; // counter
+  int oc= 0; // output counter
+  bool cont = true; //continue flag
+
+  while (cont && (c < max(len,BUFFLEN)) && (oc < (BUFFLEN-1))){ // limit to 255 chars per line
+    if(in[c] < 127){
+      switch (in[c]) {
+        case '\r': if(c != 0) {cont = false;} break;
+        case '\n': cont = false; break;
+        //case '-': cont = false; break; // catches negative temps
+        case '>': cont = false; break;
+        case '!':  cont = false; break;
+        case '#':  cont = false; break;
+        case '?':  literal = true; break; // enable literal mode
+        case '=':  if(oc && (ptr == name) ){ *(ptr+oc) = '\0'; ptr = value; oc = 0;} break; // switch to value
+        case ' ':  if(!literal) {break;} // avoid removing whitespaces from name
+        default:   *(ptr+oc) = in[c]; oc++; break; // copy char
+      }
+    }
+    c++;
+  }
+  if(oc && (ptr == value)){ // value is set
+    return cb(name, value);
+  }
+  
+  return false;
 }
 
 // Settings ----------------------------------------------------------------------------------------------------------------------
@@ -30,12 +76,6 @@ bool apply_setting(char* settingName,  char* settingValue){
   if(strcmp(settingName,"LORA_FREQ")==0){settings.lora_freq = atof(settingValue); return 1;} 
   if(strcmp(settingName,"LORA_BW")==0)  {settings.lora_bw = atoi(settingValue); return 1;}
 
-#ifdef HAS_HEATER
-  //if(strcmp(settingName,"HEATER")==0) {settings.is_heater = atoi(settingValue); return 1;}
-  //if(strcmp(settingName,"V_HEATER")==0) {settings.heater_voltage  = atof(settingValue); return 1;}
-  //if(strcmp(settingName,"V_MPPT")==0) { settings.mppt_voltage = atof(settingValue); return 1;}
-#endif
-
   if(strcmp(settingName,"REDU_INTERV_VOLT")==0) { settings.reduce_interval_voltage = atof(settingValue); return 1;}
 
   if(strcmp(settingName,"HEADING_OFFSET")==0) {settings.heading_offset = atoi(settingValue); return 1;}
@@ -47,22 +87,24 @@ bool apply_setting(char* settingName,  char* settingValue){
   if(strcmp(settingName,"BROADCAST_INTERVAL_NAME")==0)    {settings.broadcast_interval_name = (uint32_t)atoi(settingValue)*1000; return 1;}
   if(strcmp(settingName,"BROADCAST_INTERVAL_INFO")==0)    {settings.broadcast_interval_info = (uint32_t)atoi(settingValue)*1000; return 1;}
 
-  if(strcmp(settingName,"SENSOR_BARO")==0) {settings.is_baro = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"SENSOR_BARO")==0) {settings.use_baro = atoi(settingValue); return 1;}
   if(strcmp(settingName,"SENSOR_DAVIS6410")==0) { if(atoi(settingValue)){settings.sensor_type = s_DAVIS6410;} return 1;}
   if(strcmp(settingName,"SENSOR_WSXX")==0) { if(atoi(settingValue)){settings.sensor_type = s_WS80;} return 1;} // auto detection
   if(strcmp(settingName,"SENSOR_WS80")==0) { if(atoi(settingValue)){settings.sensor_type = s_WS80;} return 1;} // keep for comatibility with old settings file
   if(strcmp(settingName,"SENSOR_WS85")==0) { if(atoi(settingValue)){settings.sensor_type = s_WS85;} return 1;}
   if(strcmp(settingName,"SENSOR_WS85_UART")==0) { if(atoi(settingValue)){settings.sensor_type = s_WS85_UART;} return 1;}
+  if(strcmp(settingName,"SENSOR_WINDNERD")==0) { if(atoi(settingValue)){settings.sensor_type = s_WINDNERD;} return 1;}
+  
 
 // Davis 6410 specific
   if(strcmp(settingName,"SENSOR_INTEGRATION_TIME")==0) {settings.sensor_integration_time = atoi(settingValue); return 1;}
 
-  if(strcmp(settingName,"SENSOR_GPS")==0) {settings.is_gps = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"SENSOR_GPS")==0) {settings.use_gps = atoi(settingValue); return 1;}
   if(strcmp(settingName,"GPS_BAUD")==0) {settings.gps_baud = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"SENSOR_IMU")==0) {settings.use_imu = atoi(settingValue); return 1;}
 
   if(strcmp(settingName,"DEBUG")==0) {log_set_debug(atoi(settingValue)); return 1;}
   if(strcmp(settingName,"ERRORS")==0) {log_set_error(atoi(settingValue)); return 1;}
-  if(strcmp(settingName,"INSOMNIA")==0) {settings.no_sleep = atoi(settingValue); return 1;}
   if(strcmp(settingName,"TEST_USB")==0) {settings.test_with_usb = atoi(settingValue); return 1;}
   if(strcmp(settingName,"TESTMODE")==0) {settings.testmode = atoi(settingValue); return 1;}
   if(strcmp(settingName,"WDT")==0) {settings.use_wdt = atoi(settingValue); return 1;}
@@ -70,7 +112,7 @@ bool apply_setting(char* settingName,  char* settingValue){
   if(strcmp(settingName,"FORWARD_UART")==0) {settings.forward_serial_while_usb = atoi(settingValue); return 1;}
 
 // Test commands
-  if(strcmp(settingName,"TEST_HEATER")==0) {settings.test_heater = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"FANET_RECEIVE")==0) {settings.lora_smart_rcv = atoi(settingValue); return 1;}
   if(strcmp(settingName,"SLEEP")==0) {usb_connected =false; return 1;}
   if(strcmp(settingName,"FORMAT")==0) {if(format_flash()){NVIC_SystemReset();} else {log_i("Error Formating Flash\r\n");} return 1;}
   if(strcmp(settingName,"RESET")==0) {setup(); return 1;}
@@ -87,16 +129,12 @@ void print_settings(){
     //log_i("Lat: ", pos_lat);
     //log_i("Alt: ", altitude);
     log_flush();
-//  #ifdef HAS_HEATER
-//    if(bd_hw_version == HW_1_3){
-//      log_i("Heater voltage: ", settings.heater_voltage);
-//      log_i("MPPT voltage: ", settings.mppt_voltage);
-//    }
-//  #endif
     log_i("Heading offset: ", settings.heading_offset); 
     log_i("Broadcast interval weather [s]: ", settings.broadcast_interval_weather/1000);
     if(is_wsxx()){log_i("Sensor: WSXX Auto detect\n");}
     if(settings.sensor_type == s_DAVIS6410){log_i("Sensor: DAVIS 6410\n");}
+    if(settings.sensor_type == s_WS85_UART){log_i("Sensor: WS85 UART\n");}
+    if(settings.sensor_type == s_WINDNERD){log_i("Sensor: Windnerd\n");}
     log_flush();
   }
 }
@@ -105,7 +143,7 @@ void print_settings(){
 
 // get current millis since reset, including time spend in deepsleep. Missing time waiting for UART ws80 sensor
 uint32_t time(){
-  return millis() + sleeptime_cum + sleep_offset;
+  return millis() + sleeptime_cum;
 }
 
 uint16_t get_fanet_id(){
@@ -145,19 +183,15 @@ bool ret = false;
 bool led_error(bool s){
 static bool state = false;
 bool ret = false;
-  if( bd_hw_version >= HW_2_0){
-    if(s){
-      pinMode(PIN_ERRORLED,OUTPUT);
-      digitalWrite(PIN_ERRORLED, 1);
-      if(state){ret = true;} // was on before
-      state = true;
-    } else {
-      state = false;;
-      digitalWrite(PIN_ERRORLED, 0);
-      pinDisable(PIN_ERRORLED);
-    }
+  if(s){
+    pinMode(PIN_ERRORLED,OUTPUT);
+    digitalWrite(PIN_ERRORLED, 1);
+    if(state){ret = true;} // was on before
+    state = true;
   } else {
-    ret = led_status(s);
+    state = false;;
+    digitalWrite(PIN_ERRORLED, 0);
+    pinDisable(PIN_ERRORLED);
   }
   return ret;
 }
@@ -175,9 +209,6 @@ void i2c_scan(){
       if (address<16)
         DEBUGSER.print("0");
       DEBUGSER.println(address,HEX);
-
-      if(address == 0x2F){bd_hw_version = HW_1_3;} // only HW1.3 has digipot
- 
       nDevices++;
     }
     else if (error==4){
@@ -191,7 +222,7 @@ void i2c_scan(){
 }
 
 bool zone_not_eu(){
-  return ((settings.pos_lon < -30.0 && settings.pos_lon > -180.0) ||                  // North/South America
+  return ((settings.pos_lon < -30.0 && settings.pos_lon > -180.0) ||            // North/South America
     (settings.pos_lon > 110.0 && settings.pos_lon <= 180.0) ||                  // Japan, Australia, NZ
     (settings.pos_lon >= 75.0 && settings.pos_lon <= 110.0 && settings.pos_lat > 15.0)  // China
     );

@@ -101,7 +101,7 @@ enum LORA_MODULE{
   LORA_LLCC68
 };
 
-enum BARO_CHIP{
+enum CHIP_BARO{
   BARO_NONE,
   BARO_BMP280,
   BARO_SPL06,
@@ -109,10 +109,16 @@ enum BARO_CHIP{
   BARO_HP203B
 };
 
+enum CHIP_IMU{
+  IMU_NONE,
+  IMU_
+};
+
 
 enum Wakeup_Source{
   WAKEUP_NONE,
   WAKEUP_RTC,
   WAKEUP_EIC,
-  WAKEUP_WDT
+  WAKEUP_WDT,
+  WAKEUP_LORA
 };
