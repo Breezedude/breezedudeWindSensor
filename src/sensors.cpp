@@ -18,6 +18,37 @@ CHIP_IMU chip_imu = IMU_NONE;
 
 Sensors sensor;
 
+static float apply_altitude_correction(float pressure_hpa, float temp_c, float altitude_m) {
+  // Cache expensive powf() result for the last altitude + quantized temperature.
+  static float last_altitude = -100000.0f;
+  static int16_t last_temp_tenths = INT16_MIN;
+  static float last_factor = 1.0f;
+
+  if (altitude_m < 0.0f) {
+    return pressure_hpa;
+  }
+
+  int16_t temp_tenths = (int16_t)(temp_c * 10.0f);
+  if ((altitude_m != last_altitude) || (temp_tenths != last_temp_tenths)) {
+    const float lapse_times_alt = 0.0065f * altitude_m;
+    const float denom = temp_c + lapse_times_alt + 273.15f;
+    if (denom > 0.0f) {
+      const float base = 1.0f - (lapse_times_alt / denom);
+      if (base > 0.0f) {
+        last_factor = powf(base, -5.257f);
+      } else {
+        last_factor = 1.0f;
+      }
+    } else {
+      last_factor = 1.0f;
+    }
+    last_altitude = altitude_m;
+    last_temp_tenths = temp_tenths;
+  }
+
+  return pressure_hpa * last_factor;
+}
+
 
 // Sensors ----------------------------------------------------------------------------------------------------------------------
 
@@ -81,13 +112,14 @@ bool init_baro(){
 void baro_start_reading(){
   //sercom3.resetWIRE();
   //Wire.begin();
+  uint32_t now = time();
   if(!sensor.next_baro_reading){
     if(chip_baro == BARO_BMP280){ 
-      sensor.next_baro_reading = time() + bmp280.startMeasurment();
+      sensor.next_baro_reading = now + bmp280.startMeasurment();
     }
     if(chip_baro == BARO_SPL06){ 
       spl.start_measure();
-      sensor.next_baro_reading = time() + 27;
+      sensor.next_baro_reading = now + 27;
     }
     if(chip_baro == BARO_BMP3xx){ 
       bmp3xx.setOutputDataRate(BMP3_ODR_50_HZ);
@@ -95,14 +127,14 @@ void baro_start_reading(){
     // bmp3xx.setPressureOversampling(BMP3_OVERSAMPLING_16X);
     // bmp3xx.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
       bmp3xx.performReading();
-      sensor.next_baro_reading = time() + 5;
+      sensor.next_baro_reading = now + 5;
     }
     if(chip_baro == BARO_HP203B){ 
       hp.startMeasure();
-      sensor.next_baro_reading = time() + 25; // OSR512
+      sensor.next_baro_reading = now + 25; // OSR512
     }
     } else {
-      if(time() > (sensor.next_baro_reading +200)){
+      if(now > (sensor.next_baro_reading +200)){
         sensor.next_baro_reading = 0;
       }
     }
@@ -112,9 +144,10 @@ void baro_start_reading(){
 void read_baro(){
   bool data_ok = false;
   double T,P;
+  uint32_t now = time();
 
   if(chip_baro == BARO_BMP280){
-    if(sensor.next_baro_reading && (time() > sensor.next_baro_reading)){
+    if(sensor.next_baro_reading && (now > sensor.next_baro_reading)){
       uint8_t result = bmp280.getTemperatureAndPressure(T,P);
       if(result!=0){
         data_ok = true;
@@ -123,7 +156,7 @@ void read_baro(){
   }
 
   else if(chip_baro == BARO_SPL06){
-    if(sensor.next_baro_reading && (time() > sensor.next_baro_reading)){
+    if(sensor.next_baro_reading && (now > sensor.next_baro_reading)){
       P = spl.get_pressure();
       T = spl.get_temp_c();
       spl.sleep(); 
@@ -153,12 +186,8 @@ void read_baro(){
   if(data_ok){
     sensor.baro_temp = T;
     sensor.next_baro_reading = 0;
-    sensor.last_baro_reading = time();
-    if (settings.altitude > -1){
-        sensor.baro_pressure = (P * pow(1-(0.0065*settings.altitude/(T + (0.0065*settings.altitude) + 273.15)),-5.257));
-    } else {
-      sensor.baro_pressure = P;
-    }
+    sensor.last_baro_reading = now;
+    sensor.baro_pressure = apply_altitude_correction((float)P, (float)T, settings.altitude);
     //log_i("current Baro: ", baro_pressure);
   } else {
     //log_i("Baro no data, retry\r\n");
@@ -169,38 +198,46 @@ void read_baro(){
 // while USB is connected, forward ws80 data to usb serial port
 void forward_sensor_serial(){
   if(settings.forward_serial_while_usb){
-    uint8_t buffer [512];
+    static uint8_t buffer[512];
     static int bufferpos = 0;
 
     if(is_wsxx()){
       while (SENSOR_UART.available()){
+        if (bufferpos >= (int)sizeof(buffer)) {
+          bufferpos = 0;
+        }
         buffer[bufferpos] = SENSOR_UART.read();
-        bufferpos++;
-        if(bufferpos > 512){bufferpos =0;}
-      
-
-        if(bufferpos && (buffer[bufferpos] == '\n')){
+        if (buffer[bufferpos] == '\n') {
+          bufferpos++;
           if(usb_connected){Serial.write(buffer, bufferpos);}
           Serial1.write(buffer, bufferpos);
           bufferpos = 0;
+        } else {
+          bufferpos++;
         }
       }
     } else if(settings.sensor_type == s_WS85_UART || settings.sensor_type == s_WINDNERD){
       // Read data block first
-      while(ws85uart.get_char(&(buffer[bufferpos]))){
+      while((bufferpos < (int)sizeof(buffer)) && ws85uart.get_char(&(buffer[bufferpos]))){
         bufferpos++;
         delay(1); // waste some time to wait for the serial data to complete receiving
       }
       // Output the data
       if(bufferpos){
         if(usb_connected){
-          for(int i = 0; i < bufferpos; i++){
-            Serial.print(buffer[i], HEX);
-            Serial.print(" "); // todo: replace by proper string building
+          char line[3 * 64 + 1];
+          int i = 0;
+          while (i < bufferpos) {
+            int chunk = min(64, bufferpos - i);
+            int off = 0;
+            for (int j = 0; j < chunk; j++) {
+              off += snprintf(&line[off], sizeof(line) - off, "%02X ", buffer[i + j]);
+            }
+            Serial.println(line);
+            i += chunk;
           }
         }
         bufferpos = 0;
-        Serial.println();
       }
     }
   }
@@ -214,8 +251,8 @@ bool set_value(char* key,  char* value){
   if(strcmp(key,"WindDir")==0) {sensor.wind_dir_raw = atoi(value); add_wind_history_dir(sensor.wind_dir_raw); return false;}
   if(strcmp(key,"WindSpeed")==0) {sensor.wind_speed = atof(value)*3.6; add_wind_history_wind(sensor.wind_speed); printf("%s = %0.2f\r\n",key, sensor.wind_speed); return false;}
   if(strcmp(key,"WindGust")==0) {sensor.wind_gust = atof(value)*3.6; add_wind_history_gust(sensor.wind_gust); printf("%s = %0.2f\r\n",key, sensor.wind_gust); return false;}
-  if(strcmp(key,"Temperature")==0) {sensor.temperature = atof(value); if(!settings.sensor_type == s_WS80){settings.sensor_type = s_WS80; log_i("Detected WS80\n");} return false;} // WS80 only - autodetection
-  if(strcmp(key,"GXTS04Temp")==0) {sensor.temperature = atof(value);  if(!settings.sensor_type == s_WS85){settings.sensor_type = s_WS85; log_i("Detected WS85\n");} return false;} // WS85 only
+  if(strcmp(key,"Temperature")==0) {sensor.temperature = atof(value); if(settings.sensor_type != s_WS80){settings.sensor_type = s_WS80; log_i("Detected WS80\n");} return false;} // WS80 only - autodetection
+  if(strcmp(key,"GXTS04Temp")==0) {sensor.temperature = atof(value);  if(settings.sensor_type != s_WS85){settings.sensor_type = s_WS85; log_i("Detected WS85\n");} return false;} // WS85 only
   if(strcmp(key,"Humi")==0) {sensor.humidity = atoi(value); return false;}
   if(strcmp(key,"Light")==0) {sensor.light_lux = atoi(value); return false;}
   if(strcmp(key,"UV_Value")==0) {sensor.uv_level = atof(value); return false;}
@@ -271,8 +308,8 @@ bool parse_wsdat(char* input, int len){
 // RESP_ERROR 1: error
 // RESP_OK 0: data ok, continue
 int read_wsxx(){
-  #define BUFFERSIZE 1024 // size of linebuffer
-  static char buffer [BUFFERSIZE];
+  constexpr int WSXX_BUFFER_SIZE = 1024; // size of linebuffer
+  static char buffer[WSXX_BUFFER_SIZE];
   int co = 0;
   bool found_data = false;
   int eq_count = 0;
@@ -280,14 +317,12 @@ int read_wsxx(){
   static uint32_t serial_wait = 3800;
 
 // Compare String 1
-  char comp1_arr[8] = {"FreqSel"};
-  const int comp1_len = 7;
+  const char comp1_arr[] = "FreqSel";
+  const int comp1_len = sizeof(comp1_arr) - 1;
   int comp1_pos = 0;
 
 // Compare String 2
-  char comp2_arr[5];
-  if(settings.sensor_type == s_WS85){ sprintf(comp2_arr,"WS85");}
-  else if(settings.sensor_type == s_WS80){ sprintf(comp2_arr,"WH80");}
+  const char* comp2_arr = (settings.sensor_type == s_WS85) ? "WS85" : "WH80";
   const int comp2_len = 4;
   int comp2_pos = 0;
 
@@ -322,7 +357,7 @@ int read_wsxx(){
           serial_wait = 1;
         }
         
-        if(co >= BUFFERSIZE){
+        if(co >= WSXX_BUFFER_SIZE){
           log_e("Buffer size exeeded\r\n");
           co = 0;
           //led_error(0);
@@ -401,8 +436,8 @@ int read_ws85_uart(){
 }
 
 int read_windnerd(){
-  #define BUFFERSIZE 10 // size of linebuffer
-  static char buffer [BUFFERSIZE];
+  constexpr int WINDNERD_BUFFER_SIZE = 10; // size of linebuffer
+  static char buffer[WINDNERD_BUFFER_SIZE];
   static int pos = 0;
 
   const uint32_t serial_wait = 2000;
@@ -415,7 +450,7 @@ int read_windnerd(){
       lastByte = micros();
       
       // prevent overflow
-      if(pos > BUFFERSIZE-2){
+      if(pos > WINDNERD_BUFFER_SIZE - 2){
         pos = 0;
       }
       //if(settings.test_with_usb && usb_connected){

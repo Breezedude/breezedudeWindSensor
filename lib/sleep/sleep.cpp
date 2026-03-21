@@ -25,7 +25,7 @@ if(div != divisor){
 return false;
 }
 
-// add void SERCOM0_Handler() __attribute__((weak)); in variant.cpp to overwrite 
+// SERCOM0_Handler overrides the weak default from variants/itsybitsy_m0/variant.cpp
 void SERCOM0_Handler(void) {
     if (SERCOM0->USART.INTFLAG.bit.RXS) {
         SERCOM0->USART.INTFLAG.reg = SERCOM_USART_INTFLAG_RXS; // clear start bit flag

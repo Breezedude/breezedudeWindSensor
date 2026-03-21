@@ -31,7 +31,6 @@ typedef struct h{
 
 extern History history[HISTORY_LEN];
 extern int hist_count;
-extern uint32_t last_history;
 extern WindSample wind_history[WIND_HIST_LEN]; // gust ringbuffer
 extern uint8_t wind_hist_pos; // current position in ringbuffer
 

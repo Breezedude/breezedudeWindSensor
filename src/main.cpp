@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <Adafruit_TinyUSB.h>
+#include <array>
 
 
 #include <LibPrintf.h>
@@ -593,9 +594,9 @@ void send_msg_weather(){
 
   log_i("\r\nSending Weather\r\n");
 
-  int msgSize = sizeof(fanet_packet_t4);
-  uint8_t* buffer = new uint8_t[msgSize];
-  pack_weatherdata(&wd, buffer);
+  constexpr size_t msgSize = sizeof(fanet_packet_t4);
+  std::array<uint8_t, sizeof(fanet_packet_t4)> buffer = {0};
+  pack_weatherdata(&wd, buffer.data());
 
 // write buffer content to console
 #if 0
@@ -606,7 +607,7 @@ void send_msg_weather(){
 #endif
 
   dis_rx_sleep(); // radio_phy->standby();
-  radio_phy->startTransmit(buffer, msgSize);
+  radio_phy->startTransmit(buffer.data(), msgSize);
 
   print_data();
   led_status(0);
@@ -656,7 +657,14 @@ bool fanet_cooldown_ok(){
 }
 
 void send_msg_name(const char* name, int len){
-  uint8_t* buffer = new uint8_t[len+4];
+  constexpr int FANET_MAX_PACKET_SIZE = 255;
+  if (len < 0) {
+    return;
+  }
+  if ((len + 4) > FANET_MAX_PACKET_SIZE) {
+    len = FANET_MAX_PACKET_SIZE - 4;
+  }
+  std::array<uint8_t, FANET_MAX_PACKET_SIZE> buffer = {0};
   fanet_header header;
   header.type = 2;
   header.vendor = FANET_VENDOR_ID;
@@ -664,7 +672,7 @@ void send_msg_name(const char* name, int len){
   header.ext_header = false;
   header.address = get_fanet_id();
 
-  memcpy(buffer, (uint8_t*)&header, 4);
+  memcpy(buffer.data(), (uint8_t*)&header, 4);
   memcpy(&buffer[4], name, len);
 
 // write buffer content to console
@@ -677,7 +685,7 @@ void send_msg_name(const char* name, int len){
 
 
   dis_rx_sleep(); // radio_phy->standby();
-  radio_phy->startTransmit((uint8_t*) buffer, len+4);
+  radio_phy->startTransmit(buffer.data(), len+4);
 }
 
 void send_msg_info(){
@@ -687,7 +695,11 @@ void send_msg_info(){
   data_len += sprintf(&data[1], "%04X:%s %0.2fV C%i", get_fanet_id(), VERSION, sensor.batt_volt, sensor.pv_charging);
 
 
-  uint8_t* buffer = new uint8_t[data_len+4];
+  constexpr int FANET_MAX_PACKET_SIZE = 255;
+  if ((data_len + 4) > FANET_MAX_PACKET_SIZE) {
+    data_len = FANET_MAX_PACKET_SIZE - 4;
+  }
+  std::array<uint8_t, FANET_MAX_PACKET_SIZE> buffer = {0};
   fanet_header header;
   header.type = 3;
   header.vendor = FANET_VENDOR_ID;
@@ -695,7 +707,7 @@ void send_msg_info(){
   header.ext_header = false;
   header.address = get_fanet_id();
 
-  memcpy(buffer, (uint8_t*)&header, 4);
+  memcpy(buffer.data(), (uint8_t*)&header, 4);
   memcpy(&buffer[4], data, data_len);
 
 // write buffer content to console
@@ -707,7 +719,7 @@ void send_msg_info(){
 #endif
   log_i("Sending Info Msg\n");
   dis_rx_sleep(); // radio_phy->standby();
-  radio_phy->startTransmit((uint8_t*) buffer, data_len+4);
+  radio_phy->startTransmit(buffer.data(), data_len+4);
 }
 
 

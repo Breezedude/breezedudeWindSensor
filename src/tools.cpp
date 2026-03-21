@@ -40,8 +40,9 @@ bool process_line(char * in, int len, bool (*cb)(char*, char*)){
   int c = 0; // counter
   int oc= 0; // output counter
   bool cont = true; //continue flag
+  int max_in_len = min(len, BUFFLEN - 1);
 
-  while (cont && (c < max(len,BUFFLEN)) && (oc < (BUFFLEN-1))){ // limit to 255 chars per line
+  while (cont && (c < max_in_len) && (oc < (BUFFLEN-1))){ // limit to buffer size
     if(in[c] < 127){
       switch (in[c]) {
         case '\r': if(c != 0) {cont = false;} break;
