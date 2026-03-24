@@ -21,7 +21,7 @@ void attachInterruptWakeup(uint32_t pin, voidFuncPtr callback, uint32_t mode, bo
 
 // Helper ----------------------------------------------------------------------------------------------------------------------
 
-const char* wakeup_source_string [4] = {"NONE", "RTC", "EIC", "WDT"};
+const char* wakeup_source_string[] = {"NONE", "RTC", "EIC", "WDT", "UART", "LORA"};
 
 // if a WS80 or WS85 sensor with "DEBUG hack" is connected
 bool is_wsxx(){
@@ -98,7 +98,7 @@ bool apply_setting(char* settingName,  char* settingValue){
   
 
 // Davis 6410 specific
-  if(strcmp(settingName,"SENSOR_INTEGRATION_TIME")==0) {settings.sensor_integration_time = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"SENSOR_INTEGRATION_TIME")==0) {settings.sensor_integration_time = atoi(settingValue)*1000; return 1;}
 
   if(strcmp(settingName,"SENSOR_GPS")==0) {settings.use_gps = atoi(settingValue); return 1;}
   if(strcmp(settingName,"GPS_BAUD")==0) {settings.gps_baud = atoi(settingValue); return 1;}
@@ -106,11 +106,20 @@ bool apply_setting(char* settingName,  char* settingValue){
 
   if(strcmp(settingName,"DEBUG")==0) {log_set_debug(atoi(settingValue)); return 1;}
   if(strcmp(settingName,"ERRORS")==0) {log_set_error(atoi(settingValue)); return 1;}
-  if(strcmp(settingName,"TEST_USB")==0) {settings.test_with_usb = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"TEST_USB")==0) {
+    settings.test_with_usb = atoi(settingValue);
+    // Disable MSC while in USB test mode — host-side polling makes the system
+    // very laggy when loop() is not running. Re-enable if mode is turned off.
+    usb_msc.setUnitReady(!settings.test_with_usb);
+    return 1;
+  }
   if(strcmp(settingName,"TESTMODE")==0) {settings.testmode = atoi(settingValue); return 1;}
   if(strcmp(settingName,"WDT")==0) {settings.use_wdt = atoi(settingValue); return 1;}
   if(strcmp(settingName,"DIV_CPU_SLOW")==0) {settings.div_cpu_slow = atoi(settingValue); return 1;}
   if(strcmp(settingName,"FORWARD_UART")==0) {settings.forward_serial_while_usb = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"FORWARD_SENSOR")==0) {settings.forward_sensordata_usb = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"USB_VERBOSE")==0) {settings.verbose_usb = atoi(settingValue); return 1;}
+
 
 // Test commands
   if(strcmp(settingName,"FANET_RECEIVE")==0) {settings.lora_smart_rcv = atoi(settingValue); return 1;}

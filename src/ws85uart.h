@@ -26,8 +26,8 @@ public:
   WS85WindSensor(HardwareSerial* s, uint8_t addr = 0x85)
     : serial(s), slaveAddr(addr) {}
 
-  void begin() {
-    serial->begin(baud);
+  void begin(uint8_t div_cpu = 1) {
+    serial->begin(baud*div_cpu);
     reset_rx();
   }
 
@@ -143,8 +143,8 @@ public:
   out.print(F("  Temp: "));         out.print(m.temperatureC, 1); out.println(F(" °C"));
   //out.print(F("  Humidity: "));     out.print(m.humidity);        out.println(F(" %"));
   out.print(F("  Wind: "));         out.print(m.windSpeed, 1);    out.println(F(" km/h"));
-  out.print(F("  Gust: "));         out.print(m.gustSpeed, 1);    out.println(F(" km/h)"));
-  out.print(F("  Wind Dir: "));     out.print(m.windDirection);   out.println(F("°"));
+  out.print(F("  Gust: "));         out.print(m.gustSpeed, 1);    out.println(F(" km/h"));
+  out.print(F("  Wind Dir: "));     out.print(m.windDirection);   out.println(F("°\r\n"));
   //out.print(F("  Rainfall: "));     out.print(m.rainfall, 1);     out.println(F(" mm"));
   //out.print(F("  Pressure: "));     out.print(m.absPressure, 1);  out.println(F(" hPa"));
   out.flush();

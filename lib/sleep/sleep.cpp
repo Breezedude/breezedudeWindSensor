@@ -29,7 +29,9 @@ return false;
 void SERCOM0_Handler(void) {
     if (SERCOM0->USART.INTFLAG.bit.RXS) {
         SERCOM0->USART.INTFLAG.reg = SERCOM_USART_INTFLAG_RXS; // clear start bit flag
-        // woke up
+    // Mark a real UART wakeup so USB IRQs can be ignored in CDC test mode.
+    mark_uart_wakeup();
+    
     }
     Serial1.IrqHandler();  // let Arduino core handle RXC
 }

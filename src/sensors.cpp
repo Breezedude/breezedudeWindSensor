@@ -167,19 +167,22 @@ void read_baro(){
     }  else {return;}
   }
   else if(chip_baro == BARO_BMP3xx){ 
+    if(sensor.next_baro_reading && (now > sensor.next_baro_reading)){
     P = bmp3xx.pressure/100;
     T = bmp3xx.temperature;
     bmp3xx.setOutputDataRate(BMP3_ODR_0_001_HZ);
     if(P > 0){data_ok = true;}
+    } else {return;}
   }
   else if(chip_baro == BARO_HP203B){ 
-
+    if(sensor.next_baro_reading && (now > sensor.next_baro_reading)){
     hp.Measure_Pressure();
     hp.Measure_Temperature();
     hp.startMeasure();
     P = hp.hp_sensorData.P;
     T = hp.hp_sensorData.T;
     if(P > 0){data_ok = true;}
+    } else {return;}
   }
 
 
@@ -188,9 +191,10 @@ void read_baro(){
     sensor.next_baro_reading = 0;
     sensor.last_baro_reading = now;
     sensor.baro_pressure = apply_altitude_correction((float)P, (float)T, settings.altitude);
-    //log_i("current Baro: ", baro_pressure);
+    log_v("Baro: ", sensor.baro_pressure);
+    log_v("Baro Temp: ", sensor.baro_temp);
   } else {
-    //log_i("Baro no data, retry\r\n");
+    log_v("Baro no data, retry\r\n");
     //baro_start_reading();
   }
 }
@@ -405,16 +409,19 @@ int read_ws85_uart(){
     ws85uart.poll(serial_wait);
     if(ws85uart.available()){
       WS85Measurement w85m = ws85uart.get();
-      //ws85uart.printWS85Measurement(w85m, Serial2);
+
+      if(settings.verbose_usb && usb_connected){
+        ws85uart.printWS85Measurement(w85m, Serial);
+      } else {
+        log_i("Wind: ", w85m.windSpeed);
+        log_i("Dir: " , w85m.windDirection);
+      }
 
       add_wind_history_dir(w85m.windDirection);
       add_wind_history_wind(w85m.windSpeed);
       add_wind_history_gust(w85m.gustSpeed);
       sensor.temperature = w85m.temperatureC;
       sensor.last_data = time();
-
-      log_i("Wind: ", w85m.windSpeed);
-      log_i("Dir: " , w85m.windDirection);
 
       //log_i("WS85_UART data ok\r\n");
       errorcount = 0;

@@ -6,6 +6,7 @@
 extern Uart Serial2;
 
 void SERCOM1_Handler();
+void mark_uart_wakeup();
 void enable_sercom0_int();
 void disable_sercom0_int();
 void pinDisable(uint32_t pin);

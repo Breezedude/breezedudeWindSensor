@@ -55,7 +55,7 @@ bool first_sleep = true; // first sleep after reset, USB perephial could still b
 bool usb_connected = false;
 uint32_t next_tx_time = 0;
 
-uint32_t sleep_allowed = 0; // time() when is is ok so eenter deepsleep
+uint32_t sleep_allowed = 0; // time() when is is ok so enter deepsleep
 bool reduced_interval = false; // reduced interval active
 bool undervoltage = false;
 
@@ -141,7 +141,17 @@ void wakeup_EIC(){
   wakeup_source = WAKEUP_EIC;
 }
 
+void mark_uart_wakeup(){
+  wakeup_source = WAKEUP_UART;
+}
+
+static bool keep_usb_active_during_sleep(){
+  return settings.test_with_usb && usb_connected;
+}
+
 uint32_t sleep(bool enable_uart_interrupt){
+  // Reset the wake reason before each sleep cycle so spurious USB IRQs can be ignored.
+  wakeup_source = WAKEUP_NONE;
 
   // Disable Debug uart
   //if(debug_enabled()){
@@ -159,10 +169,17 @@ uint32_t sleep(bool enable_uart_interrupt){
       //log_i("Enable UART Interrupt\r\n");
     }
   }
-
+  if(settings.test_with_usb){
+    log_flush();
+  }
   reset_time_counter(); // start counting sleeptime from zero
-  
-  deepsleep(false); // no light sleep
+  bool keep_usb = keep_usb_active_during_sleep();
+
+  // With USB test mode active we use light sleep and ignore wakeups that do not
+  // set a wakeup source, otherwise USB IRQ traffic would break the normal flow.
+  do {
+    deepsleep(keep_usb);
+  } while (keep_usb && wakeup_source == WAKEUP_NONE);
   uint32_t p = micros();
 
 
@@ -176,7 +193,7 @@ uint32_t sleep(bool enable_uart_interrupt){
 
   if(settings.sensor_type == s_WS85_UART) {
     disable_sercom0_int();
-    ws85uart.begin(); // required to get data
+    ws85uart.begin(div_cpu); // required to get data
   }
 
   uint32_t t = read_time_counter();
@@ -200,7 +217,7 @@ void wakeup(){
   loopcounter = 0;
   log_i("\r\n########\r\n");
   log_i("Wakeup: ", time()); 
-  log_i("Wakeup_source: "); log_i(wakeup_source_string[wakeup_source]);log_i("\r\n");
+  log_v("Wakeup source: "); log_v(wakeup_source_string[wakeup_source]);log_v("\r\n");
   wakeup_source = WAKEUP_NONE;
 
   pinMode(PIN_V_READ_TRIGGER, OUTPUT); // prepare voltage measurement, charge trigger cap
@@ -260,8 +277,8 @@ uint32_t calc_time_to_sleep(){
 
   if(millis()-last_print > 2500){
     last_print = millis();
-    log_i("tts_weather: ", tts_weather);
-    log_i("tts_name: ", tts_name);
+    log_v("tts_weather: ", tts_weather);
+    log_v("tts_name: ", tts_name);
     //log_i("tts_info: ", tts_info);
   }
   
@@ -269,7 +286,7 @@ uint32_t calc_time_to_sleep(){
   if( fanet_cooldown && last_fnet_send  && (time() - last_fnet_send + tts < fanet_cooldown)){
     tts += fanet_cooldown - (time()-last_fnet_send);
   }
-  log_i("tts: ", tts);
+  log_v("tts: ", tts);
   if(tts == (uint32_t)-1){ tts=0;}
   
 
@@ -294,18 +311,19 @@ void RTC_Handler(void){
 
 // shut everything down, enable deepsleep
 void go_sleep(){
+  bool keep_usb = keep_usb_active_during_sleep();
 
   pinDisable(PIN_V_READ_TRIGGER);
 
 // shut down the USB peripheral
-  if(first_sleep){
+  if(first_sleep && !keep_usb){
     log_i("Disable USB\r\n");
     USB->DEVICE.CTRLA.bit.ENABLE = 0;                   
     while(USB->DEVICE.SYNCBUSY.bit.ENABLE){};
     first_sleep = false;
     usb_connected = false;
 
-    if(set_cpu_div(settings.div_cpu_slow)){ //USB needs 48Mhz clock, as we are finished with USB we can lower the cpu clock now.
+    if(set_cpu_div(settings.div_cpu_slow)){ // USB test mode keeps 48MHz; only lower the clock for real low-power sleep.
       div_cpu = settings.div_cpu_slow;
       DEBUGSER.begin(115200*div_cpu); // F_CPU ist still 48M, so every clock needs to by multiplied manually
     }
@@ -490,8 +508,14 @@ bool parse_file(char * filename){
         process_line(linebuffer, co, &apply_setting);
         f.close();
         //log_i("Settingsfile closed\n");
-        if(settings.pos_lat != 0 && settings.pos_lon != 0 && settings.sensor_type != s_invalid){
+        if(settings.pos_lat != 0 && settings.pos_lon != 0){
           ret = true;
+        } else {
+          log_e("Coordinates invalid\n");
+        }
+        if(settings.sensor_type == s_invalid){
+          ret = false;
+          log_e("No sensor configured\n");
         }
         led_status(0); // if LED stay on, settings failed
     }else {
@@ -504,7 +528,6 @@ bool parse_file(char * filename){
   if(!ret){
     led_status(0);
     led_error(1);
-    log_e("Coordinates invalid\n");
     }
   return ret;
 }
@@ -518,6 +541,7 @@ void read_serial_cmd(){
   bool ok = false;
 
   while (Serial.available()){
+    usb_connected = true;
     buffer[co] = Serial.read();
     //DEBUGSER.write(buffer[co]);
     if(buffer[co] == '\n'){
@@ -532,6 +556,26 @@ void read_serial_cmd(){
 }
 
 // Send ----------------------------------------------------------------------------------------------------------------------
+
+static void log_v_hex_dump(const uint8_t *data, size_t len){
+  if(!settings.verbose_usb || !usb_connected){
+    return;
+  }
+
+  char line[3 * 24 + 1];
+  size_t i = 0;
+  while(i < len){
+    size_t chunk = min((size_t)24, len - i);
+    int off = 0;
+    for(size_t j = 0; j < chunk; j++){
+      off += snprintf(&line[off], sizeof(line) - off, "%02X ", data[i + j]);
+    }
+    line[off] = '\0';
+    log_v(line);
+    log_v("\r\n");
+    i += chunk;
+  }
+}
 
 
 void send_msg_weather(){
@@ -598,13 +642,7 @@ void send_msg_weather(){
   std::array<uint8_t, sizeof(fanet_packet_t4)> buffer = {0};
   pack_weatherdata(&wd, buffer.data());
 
-// write buffer content to console
-#if 0
-  for (int i = 0; i< msgSize; i++){
-    printf("%02X ", (buffer)[i]);
-  }
-  DEBUGSER.println();
-#endif
+  log_v_hex_dump(buffer.data(), msgSize);
 
   dis_rx_sleep(); // radio_phy->standby();
   radio_phy->startTransmit(buffer.data(), msgSize);
@@ -675,13 +713,7 @@ void send_msg_name(const char* name, int len){
   memcpy(buffer.data(), (uint8_t*)&header, 4);
   memcpy(&buffer[4], name, len);
 
-// write buffer content to console
-#if 0
-  for (int i = 0; i< len+4; i++){
-    printf("%02X ", (buffer)[i]);
-  }
-  DEBUGSER.println();
-#endif
+  log_v_hex_dump(buffer.data(), len + 4);
 
 
   dis_rx_sleep(); // radio_phy->standby();
@@ -710,13 +742,7 @@ void send_msg_info(){
   memcpy(buffer.data(), (uint8_t*)&header, 4);
   memcpy(&buffer[4], data, data_len);
 
-// write buffer content to console
-#if 1
-  for (int i = 0; i< data_len+4; i++){
-    printf("%02X ", (buffer)[i]);
-  }
-  DEBUGSER.println();
-#endif
+  log_v_hex_dump(buffer.data(), data_len + 4);
   log_i("Sending Info Msg\n");
   dis_rx_sleep(); // radio_phy->standby();
   radio_phy->startTransmit(buffer.data(), data_len+4);
@@ -797,6 +823,7 @@ void setup(){
       if(!init_baro()){
         led_error(1);
       }
+      baro_start_reading();
     }
 
     // check for IMU
@@ -822,20 +849,21 @@ void setup(){
     setup_rtc_time_counter();
 
     if(is_wsxx() || settings.sensor_type == s_WINDNERD){
-      SENSOR_UART.begin(115200);
+      SENSOR_UART.begin(115200); // div_cpu not required, as its 1 at reset
     }
     if(settings.sensor_type == s_WS85_UART){
       log_i("Setup WS85\n");
       
       //ws85uart.setAutoSendInterval(8500);
-      ws85uart.begin();
+      ws85uart.begin(div_cpu);
       //ws85uart.requestAutoSendInterval();
       ws85uart.set_baud_115200();
     }
-  }
-
-  if(settings.sensor_type == s_DAVIS6410){
+  } else if(settings.sensor_type == s_DAVIS6410){
     setup_rtc_time_counter();
+  } else {
+    // No sensor configured
+    led_error(1);
   }
 
   if(settings.use_gps){
@@ -871,17 +899,32 @@ static bool s = false;
 
 loopcounter++;
 
-if(last_call && (time()-last_call > 15)){
-  if(!s){led_status(0);}
-}
-//if(usb_connected && time()-last_call > 500){
-  if(time()-last_call > 500){
-  log_i("Time: ", time());
-  //Serial.println(time());
-  // Store led states and restore after blink
-  s = led_status(1);
-  last_call=time();
-}
+
+  if(last_call && (time()-last_call > 15)){
+    if(!s){led_status(0);}
+  }
+
+  // Always poll CDC commands so TEST_USB can switch from USB wait mode into the
+  // normal sleep/wakeup flow without requiring a reboot.
+  read_serial_cmd();
+
+  // In MSC mode (USB mounted and test mode disabled), keep the MCU in USB service
+  // only and skip the normal sensor/radio workflow.
+  if(!settings.test_with_usb && TinyUSBDevice.mounted()){
+    usb_connected = true;
+    forward_sensor_serial();
+    if(settings.use_wdt){
+      wdt_reset();
+    }
+    if(time()-last_call > 500){
+      log_i("Time: ", time());
+      //Serial.println(time());
+      // Store led states and restore after blink
+      s = led_status(1);
+      last_call=time();
+    }
+    return;
+  }
 
   if(settings.use_baro){read_baro();}
   if(settings.use_gps){read_gps();}
@@ -950,7 +993,7 @@ if(last_call && (time()-last_call > 15)){
   }
 
 // Check if everything is done --> sleep
-  if(!send_active && sleep_allowed && (time() > sleep_allowed) && (!usb_connected) && (time() > 2500)){ // allow sleep after 2500 ms to get a change to detect usb connected
+  if(!send_active && sleep_allowed && (time() > sleep_allowed) && (!usb_connected || keep_usb_active_during_sleep()) && (time() > 2500)){ // allow sleep after 2500 ms to get a chance to detect USB / CDC commands
     go_sleep();
   }
 
@@ -970,15 +1013,23 @@ if(last_call && (time()-last_call > 15)){
 
   // during Dev
   if(usb_connected){
-    if(settings.test_with_usb){read_wsxx();} // to simulate normal behavior without sleep read and parse data from serial port
-    else {forward_sensor_serial();} // otherwise just forward the data
-    read_serial_cmd(); // read setting values from serial for testing
+    // Detect physical USB cable disconnect and reset to cleanly re-initialize.
+    // Intentional MCU-side disconnects (15-min timeout, first-sleep USB disable)
+    // always clear usb_connected first, so they do not trigger this path.
+      static uint32_t usb_lost_at = 0;
+      if(!TinyUSBDevice.mounted()){
+        if(!usb_lost_at){ usb_lost_at = millis(); }
+        if(millis() - usb_lost_at > 1500){ NVIC_SystemReset(); }
+      } else {
+        usb_lost_at = 0;
+      }
+    
 
     // keep usb alive for 15 min. Its not easyly possible to detect if still connected, so just restart after 15min
     if(!settings.test_with_usb && (time() > 15UL*60UL*1000UL)){
       log_i("Restart\r\n");
       log_flush();
-      usb_connected = false;
+      usb_connected = false; // clear before reset so disconnect detector above is not triggered
       NVIC_SystemReset();
     }
   }

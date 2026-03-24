@@ -28,7 +28,7 @@ typedef struct {
   uint32_t wind_age = WIND_AGE; 
   uint32_t gust_age = GUST_AGE;
 
-  bool use_wdt = false; // use watchdog reset
+  bool use_wdt = true; // use watchdog reset
   int div_cpu_fast = 1; // fast CPU clock 1= 48Mhz/1
   int div_cpu_slow = 1; // if > 1, cpu clocks down by 48/n Mhz
 
@@ -61,13 +61,15 @@ typedef struct {
   // debugging
   bool test_with_usb = false;
   bool forward_serial_while_usb = false;
+  bool forward_sensordata_usb = false;
+  bool verbose_usb = false;
   bool skip_lora = false; // skip lora module init
 } Settings;
 
 extern Settings settings;
 extern uint32_t sleeptime_cum;
 
-extern const char* wakeup_source_string [4];
+extern const char* wakeup_source_string[];
 
 void attachInterruptWakeup(uint32_t pin, voidFuncPtr callback, uint32_t mode, bool en_rtc);
 bool is_wsxx();
