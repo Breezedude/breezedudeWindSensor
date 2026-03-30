@@ -435,45 +435,6 @@ void print_data(){
   }
 }
 
-
-
-// this is not working yet. The file is written to flash, but the record is not added to the FAT correctly.
-bool create_versionfile(char * filename){
-  //flash.setIndicator(PIN_ERRORLED, 1);
-  File f;
-  if (fatfs.begin(&flash) ){
-    if(fatfs.exists(filename)){ 
-      log_i("Version file exists\n");
-      //return false;
-    }
-    log_i("creating file\n");
-    f = fatfs.open(filename, FILE_WRITE);
-    if (f) {
-      log_i("Creating version file\n");
-      f.print("Version: "); f.println(VERSION);
-      f.print("FW Build: "); f.print(__DATE__); f.println(__TIME__);
-      f.print("FANET ID: "); f.print(FANET_VENDOR_ID,HEX); f.println(get_fanet_id(),HEX);
-      f.print("LoRa Module: "); 
-        if(lora_module == LORA_SX1276) { f.println("SX1276");}
-        if(lora_module == LORA_SX1262) { f.println("SX1262");}
-        if(lora_module == LORA_LLCC68) { f.println("LLCC68");}
-      f.print("Barometer: "); 
-        if(chip_baro == BARO_BMP280) { f.println("BMP280");}
-        if(chip_baro == BARO_BMP3xx) { f.println("BMP3xx");}
-        if(chip_baro == BARO_SPL06) { f.println("SPL06");}
-        if(chip_baro == BARO_HP203B) { f.println("HP203B");}
-      if(!f.close()){log_i("file close failed\n");}
-      if(fatfs.exists(filename)){ 
-      log_i("Version file sucess\n");
-      }
-      return true;
-    } else {log_i("open file error\n");}
-  } else {
-    log_i("fs start fail\n");
-  }
-  return false;
-}
-
 // parse settingsfile
 bool parse_file(char * filename){
   #define LINEBUFFERSIZE 512
@@ -610,17 +571,20 @@ void send_msg_weather(){
   wd.bTemp = true;
   wd.temp = sensor.temperature;
 
-  if(is_wsxx()){
+  if(is_wsxx() && sensor.humidity > 0){
     wd.bHumidity = true;
     wd.Humidity = sensor.humidity;
+  } else {
+    wd.bHumidity = false;
+    wd.Humidity = -1;
   }
 
   if(settings.use_baro){
     wd.bBaro = true;
     wd.Baro = sensor.baro_pressure;  
   } else {
-    wd.bBaro = true; // baro is required to forward data in OGN
-    wd.Baro = -1;  
+    wd.bBaro = false;
+    wd.Baro = -1;
   }
   wd.bStateOfCharge = true;
   wd.Charge = sensor.batt_perc;
@@ -671,10 +635,10 @@ bool allowed_to_send_weather(){
 
  // Print reasons for not beeing ready
   if(!ok){
-    //if(last_data){
+    if(sensor.last_data && !sensor.next_baro_reading){ // ever got some sensor data and baro currently not waiting for data
       log_i("Wind Sensor data age: ", time()- sensor.last_data);
       log_i("Baro data age: ", time()- sensor.last_baro_reading);
-   // }
+    }
     if(settings.use_gps){
       if(time()-sensor.last_gps_valid > 3000){
         log_i("No GPS fix");
@@ -767,6 +731,7 @@ void setup(){
   log_i("\r\n--------------- RESET -------------------\r\n");
   log_i("Version: ");  log_i(VERSION); log_i("\r\n");
   log_i("FW Build Time: ");  log_i(__DATE__); log_i(" "); log_i(__TIME__); log_i("\r\n");
+  log_if("FANET ID: %02X%04X\r\n", FANET_VENDOR_ID, get_fanet_id());
 
   
   //printf("code end: %p\n", (void *)(&__etext));
@@ -852,7 +817,7 @@ void setup(){
       SENSOR_UART.begin(115200); // div_cpu not required, as its 1 at reset
     }
     if(settings.sensor_type == s_WS85_UART){
-      log_i("Setup WS85\n");
+      log_i("Setup WS85\r\n");
       
       //ws85uart.setAutoSendInterval(8500);
       ws85uart.begin(div_cpu);
@@ -881,7 +846,7 @@ void setup(){
     wind_history[i].dir_raw = 0;
     wind_history[i].wind = 0;
   }
-  // create_versionfile(VERSIONFILE); // create version file if not exists (not working)
+  create_versionfile(VERSIONFILE);
   log_flush();
   wakeup();
 }

@@ -9,6 +9,7 @@ extern int div_cpu;
 extern bool usb_connected;
 
 void log_i(const char * msg);
+void log_if(const char * fmt, ...);
 void log_i(const char * msg, uint32_t num);
 void log_i(const char * msg, int32_t num);
 void log_i(const char * msg, int num);

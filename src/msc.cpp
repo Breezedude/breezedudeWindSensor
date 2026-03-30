@@ -158,6 +158,20 @@ bool setup_flash(){
     count ++;
   }
 
+  // Some stacks can report begin() success on blank/corrupt media.
+  // Validate FAT type and force a clean format/remount if invalid.
+  if(fatfs.fatType() == 0){
+    log_e("Error: invalid FAT after mount, reformatting\r\n");
+    if(!format_flash()){
+      log_e("Error: failed to reformat invalid FAT\r\n");
+      return false;
+    }
+    if(!fatfs.begin(&flash) || fatfs.fatType() == 0){
+      log_e("Error: FAT still invalid after reformat\r\n");
+      return false;
+    }
+  }
+
 #if 0
   DEBUGSER.print("Clusters:          ");
   DEBUGSER.println(fatfs.clusterCount());

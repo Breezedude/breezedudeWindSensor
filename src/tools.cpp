@@ -4,6 +4,9 @@
 #include "sleep.h"
 #include "msc.h"
 
+extern LORA_MODULE lora_module;
+extern CHIP_BARO chip_baro;
+
 uint32_t sleeptime_cum = 0; // cumulative time spend in sleepmode, used for time() calculation
 Settings settings;
 
@@ -117,7 +120,6 @@ bool apply_setting(char* settingName,  char* settingValue){
   if(strcmp(settingName,"WDT")==0) {settings.use_wdt = atoi(settingValue); return 1;}
   if(strcmp(settingName,"DIV_CPU_SLOW")==0) {settings.div_cpu_slow = atoi(settingValue); return 1;}
   if(strcmp(settingName,"FORWARD_UART")==0) {settings.forward_serial_while_usb = atoi(settingValue); return 1;}
-  if(strcmp(settingName,"FORWARD_SENSOR")==0) {settings.forward_sensordata_usb = atoi(settingValue); return 1;}
   if(strcmp(settingName,"USB_VERBOSE")==0) {settings.verbose_usb = atoi(settingValue); return 1;}
 
 
@@ -134,6 +136,7 @@ bool apply_setting(char* settingName,  char* settingValue){
 
 void print_settings(){
   if(debug_enabled()){
+    if(!settings.use_baro){log_i("Baro: OFF\r\n");}
     log_i("Name: "); log_i(settings.station_name.c_str()); log_i("\r\n");
     //log_i("Lon: ", pos_lon);
     //log_i("Lat: ", pos_lat);
@@ -141,10 +144,10 @@ void print_settings(){
     log_flush();
     log_i("Heading offset: ", settings.heading_offset); 
     log_i("Broadcast interval weather [s]: ", settings.broadcast_interval_weather/1000);
-    if(is_wsxx()){log_i("Sensor: WSXX Auto detect\n");}
-    if(settings.sensor_type == s_DAVIS6410){log_i("Sensor: DAVIS 6410\n");}
-    if(settings.sensor_type == s_WS85_UART){log_i("Sensor: WS85 UART\n");}
-    if(settings.sensor_type == s_WINDNERD){log_i("Sensor: Windnerd\n");}
+    if(is_wsxx()){log_i("Sensor: WSXX Auto detect\r\n");}
+    if(settings.sensor_type == s_DAVIS6410){log_i("Sensor: DAVIS 6410\r\n");}
+    if(settings.sensor_type == s_WS85_UART){log_i("Sensor: WS85 UART\r\n");}
+    if(settings.sensor_type == s_WINDNERD){log_i("Sensor: Windnerd\r\n");}
     log_flush();
   }
 }
@@ -236,4 +239,143 @@ bool zone_not_eu(){
     (settings.pos_lon > 110.0 && settings.pos_lon <= 180.0) ||                  // Japan, Australia, NZ
     (settings.pos_lon >= 75.0 && settings.pos_lon <= 110.0 && settings.pos_lat > 15.0)  // China
     );
+}
+
+static bool sync_flash_fs(){
+  bool ok = flash.syncBlocks();
+  if(!ok){
+    log_i("flash.syncBlocks failed\n");
+    return false;
+  }
+  my_internal_storage.flush_buffer();
+  return true;
+}
+
+static void parse_versionfile_line(const char *line, String &file_version){
+  if(strncmp(line, "Version: ", 9) == 0){
+    file_version = String(line + 9);
+  }
+}
+
+static bool versionfile_needs_rewrite(const char *path){
+  if(!fatfs.exists(path)){
+    log_i("Version file missing\n");
+    return true;
+  }
+
+  File f = fatfs.open(path, FILE_READ);
+  if(!f){
+    log_i("Version file open failed, rewrite\n");
+    return true;
+  }
+
+  String file_version = "";
+  char line[128];
+  int idx = 0;
+
+  while(f.available()){
+    int c = f.read();
+    if(c < 0){
+      break;
+    }
+    if(c == '\r'){
+      continue;
+    }
+    if(c == '\n'){
+      line[idx] = '\0';
+      parse_versionfile_line(line, file_version);
+      idx = 0;
+      continue;
+    }
+    if(idx < (int)sizeof(line) - 1){
+      line[idx++] = (char)c;
+    }
+  }
+  if(idx > 0){
+    line[idx] = '\0';
+    parse_versionfile_line(line, file_version);
+  }
+  f.close();
+
+  if(file_version.length() == 0){
+    log_i("Version file has no version line, rewrite\n");
+    return true;
+  }
+  if(file_version != String(VERSION)){
+    log_i("Version changed, rewrite version file\n");
+    return true;
+  }
+  return false;
+}
+
+bool create_versionfile(const char *filename){
+  const char *path = (filename && filename[0]) ? filename : "version.txt";
+  const char *name = path[0] == '/' ? path + 1 : path;
+
+  FatFile f;
+  FatFile root;
+  if (!fatfs.begin(&flash)) {
+    log_i("fs start fail\r\n");
+    return false;
+  }
+
+  if(!versionfile_needs_rewrite(path)){
+    //log_i("Version file up-to-date\n");
+    return true;
+  }
+
+  if(!root.open("/")){
+    log_v("open root failed\n");
+    return false;
+  }
+
+  bool opened = f.open(&root, name, O_WRONLY | O_CREAT | O_TRUNC);
+  root.close();
+  if(!opened){
+    log_v("open file error\r\n");
+    return false;
+  }
+
+  char line[96];
+  int n = snprintf(line, sizeof(line), "Version: %s\r\n", VERSION);
+  if(n > 0) { f.write((const uint8_t*)line, n); }
+  n = snprintf(line, sizeof(line), "FW Build: %s %s\r\n", __DATE__, __TIME__);
+  if(n > 0) { f.write((const uint8_t*)line, n); }
+  n = snprintf(line, sizeof(line), "FANET ID: %02X%04X\r\n", FANET_VENDOR_ID, get_fanet_id());
+  if(n > 0) { f.write((const uint8_t*)line, n); }
+
+  const char *lora_name = "UNKNOWN";
+  if(lora_module == LORA_SX1276) { lora_name = "SX1276"; }
+  if(lora_module == LORA_SX1262) { lora_name = "SX1262"; }
+  if(lora_module == LORA_LLCC68) { lora_name = "LLCC68"; }
+  n = snprintf(line, sizeof(line), "LoRa Module: %s\r\n", lora_name);
+  if(n > 0) { f.write((const uint8_t*)line, n); }
+
+  const char *baro_name = "UNKNOWN";
+  if(chip_baro == BARO_BMP280) { baro_name = "BMP280"; }
+  if(chip_baro == BARO_BMP3xx) { baro_name = "BMP3xx"; }
+  if(chip_baro == BARO_SPL06) { baro_name = "SPL06"; }
+  if(chip_baro == BARO_HP203B) { baro_name = "HP203B"; }
+  n = snprintf(line, sizeof(line), "Barometer: %s\r\n", baro_name);
+  if(n > 0) { f.write((const uint8_t*)line, n); }
+
+  if(!f.sync()){
+    log_v("file sync failed\n");
+  }
+  if(!f.close()){
+    log_v("file close failed\n");
+    return false;
+  }
+
+  if(!sync_flash_fs()){
+    return false;
+  }
+
+  if(!fatfs.exists(path)){
+    log_v("Version file entry missing after write\r\n");
+    return false;
+  }
+
+  //log_v("Version file success\r\n");
+  return true;
 }

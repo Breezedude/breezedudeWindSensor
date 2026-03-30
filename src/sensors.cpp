@@ -528,6 +528,7 @@ void calc_pulse_sensor(uint32_t pulses, uint32_t dmillis){
   sensor.wind_dir_raw = read_wind_dir();
   add_wind_history_dir(sensor.wind_dir_raw);
   
+  
   if(settings.sensor_type == s_DAVIS6410){
     sensor.wind_speed = (float) pulses * 1.609 * (2250.0/((float)dmillis+1) ); // avoid div/0
   }
@@ -535,6 +536,8 @@ void calc_pulse_sensor(uint32_t pulses, uint32_t dmillis){
   add_wind_history_wind(sensor.wind_speed);
   add_wind_history_gust(sensor.wind_speed);
   save_history(sensor.wind_speed, sensor.temperature, sensor.humidity, sensor.light_lux, sensor.batt_volt, sensor.pv_charging, sensor.pv_done);
+  log_i("wind speed: ", sensor.wind_speed); 
+  log_i("wind dir raw: ", sensor.wind_dir_raw); 
 }
 
 

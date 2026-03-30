@@ -130,6 +130,9 @@ bool Adafruit_FlashTransport_InternalFlash::writeMemory(uint32_t addr,
 {
   //Serial.printf("Adafruit_FlashTransport_InternalFlash::writeMemory with addr %d and length %d",addr,len);
   //Serial.println();
+  // Internal flash requires erase before write (not only for MSC callback path).
+  // For SAMD51 this is a no-op in InternalFlash::erase(), for SAMD21 it is essential.
+  _flash->erase(addr, len);
   _flash->write(addr, data, len);
   return true;
 }

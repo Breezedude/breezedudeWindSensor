@@ -1,5 +1,7 @@
 #include "logging.h"
 #include "tools.h"
+#include <stdarg.h>
+#include <stdio.h>
 
 bool debug_en = false;
 bool errors_en = false;
@@ -68,6 +70,15 @@ static void log_verbose_msg_value(const char * msg, T num){
 
 void log_i(const char * msg){
   log_info_msg(msg);
+}
+
+void log_if(const char * fmt, ...){
+  char buffer[192];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(buffer, sizeof(buffer), fmt, args);
+  va_end(args);
+  log_info_msg(buffer);
 }
 
 void log_i(const char * msg, uint32_t num){

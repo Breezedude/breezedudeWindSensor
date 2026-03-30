@@ -57,8 +57,8 @@ typedef struct {
     uint32_t last_gps_valid = 0;
 
     // PV
-    bool pv_charging; // currently charging, state from pv charger
-    bool pv_done; // battery fully charged, state from pv charger
+    bool pv_charging = false; // currently charging, state from pv charger
+    bool pv_done = false; // battery fully charged, state from pv charger
 
 } Sensors;
 

@@ -61,7 +61,6 @@ typedef struct {
   // debugging
   bool test_with_usb = false;
   bool forward_serial_while_usb = false;
-  bool forward_sensordata_usb = false;
   bool verbose_usb = false;
   bool skip_lora = false; // skip lora module init
 } Settings;
@@ -83,3 +82,4 @@ void i2c_scan();
 bool apply_setting(char* settingName,  char* settingValue);
 void print_settings();
 bool zone_not_eu();
+bool create_versionfile(const char *filename);
