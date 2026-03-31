@@ -23,6 +23,10 @@
   pkt->latitude = lat_i;
   pkt->longitude = lon_i;
 
+  if (wData-> bBaro){
+    pkt->baro = int16_t(round((wData->Baro - 430.0) * 10));  //Barometric pressure normailized (+2byte: in 10Pa, offset by 430hPa, unsigned little endian (hPa-430)*10)
+  }
+
   if (wData->bTemp){
     int iTemp = (int)(round(wData->temp * 2)); //Temperature (+1byte in 0.5 degree, 2-Complement)
     pkt->temp = iTemp & 0xFF;
@@ -53,4 +57,50 @@
     pkt->baro = int16_t(round((wData->Baro - 430.0) * 10));  //Barometric pressure normailized (+2byte: in 10Pa, offset by 430hPa, unsigned little endian (hPa-430)*10)
   }
   pkt->charge = constrain(roundf(float(wData->Charge) / 100.0 * 15.0),0,15); //State of Charge  (+1byte lower 4 bits: 0x00 = 0%, 0x01 = 6.666%, .. 0x0F = 100%)
+}
+
+size_t pack_hwinfo(const hwInfoData *data, uint8_t *buffer) {
+  size_t pos = 0;
+
+  // FANET header (4 bytes)
+  fanet_header *hdr = (fanet_header *)buffer;
+  hdr->type       = FANET_PCK_TYPE_HWINFO;
+  hdr->vendor     = data->vid;
+  hdr->forward    = false;
+  hdr->ext_header = false;
+  hdr->address    = data->fanet_id;
+  pos += sizeof(fanet_header);
+
+  // Byte 0: subheader flags
+  hwinfo_byte0_t b0 = {};
+  b0.bSubtypeBuild = data->bSubtypeBuild ? 1u : 0u;
+  b0.bUptime       = data->bUptime       ? 1u : 0u;
+  buffer[pos++] = *(const uint8_t *)&b0;
+
+  // Bit 6 payload: Hardware Subtype (byte 1) + Build Date (bytes 2-3)
+  if (data->bSubtypeBuild) {
+    buffer[pos++] = data->device_type;
+
+    hwinfo_builddate_t bdate = {};
+    bdate.day         = data->build_day;
+    bdate.month       = data->build_month;
+    bdate.year_offset = (data->build_year >= 2019u)
+                        ? (uint16_t)(data->build_year - 2019u) : 0u;
+    bdate.develop     = data->develop_mode ? 1u : 0u;
+    memcpy(&buffer[pos], &bdate, sizeof(hwinfo_builddate_t));
+    pos += sizeof(hwinfo_builddate_t);
+  }
+
+  // Bit 4 payload: Uptime in minutes (2 bytes, little-endian)
+  if (data->bUptime) {
+    buffer[pos++] = (uint8_t)(data->uptime_min & 0xFFu);
+    buffer[pos++] = (uint8_t)(data->uptime_min >> 8u);
+  }
+
+  // Debug data: decode type byte (0x01) followed by hwinfo_debug_t1 struct
+  buffer[pos++] = 0x01u;
+  memcpy(&buffer[pos], &data->debug, sizeof(hwinfo_debug_t1));
+  pos += sizeof(hwinfo_debug_t1);
+
+  return pos;
 }

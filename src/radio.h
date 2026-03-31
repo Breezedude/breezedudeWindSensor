@@ -28,5 +28,9 @@ void dis_rx_sleep();
 
 void radio_sleep();
 
+// Listen-Before-Talk channel check. Returns true when safe to transmit.
+// Call after dis_rx_sleep(). max_attempts: number of CAD retries (default 5).
+bool lbt_channel_free(int max_attempts = 5);
+
 void fanet_rx();
 bool radio_init();

@@ -70,6 +70,7 @@ bool init_imu();
 void get_imu();
 void baro_start_reading();
 void forward_sensor_serial();
+void forward_analog_test_serial();
 bool set_value(char* key,  char* value);
 bool parse_wsdat(char* input, int len);
 int read_wsxx();

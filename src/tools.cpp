@@ -124,6 +124,8 @@ bool apply_setting(char* settingName,  char* settingValue){
 
 
 // Test commands
+  if(strcmp(settingName,"LBT")==0) {settings.lora_lbt = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"LBT_RSSI_THRESHOLD")==0) {settings.lora_rssi_threshold = atoi(settingValue); return 1;}
   if(strcmp(settingName,"FANET_RECEIVE")==0) {settings.lora_smart_rcv = atoi(settingValue); return 1;}
   if(strcmp(settingName,"SLEEP")==0) {usb_connected =false; return 1;}
   if(strcmp(settingName,"FORMAT")==0) {if(format_flash()){NVIC_SystemReset();} else {log_i("Error Formating Flash\r\n");} return 1;}
@@ -131,6 +133,9 @@ bool apply_setting(char* settingName,  char* settingValue){
   if(strcmp(settingName,"SKIP_LORA")==0) {settings.skip_lora = true; return 1;}
   if(strcmp(settingName,"DELAY")==0) {delay(atoi(settingValue)); return 1;} // delay for WDT testing
   if(strcmp(settingName,"REBOOT")==0) {NVIC_SystemReset(); return 1;}
+
+  if(strcmp(settingName,"ANALOG_TEST")==0) {settings.analog_test_mode = atoi(settingValue); return 1;} // power on/off davis sensor for testing
+
   return 0;
 }
 
@@ -144,6 +149,7 @@ void print_settings(){
     log_flush();
     log_i("Heading offset: ", settings.heading_offset); 
     log_i("Broadcast interval weather [s]: ", settings.broadcast_interval_weather/1000);
+    log_i("LBT: "); log_i(settings.lora_lbt ? "ON\r\n" : "OFF\r\n");
     if(is_wsxx()){log_i("Sensor: WSXX Auto detect\r\n");}
     if(settings.sensor_type == s_DAVIS6410){log_i("Sensor: DAVIS 6410\r\n");}
     if(settings.sensor_type == s_WS85_UART){log_i("Sensor: WS85 UART\r\n");}

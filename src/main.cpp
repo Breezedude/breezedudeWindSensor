@@ -244,6 +244,49 @@ uint32_t timeToSend(int last, int interval) {
   return -1;
 }
 
+enum TxAttemptResult : uint8_t {
+  TX_ATTEMPT_NONE = 0,
+  TX_ATTEMPT_STARTED,
+  TX_ATTEMPT_DEFERRED_LBT,
+};
+
+// LBT (Listen Before Talk) checks whether the LoRa channel is free before TX.
+// The radio is first taken out of RX sleep and prepared for transmission.
+// If LBT is enabled, a CAD/channel scan is executed to detect ongoing LoRa activity.
+// When the channel is free, the packet is transmitted normally and TX done is handled by IRQ.
+// When the channel is busy, no packet is sent and the scheduler retries after a random 0-2 s delay.
+// If LBT is disabled, the scan is skipped and transmission starts immediately.
+static TxAttemptResult start_lbt_transmit(const uint8_t *data, size_t len) {
+  dis_rx_sleep();
+  if(!settings.lora_lbt) {
+    radio_phy->startTransmit(data, len);
+    return TX_ATTEMPT_STARTED;
+  }
+  if(!lbt_channel_free()) {
+    radio_sleep();
+    return TX_ATTEMPT_DEFERRED_LBT;
+  }
+  radio_phy->startTransmit(data, len);
+  return TX_ATTEMPT_STARTED;
+}
+
+static uint32_t next_lbt_retry_delay() {
+  return (millis() ^ (time() << 1) ^ get_fanet_id()) % 2001;
+}
+
+static void defer_next_send(uint32_t &last_msg, uint32_t interval, const char *label) {
+  uint32_t retry_delay = next_lbt_retry_delay();
+  uint32_t scaled_interval = interval * broadcast_scale_factor;
+  last_msg = time() - scaled_interval + retry_delay;
+  next_tx_time = time() + retry_delay;
+  sleep_allowed = time() + 1;
+
+  log_i("LBT: defer ");
+  log_i(label);
+  log_i(" TX by ms: ", retry_delay);
+  log_i("\r\n");
+}
+
 // calc time to sleep til next fanet message needs to be send
 uint32_t calc_time_to_sleep(){
   uint32_t tts_weather = -1;
@@ -539,8 +582,8 @@ static void log_v_hex_dump(const uint8_t *data, size_t len){
 }
 
 
-void send_msg_weather(){
-  if(settings.sensor_type == s_invalid){ return;}
+TxAttemptResult send_msg_weather(){
+  if(settings.sensor_type == s_invalid){ return TX_ATTEMPT_NONE;}
 
   led_status(1);
   WindSample current_wind = get_wind_from_hist(settings.wind_age);
@@ -608,13 +651,16 @@ void send_msg_weather(){
 
   log_v_hex_dump(buffer.data(), msgSize);
 
-  dis_rx_sleep(); // radio_phy->standby();
-  radio_phy->startTransmit(buffer.data(), msgSize);
+  TxAttemptResult tx_result = start_lbt_transmit(buffer.data(), msgSize);
+  if(tx_result != TX_ATTEMPT_STARTED) {
+    led_status(0);
+    return tx_result;
+  }
 
   print_data();
   led_status(0);
   save_history(sensor.wind_speed, sensor.temperature, sensor.humidity, sensor.light_lux, sensor.batt_volt, sensor.pv_charging, sensor.pv_done); // only save history on send
-  
+  return tx_result;
 }
 
 
@@ -624,7 +670,7 @@ bool allowed_to_send_weather(){
   
 
   if (ok){
-    if(settings.use_baro){ok &= ((time() - sensor.last_baro_reading) < 10000 );}
+    if(settings.use_baro){ok &= ((time() - sensor.last_baro_reading) < 40000 );} // accept baro reading from last cacle. this reduces cp
     if(is_wsxx() || settings.sensor_type == s_WS85_UART) { ok &= (sensor.last_data || settings.testmode); } // only send if weather data is up to date or testmode is enabled // && (time()- last_ws80_data < 9000))
     if(settings.use_gps)  { ok &= (tinyGps.location.isValid()); } // only send if position is valid
   }
@@ -658,10 +704,10 @@ bool fanet_cooldown_ok(){
   return false;
 }
 
-void send_msg_name(const char* name, int len){
+TxAttemptResult send_msg_name(const char* name, int len){
   constexpr int FANET_MAX_PACKET_SIZE = 255;
   if (len < 0) {
-    return;
+    return TX_ATTEMPT_NONE;
   }
   if ((len + 4) > FANET_MAX_PACKET_SIZE) {
     len = FANET_MAX_PACKET_SIZE - 4;
@@ -679,37 +725,51 @@ void send_msg_name(const char* name, int len){
 
   log_v_hex_dump(buffer.data(), len + 4);
 
-
-  dis_rx_sleep(); // radio_phy->standby();
-  radio_phy->startTransmit(buffer.data(), len+4);
+  return start_lbt_transmit(buffer.data(), len+4);
 }
 
-void send_msg_info(){
-  char data[50] = {0x00};
-  uint8_t data_len = 1;
-  // Test: send battery voltage and charging state
-  data_len += sprintf(&data[1], "%04X:%s %0.2fV C%i", get_fanet_id(), VERSION, sensor.batt_volt, sensor.pv_charging);
+TxAttemptResult send_msg_info(){
+  constexpr size_t HWINFO_BUF_SIZE = 32;
+  std::array<uint8_t, HWINFO_BUF_SIZE> buffer = {0};
 
+  hwInfoData info = {};
+  info.vid      = FANET_VENDOR_ID;
+  info.fanet_id = get_fanet_id();
 
-  constexpr int FANET_MAX_PACKET_SIZE = 255;
-  if ((data_len + 4) > FANET_MAX_PACKET_SIZE) {
-    data_len = FANET_MAX_PACKET_SIZE - 4;
+  // Hardware Subtype + Build Date (byte0 bit 6)
+  info.bSubtypeBuild = true;
+  info.device_type   = FANET_BD_DEVICE_TRANSMITTER;
+  info.develop_mode  = false;
+  // Parse __DATE__ string "Mon DD YYYY" into day/month/year
+  const char *date_str = __DATE__;
+  const char *months[] = {"Jan","Feb","Mar","Apr","May","Jun",
+                           "Jul","Aug","Sep","Oct","Nov","Dec"};
+  info.build_month = 1;
+  for (int i = 0; i < 12; i++) {
+    if (strncmp(date_str, months[i], 3) == 0) { info.build_month = (uint8_t)(i + 1); break; }
   }
-  std::array<uint8_t, FANET_MAX_PACKET_SIZE> buffer = {0};
-  fanet_header header;
-  header.type = 3;
-  header.vendor = FANET_VENDOR_ID;
-  header.forward = false;
-  header.ext_header = false;
-  header.address = get_fanet_id();
+  info.build_day  = (uint8_t)atoi(date_str + 4);
+  info.build_year = (uint16_t)atoi(date_str + 7);
 
-  memcpy(buffer.data(), (uint8_t*)&header, 4);
-  memcpy(&buffer[4], data, data_len);
+  // Uptime in minutes (byte0 bit 4); time() returns ms since last reset
+  info.bUptime    = true;
+  info.uptime_min = (uint16_t)(time() / 60000UL);
 
-  log_v_hex_dump(buffer.data(), data_len + 4);
-  log_i("Sending Info Msg\n");
-  dis_rx_sleep(); // radio_phy->standby();
-  radio_phy->startTransmit(buffer.data(), data_len+4);
+  // Debug data: decode type 0x01
+  info.debug.vbatt_mv       = (uint16_t)(sensor.batt_volt * 1000.0f);
+  info.debug.batt_perc      = sensor.batt_perc;
+  info.debug.pv_state       = (uint8_t)((sensor.pv_charging ? 0x01u : 0x00u) |
+                                         (sensor.pv_done     ? 0x02u : 0x00u));
+  info.debug.sensor_type    = (uint8_t)settings.sensor_type;
+  info.debug.use_baro       = settings.use_baro ? 1u : 0u;
+  info.debug.use_wdt        = settings.use_wdt  ? 1u : 0u;
+  info.debug.reserved       = 0u;
+  info.debug.sensor_integ_s = (uint8_t)(settings.sensor_integration_time / 1000u);
+
+  size_t msg_size = pack_hwinfo(&info, buffer.data());
+  log_v_hex_dump(buffer.data(), msg_size);
+  log_i("Sending HW Info\n");
+  return start_lbt_transmit(buffer.data(), msg_size);
 }
 
 
@@ -888,6 +948,8 @@ loopcounter++;
       s = led_status(1);
       last_call=time();
     }
+    forward_analog_test_serial();
+
     return;
   }
 
@@ -897,23 +959,31 @@ loopcounter++;
   if(fanet_cooldown_ok() && settings.broadcast_interval_name && ( (time()- last_msg_name) > (settings.broadcast_interval_name* broadcast_scale_factor)) ){ // once a hour
     if(settings.station_name.length() > 1){
       led_status(1);
-      send_msg_name(settings.station_name.c_str(),settings.station_name.length());
-      log_i("Send name: "); log_i(settings.station_name.c_str()); log_i("\r\n");
-      last_fnet_send = time();
-      last_msg_name = time();
-      send_active = time();
+      TxAttemptResult tx_result = send_msg_name(settings.station_name.c_str(),settings.station_name.length());
+      if(tx_result == TX_ATTEMPT_STARTED) {
+        log_i("Send name: "); log_i(settings.station_name.c_str()); log_i("\r\n");
+        last_fnet_send = time();
+        last_msg_name = time();
+        send_active = time();
+      } else if(tx_result == TX_ATTEMPT_DEFERRED_LBT) {
+        defer_next_send(last_msg_name, settings.broadcast_interval_name, "name");
+      }
       led_status(0);
     }
   }
 
   if(fanet_cooldown_ok() && settings.broadcast_interval_weather && ( (time()- last_msg_weather) > (settings.broadcast_interval_weather * broadcast_scale_factor)) ){
     if( allowed_to_send_weather() ){
-      send_msg_weather();
-      last_fnet_send = time();
-      last_msg_weather = time();
-      send_active = time();
+      TxAttemptResult tx_result = send_msg_weather();
+      if(tx_result == TX_ATTEMPT_STARTED) {
+        last_fnet_send = time();
+        last_msg_weather = time();
+        send_active = time();
+      } else if(tx_result == TX_ATTEMPT_DEFERRED_LBT) {
+        defer_next_send(last_msg_weather, settings.broadcast_interval_weather, "weather");
+      }
     } else {
-      if((is_wsxx() || settings.sensor_type == s_WS85_UART) && sensor.last_data && (time()- sensor.last_data > 10000)){
+      if((is_wsxx() || settings.sensor_type == s_WS85_UART) && sensor.last_data && !sensor.next_baro_reading && (time()- sensor.last_data > 10000)){
         log_i("Wdata not ready. Wdata age: ", (time()- sensor.last_data) );
         log_i("Last Baro reading age: ", (time()- sensor.last_baro_reading) );
         sleep_allowed = time() + 1;
@@ -924,10 +994,14 @@ loopcounter++;
   }
   if(settings.broadcast_interval_info && fanet_cooldown_ok() && ( (time()- last_msg_info) > (settings.broadcast_interval_info * broadcast_scale_factor)) ){
       led_status(1);
-      send_msg_info();
-      last_fnet_send = time();
-      last_msg_info = time();
-      send_active = time();
+      TxAttemptResult tx_result = send_msg_info();
+      if(tx_result == TX_ATTEMPT_STARTED) {
+        last_fnet_send = time();
+        last_msg_info = time();
+        send_active = time();
+      } else if(tx_result == TX_ATTEMPT_DEFERRED_LBT) {
+        defer_next_send(last_msg_info, settings.broadcast_interval_info, "info");
+      }
       led_status(0);
   }
 

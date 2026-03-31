@@ -59,9 +59,68 @@ void dis_rx_sleep(){
     detachInterrupt(PIN_LORA_DIO1);
   }
   radio_phy->standby();
+  // Restore TX-done callback: clearDio1Action() in en_rx_sleep() removed the MCU
+  // DIO1 interrupt, and startTransmit() does NOT re-attach it automatically.
+  // Without this, transmittedFlag is never set and every TX times out.
+  radio_phy->setPacketSentAction(set_fanet_send_flag);
   //DEBUGSER.println(F("Set Radio to idle"));
 }
 
+
+// Listen-Before-Talk: RSSI-based channel check.
+// Returns true if channel is clear (RSSI below threshold).
+// Active RSSI measurement (enters RX briefly to measure current channel noise).
+// Continuously samples RSSI and uses average value for decision.
+// Must be called AFTER dis_rx_sleep() (radio in standby).
+bool lbt_channel_free(int max_attempts) {
+  if (!radio_phy) {
+    log_v("LBT: skip RSSI scan, radio not initialized\r\n");
+    return true;
+  }
+
+  if((lora_module == LORA_SX1262) || (lora_module == LORA_LLCC68)){
+
+    for (int i = 0; i < max_attempts; i++) {
+      if(i > 0){
+        led_error(1);
+      }
+      // Start RX briefly to get active RSSI measurement
+      radio_phy->startReceive();
+      
+      // Continuously sample RSSI over time window
+      int32_t rssi_sum = 0;
+      const int num_samples = 10;  // ~1ms per sample = 10ms total
+      for (int s = 0; s < num_samples; s++) {
+        int16_t rssi = static_cast<SX126x*>(radio_phy)->getRSSI(false); // instantaneous RSSI
+        rssi_sum += rssi;
+        delayMicroseconds(100);  // 0.1ms between samples
+      }
+      int16_t rssi_avg = (int16_t)(rssi_sum / num_samples);
+      
+      radio_phy->standby();  // Back to standby
+      
+      log_if("LBT: attempt %d/%d RSSI avg %d dBm (threshold %d dBm)\r\n", 
+            i + 1, max_attempts, rssi_avg, settings.lora_rssi_threshold);
+      
+      if (rssi_avg < settings.lora_rssi_threshold) {
+        led_error(0);
+        return true;  // Channel clear
+      }
+
+      // Channel busy – short random backoff before retry
+      if (i < max_attempts - 1) {
+        delay(5 + (millis() % 20)); // 5-24 ms pseudo-random
+      }
+    }
+
+    log_i("LBT: channel not free after retries\r\n");
+    led_error(0);
+    return false; // channel still busy after all attempts
+  } else {
+    log_v("LBT: RSSI scan not supported for this module\r\n");
+    return true; // Assume channel is free if RSSI check not supported
+  }
+}
 
 void radio_sleep(){
 if(settings.lora_smart_rcv){

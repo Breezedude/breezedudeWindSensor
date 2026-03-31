@@ -50,6 +50,8 @@ typedef struct {
   int lora_bw = LORA_BW_EU;
   int lora_sf = 7;
   int lora_cr = 5;
+  bool lora_lbt = false;
+  int  lora_rssi_threshold = -104;  // RSSI threshold in dBm for LBT (lower = more sensitive)
   bool lora_smart_rcv = false;
 
   uint32_t broadcast_interval_weather = BROADCAST_INTERVAL;
@@ -63,6 +65,7 @@ typedef struct {
   bool forward_serial_while_usb = false;
   bool verbose_usb = false;
   bool skip_lora = false; // skip lora module init
+  bool analog_test_mode = false; // for davis sensor testing, set to 1 to power on sensor and output adc values, 0 to power off
 } Settings;
 
 extern Settings settings;

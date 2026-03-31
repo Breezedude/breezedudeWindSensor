@@ -199,6 +199,32 @@ void read_baro(){
   }
 }
 
+void forward_analog_test_serial(){
+  if(settings.analog_test_mode){
+    static uint32_t last_print = 0;
+
+    analogReference(AR_DEFAULT); //3.3V refernece
+    pinMode(PIN_DAVIS_DIR, INPUT);  
+    pinMode(PIN_DAVIS_SPEED, INPUT); 
+    pinMode(PIN_DAVIS_POWER,OUTPUT);
+    digitalWrite(PIN_DAVIS_POWER,1);
+
+    int d = analogRead(PIN_DAVIS_DIR);
+    int s = digitalRead(PIN_DAVIS_SPEED);
+
+    if(settings.analog_test_mode && (time() - last_print > 25)){
+      last_print = time();
+      log_if("%lu Speed/Dir state: %c\t%i\r\n", time(), s?'o':'-', d);
+    }
+    
+  } else {
+    digitalWrite(PIN_DAVIS_POWER,0);
+    pinDisable(PIN_DAVIS_DIR);
+    pinDisable(PIN_DAVIS_POWER);
+    pinDisable(PIN_DAVIS_SPEED);
+  }
+}
+
 // while USB is connected, forward ws80 data to usb serial port
 void forward_sensor_serial(){
   if(settings.forward_serial_while_usb){
@@ -508,7 +534,6 @@ int read_wind_dir(){
   digitalWrite(PIN_DAVIS_POWER,1);
 
 int d = analogRead(PIN_DAVIS_DIR);
-
 
 if(settings.sensor_type == s_DAVIS6410){
   // Variable resistance 0 - 20KΩ; 10KΩ = south, 180°)
