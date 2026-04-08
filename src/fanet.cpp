@@ -97,10 +97,16 @@ size_t pack_hwinfo(const hwInfoData *data, uint8_t *buffer) {
     buffer[pos++] = (uint8_t)(data->uptime_min >> 8u);
   }
 
-  // Debug data: decode type byte (0x01) followed by hwinfo_debug_t1 struct
-  buffer[pos++] = 0x01u;
-  memcpy(&buffer[pos], &data->debug, sizeof(hwinfo_debug_t1));
-  pos += sizeof(hwinfo_debug_t1);
+  // Debug data: decode type byte followed by the matching payload struct
+  buffer[pos++] = data->debug_type;
+  if (data->debug_type == 0x01u) {
+    memcpy(&buffer[pos], &data->debug, sizeof(hwinfo_debug_t1));
+    pos += sizeof(hwinfo_debug_t1);
+  } else if (data->debug_type == 0x02u) {
+    memcpy(&buffer[pos], &data->debug2, sizeof(hwinfo_debug_t2));
+    pos += sizeof(hwinfo_debug_t2);
+  }
 
   return pos;
+
 }

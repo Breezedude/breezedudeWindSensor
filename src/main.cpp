@@ -96,12 +96,23 @@ void switch_WS_power (bool state){
 
 uint8_t voltageToSOCNonLinear(float v) {
     if(v < 0.8) {led_error(1); log_i("V_Batt read error: ", v); return 0;} // bad reading
-    if(v < 3.4) {switch_WS_power(0); return 0;}
-    if(v > 3.5) {switch_WS_power(1); undervoltage = false;}
-    if(v > 4.15){return 100;}
+    if(v < 3.15) {switch_WS_power(0); settings.uv_triggered = true; undervoltage = true; return 0;} // undervoltage, turn off sensor to save power
+    if(v > 3.3) {switch_WS_power(1); undervoltage = false;}
+    if(v > 4.15){settings.uv_triggered = false; return 100;}
 
-    float soc = powf((v - 3.4f) / (4.15f - 3.4f), 1.5f);
-    return (uint8_t)(soc * 100.0f + 0.5f);
+    // Piecewise linear OCV->SOC for 3.7V Li-Ion at low discharge rate
+    static const float vt[] = { 3.15f, 3.40f, 3.60f, 3.75f, 3.90f, 4.00f, 4.10f, 4.15f };
+    static const float st[] = {  0.0f,  5.0f, 20.0f, 50.0f, 75.0f, 88.0f, 97.0f,100.0f };
+    constexpr int N = 8;
+    if (v <= vt[0]) return 0;
+    if (v >= vt[N-1]) return 100;
+    for (int i = 1; i < N; i++) {
+        if (v <= vt[i]) {
+            float soc = st[i-1] + (v - vt[i-1]) * (st[i] - st[i-1]) / (vt[i] - vt[i-1]);
+            return (uint8_t)(soc + 0.5f);
+        }
+    }
+    return 100;
 }
 
 // Trigger ADC and calc battery value in percent and volts
@@ -113,21 +124,59 @@ void read_batt_perc(){
     analogReference(AR_INTERNAL1V0);
     analogReadResolution(10);
     pinMode(PIN_V_READ, INPUT);
-    //delayMicroseconds(10);
-    float val=0;
+
+    // Extend ADC sampling phase via SAMPCTRL instead of software delays between reads.
+    // ADC clock = 48 MHz / 512 ≈ 94 kHz  →  half-cycle ≈ 5.3 µs.
+    // SAMPLEN=4 adds 5 half-cycles ≈ 26 µs extra sample time per conversion.
+    //ADC->SAMPCTRL.reg = ADC_SAMPCTRL_SAMPLEN(4);
+    //while (ADC->STATUS.bit.SYNCBUSY);
+
+    constexpr int N_SAMPLES = 15;
+    uint16_t samples[N_SAMPLES];
     digitalWrite(PIN_V_READ_TRIGGER,0);
-    delayMicroseconds(10);
-    for( int i= 0; i< 4; i++){
-      val += (float) analogRead(PIN_V_READ);
+    delayMicroseconds(50); // allow divider to settle
+    for (int i = 0; i < N_SAMPLES; i++) {
+      samples[i] = analogRead(PIN_V_READ);
     }
     digitalWrite(PIN_V_READ_TRIGGER,1);
 
-    //pinDisable(PIN_V_READ_TRIGGER); //disable at sleep begin
-    val /=4;
+    //ADC->SAMPCTRL.reg = ADC_SAMPCTRL_SAMPLEN(0); // restore default for other ADC users
+    //while (ADC->STATUS.bit.SYNCBUSY);
+
+    // Temporary: dump all raw samples to check trigger window width
+    /*
+    log_v("ADC samples: ");
+    for (int i = 0; i < N_SAMPLES; i++) {
+      log_v(", ", samples[i]);
+    }
+    log_v("\r\n");
+    */
+
+    // Trimmed mean: discard min + max, average remaining N_SAMPLES-2
+    uint16_t vmin = samples[0], vmax = samples[0];
+    uint32_t vsum = 0;
+    for (int i = 0; i < N_SAMPLES; i++) {
+      vsum += samples[i];
+      if (samples[i] < vmin) vmin = samples[i];
+      if (samples[i] > vmax) vmax = samples[i];
+    }
+    float val = (float)(vsum - vmin - vmax) / (float)(N_SAMPLES - 2);
+
     pinDisable(PIN_V_READ);
     val *= 0.0040925; // 100k/330k 1.0V Vref
-    sensor.batt_volt = val;
-  
+
+    // Moving average over last 5 readings to suppress short voltage dips
+    constexpr int V_AVG_LEN = 5;
+    static float v_history[V_AVG_LEN] = {0};
+    static int v_idx = 0;
+    static int v_count = 0;
+    v_history[v_idx] = val;
+    v_idx = (v_idx + 1) % V_AVG_LEN;
+    if (v_count < V_AVG_LEN) v_count++;
+    float v_sum = 0;
+    for (int i = 0; i < v_count; i++) v_sum += v_history[i];
+    sensor.batt_volt = v_sum / v_count;
+
   sensor.batt_perc = voltageToSOCNonLinear(sensor.batt_volt);
   log_i("V_Bat: ", sensor.batt_volt);
   log_i("Bat_perc: ", sensor.batt_perc);
@@ -215,13 +264,14 @@ uint32_t sleep(bool enable_uart_interrupt){
 void wakeup(){
   // USB->DEVICE.CTRLA.reg |= USB_CTRLA_ENABLE; // Re-enable USB, no need, not working?
   loopcounter = 0;
+  pinMode(PIN_V_READ_TRIGGER, OUTPUT); // prepare voltage measurement, charge trigger cap
+  digitalWrite(PIN_V_READ_TRIGGER,1);
   log_i("\r\n########\r\n");
   log_i("Wakeup: ", time()); 
   log_v("Wakeup source: "); log_v(wakeup_source_string[wakeup_source]);log_v("\r\n");
   wakeup_source = WAKEUP_NONE;
 
-  pinMode(PIN_V_READ_TRIGGER, OUTPUT); // prepare voltage measurement, charge trigger cap
-  digitalWrite(PIN_V_READ_TRIGGER,1);
+
 
   get_solar_charger_state();
   if(settings.use_baro){
@@ -296,11 +346,10 @@ uint32_t calc_time_to_sleep(){
   static uint32_t last_print = 0;
 
   if(sensor.batt_volt){
-    if(sensor.batt_volt < VBATT_LOW){
-      tts = 3600*500; // sleep 30min
-      undervoltage = true;
+    if(undervoltage){
+      tts = 1000*30*60; // sleep 30min
       broadcast_scale_factor = 5;
-      log_i("Undervoltage\n");
+      log_i("Undervoltage\r\n");
       next_tx_time = time()+tts;
       return tts;
     } else if(sensor.batt_volt < settings.reduce_interval_voltage){
@@ -361,6 +410,7 @@ void go_sleep(){
 // shut down the USB peripheral
   if(first_sleep && !keep_usb){
     log_i("Disable USB\r\n");
+    usb_ignore_detach_event = true;
     USB->DEVICE.CTRLA.bit.ENABLE = 0;                   
     while(USB->DEVICE.SYNCBUSY.bit.ENABLE){};
     first_sleep = false;
@@ -376,6 +426,8 @@ void go_sleep(){
   rtc_sleep_cfg(time_to_sleep);
 
   if(undervoltage){
+    log_i("Undervoltage. will sleep for ", time_to_sleep);
+    log_flush();
     sleep(false);
     return; // do not read sensors
   }
@@ -739,7 +791,7 @@ TxAttemptResult send_msg_info(){
   // Hardware Subtype + Build Date (byte0 bit 6)
   info.bSubtypeBuild = true;
   info.device_type   = FANET_BD_DEVICE_TRANSMITTER;
-  info.develop_mode  = false;
+  info.develop_mode  = true; // todo: change to false for production, true for development devices
   // Parse __DATE__ string "Mon DD YYYY" into day/month/year
   const char *date_str = __DATE__;
   const char *months[] = {"Jan","Feb","Mar","Apr","May","Jun",
@@ -755,20 +807,52 @@ TxAttemptResult send_msg_info(){
   info.bUptime    = true;
   info.uptime_min = (uint16_t)(time() / 60000UL);
 
-  // Debug data: decode type 0x01
-  info.debug.vbatt_mv       = (uint16_t)(sensor.batt_volt * 1000.0f);
-  info.debug.batt_perc      = sensor.batt_perc;
-  info.debug.pv_state       = (uint8_t)((sensor.pv_charging ? 0x01u : 0x00u) |
-                                         (sensor.pv_done     ? 0x02u : 0x00u));
-  info.debug.sensor_type    = (uint8_t)settings.sensor_type;
-  info.debug.use_baro       = settings.use_baro ? 1u : 0u;
-  info.debug.use_wdt        = settings.use_wdt  ? 1u : 0u;
-  info.debug.reserved       = 0u;
-  info.debug.sensor_integ_s = (uint8_t)(settings.sensor_integration_time / 1000u);
+  // Rotate debug type on each call: 0x01, 0x02, 0x01, 0x02, ...
+  // Add new types by incrementing DEBUG_TYPE_COUNT.
+  static uint8_t s_debug_type_idx = 0;
+  constexpr uint8_t DEBUG_TYPE_COUNT = 2;
+  const uint8_t debug_type = (s_debug_type_idx % DEBUG_TYPE_COUNT) + 1u;
+  s_debug_type_idx++;
+
+  info.debug_type = debug_type;
+
+  if (debug_type == 0x01u) {
+    // Debug type 1: power + sensor config + firmware version
+    info.debug.vbatt_mv       = (uint16_t)(sensor.batt_volt * 1000.0f);
+    info.debug.batt_perc      = sensor.batt_perc;
+    info.debug.pv_state       = (uint8_t)((sensor.pv_charging ? 0x01u : 0x00u) |
+                                           (sensor.pv_done     ? 0x02u : 0x00u));
+    info.debug.sensor_type    = (uint8_t)settings.sensor_type;
+    info.debug.use_baro       = settings.use_baro ? 1u : 0u;
+    info.debug.uv_triggered   = settings.uv_triggered ? 1u : 0u;
+
+    info.debug.lbt            = settings.lora_lbt ? 1u : 0u;
+    info.debug.lbt_counter    = settings.lbt_counter;
+    info.debug.lora_rssi_threshold = (uint8_t)(-settings.lora_rssi_threshold);
+
+    // Compact version encoding: major.minor.patch, each decimal digit 0..9.
+    uint8_t ver_digits[3] = {0, 0, 0};
+    uint8_t vd = 0;
+    for (const char *p = VERSION; *p && vd < 3; ++p) {
+      if (*p >= '0' && *p <= '9') {
+        ver_digits[vd++] = (uint8_t)(*p - '0');
+      }
+    }
+    info.debug.version_bcd = (uint16_t)(((ver_digits[0] % 10u) << 8) |
+                                        ((ver_digits[1] % 10u) << 4) |
+                                         (ver_digits[2] % 10u));
+
+  } else if (debug_type == 0x02u) {
+    // Debug type 2: configuration
+    info.debug2.wind_age      = (uint16_t)(settings.wind_age/1000);
+    info.debug2.gust_age      = (uint16_t)(settings.gust_age/1000);
+    info.debug2.sensor_integ_s = (uint8_t)(settings.sensor_integration_time / 1000u);
+    info.debug2.reduce_interval_voltage = (uint8_t)((settings.reduce_interval_voltage-2.0f) * 100.0f);
+  }
 
   size_t msg_size = pack_hwinfo(&info, buffer.data());
   log_v_hex_dump(buffer.data(), msg_size);
-  log_i("Sending HW Info\n");
+  log_i("Sending HW Info\r\n");
   return start_lbt_transmit(buffer.data(), msg_size);
 }
 
@@ -932,6 +1016,7 @@ loopcounter++;
   // Always poll CDC commands so TEST_USB can switch from USB wait mode into the
   // normal sleep/wakeup flow without requiring a reboot.
   read_serial_cmd();
+  handle_usb_link_watchdog();
 
   // In MSC mode (USB mounted and test mode disabled), keep the MCU in USB service
   // only and skip the normal sensor/radio workflow.
@@ -1050,24 +1135,12 @@ loopcounter++;
     }
   }
 
-  // during Dev
   if(usb_connected){
-    // Detect physical USB cable disconnect and reset to cleanly re-initialize.
-    // Intentional MCU-side disconnects (15-min timeout, first-sleep USB disable)
-    // always clear usb_connected first, so they do not trigger this path.
-      static uint32_t usb_lost_at = 0;
-      if(!TinyUSBDevice.mounted()){
-        if(!usb_lost_at){ usb_lost_at = millis(); }
-        if(millis() - usb_lost_at > 1500){ NVIC_SystemReset(); }
-      } else {
-        usb_lost_at = 0;
-      }
-    
-
     // keep usb alive for 15 min. Its not easyly possible to detect if still connected, so just restart after 15min
     if(!settings.test_with_usb && (time() > 15UL*60UL*1000UL)){
       log_i("Restart\r\n");
       log_flush();
+      usb_ignore_detach_event = true;
       usb_connected = false; // clear before reset so disconnect detector above is not triggered
       NVIC_SystemReset();
     }

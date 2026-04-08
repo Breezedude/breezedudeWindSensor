@@ -83,6 +83,7 @@ bool lbt_channel_free(int max_attempts) {
     for (int i = 0; i < max_attempts; i++) {
       if(i > 0){
         led_error(1);
+        settings.lbt_counter++;
       }
       // Start RX briefly to get active RSSI measurement
       radio_phy->startReceive();

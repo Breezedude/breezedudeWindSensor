@@ -36,7 +36,7 @@ typedef struct {
   bool use_rtc_counter;
 
   // Sensor selction
-  float reduce_interval_voltage = 3.5; // below this voltage the send inverval will be reduced to save energy
+  float reduce_interval_voltage = 3.38; // below this voltage the send inverval will be reduced to save energy
   Sensor sensor_type = s_invalid;
   uint32_t sensor_integration_time = 12000; // ms to sleep while counting pulses. Resolution of gust detection
   bool use_baro = false;
@@ -51,14 +51,17 @@ typedef struct {
   int lora_sf = 7;
   int lora_cr = 5;
   bool lora_lbt = false;
+  uint8_t lbt_counter=0; // 8bit counter for LBT retries, resets on boot
   int  lora_rssi_threshold = -104;  // RSSI threshold in dBm for LBT (lower = more sensitive)
   bool lora_smart_rcv = false;
 
   uint32_t broadcast_interval_weather = BROADCAST_INTERVAL;
-  uint32_t broadcast_interval_info = 0;
+  uint32_t broadcast_interval_info = 60*60*1000; // 1h
   uint32_t broadcast_interval_name = 1000*60*5; // 5 min
 
 
+  // debug states
+  bool uv_triggered = false; // flag to indicate if undervoltage has been triggered, resets when voltage is at 100% again
 
   // debugging
   bool test_with_usb = false;
@@ -70,6 +73,8 @@ typedef struct {
 
 extern Settings settings;
 extern uint32_t sleeptime_cum;
+extern volatile bool usb_detach_event;
+extern volatile bool usb_ignore_detach_event;
 
 extern const char* wakeup_source_string[];
 
@@ -86,3 +91,4 @@ bool apply_setting(char* settingName,  char* settingValue);
 void print_settings();
 bool zone_not_eu();
 bool create_versionfile(const char *filename);
+void handle_usb_link_watchdog();

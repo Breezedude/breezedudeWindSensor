@@ -3,12 +3,97 @@
 #include "logging.h"
 #include "sleep.h"
 #include "msc.h"
+#include <Adafruit_TinyUSB.h>
 
 extern LORA_MODULE lora_module;
 extern CHIP_BARO chip_baro;
 
 uint32_t sleeptime_cum = 0; // cumulative time spend in sleepmode, used for time() calculation
 Settings settings;
+volatile bool usb_detach_event = false;
+volatile bool usb_ignore_detach_event = false;
+
+extern "C" void tud_mount_cb(void) {
+  usb_connected = true;
+  usb_detach_event = false;
+  usb_ignore_detach_event = false;
+}
+
+extern "C" void tud_umount_cb(void) {
+  usb_connected = false;
+  if(!usb_ignore_detach_event) {
+    usb_detach_event = true;
+  }
+}
+
+static bool usb_fsm_disconnected(){
+  // SAMD21 device FSM: OFF (L3) means disconnected/disabled.
+  return USB->DEVICE.FSMSTATUS.bit.FSMSTATE == 0x01;
+}
+
+static bool usb_frame_changed(){
+  static uint8_t last_frame = 0;
+  uint8_t cur = USB->DEVICE.FNUM.bit.FNUM;
+  bool changed = (cur != last_frame);
+  last_frame = cur;
+  return changed;
+}
+
+void handle_usb_link_watchdog(){
+  // USB link watchdog must run before any MSC early-return path in loop().
+  static uint32_t usb_link_lost_at = 0;
+  static uint32_t usb_frame_alive_at = 0;
+  static bool usb_seen_dtr = false;
+
+  if(usb_connected){
+    if(usb_frame_changed()){
+      usb_frame_alive_at = millis();
+    } else if(!usb_frame_alive_at){
+      usb_frame_alive_at = millis();
+    }
+  } else {
+    usb_frame_alive_at = 0;
+  }
+
+  if(usb_connected && Serial.dtr()){
+    usb_seen_dtr = true;
+  }
+
+  bool usb_link_lost = false;
+  if(usb_connected && !usb_ignore_detach_event){
+    if(usb_detach_event){
+      usb_link_lost = true;
+    }
+    if(!TinyUSBDevice.mounted()){
+      usb_link_lost = true;
+    }
+    if(usb_seen_dtr && !Serial.dtr()){
+      usb_link_lost = true;
+    }
+    if(usb_fsm_disconnected()){
+      usb_link_lost = true;
+    }
+    // No SOF/frame progress for >1.5s indicates dead USB link, even when mounted()
+    // or callbacks remain stale due to missing VBUS sense on some boards.
+    if(usb_frame_alive_at && (millis() - usb_frame_alive_at > 1500)){
+      usb_link_lost = true;
+    }
+  }
+
+  if(usb_link_lost){
+    if(!usb_link_lost_at){ usb_link_lost_at = millis(); }
+    if(millis() - usb_link_lost_at > 500){
+      log_i("USB link lost, restart\r\n");
+      log_flush();
+      usb_detach_event = false;
+      usb_link_lost_at = 0;
+      usb_seen_dtr = false;
+      NVIC_SystemReset();
+    }
+  } else {
+    usb_link_lost_at = 0;
+  }
+}
 
 
 void attachInterruptWakeup(uint32_t pin, voidFuncPtr callback, uint32_t mode, bool en_rtc) {

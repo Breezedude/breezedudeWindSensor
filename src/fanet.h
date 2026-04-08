@@ -108,12 +108,24 @@
     uint8_t  batt_perc;         // battery state-of-charge 0-100 %
     uint8_t  pv_state;          // bit0: charging active, bit1: charge done
     // Config byte
-    uint8_t  sensor_type  :5;   // wind sensor type (maps to Sensor enum: 0=invalid,1=WS80,2=WS85,3=WS85_UART,4=DAVIS6410,5=WINDNERD)
-    uint8_t  use_baro     :1;   // barometer enabled
-    uint8_t  use_wdt      :1;   // watchdog enabled
-    uint8_t  reserved     :1;
-    uint8_t  sensor_integ_s;    // sensor integration time in seconds
+    unsigned int sensor_type  :5;   // wind sensor type (maps to Sensor enum: 0=invalid,1=WS80,2=WS85,3=WS85_UART,4=DAVIS6410,5=WINDNERD)
+    unsigned int use_baro     :1;   // barometer enabled
+    unsigned int uv_triggered :1;   // undervoltage triggered
+    unsigned int lbt          :1;   // LBT enabled
+    uint8_t  lbt_counter;           // LBT retry counter, resets on boot
+    uint8_t  lora_rssi_threshold;   // LBT RSSI threshold in dBm, inversed to fit in uint8_t (stored as -rssi_threshold, e.g. 104 for -104dBm)
+    // Compact BCD version: major.minor.patch in 3 nibbles, e.g. 0.7.1 -> 0x071
+    uint16_t version_bcd;
   } __attribute__((packed)) hwinfo_debug_t1;
+
+  // Debug data decode type 0x02: LoRa + station configuration
+  typedef struct {
+    uint16_t gust_age;       // gust age in seconds
+    uint16_t wind_age;        // wind age in seconds
+    uint8_t sensor_integ_s; // sensor integration time in seconds (e.g. for pulse counting)
+    uint8_t reduce_interval_voltage; // voltage threshold for reduced send interval in 2V + 0.01V (e.g. 141 = 3.41V)
+
+  } __attribute__((packed)) hwinfo_debug_t2;
 
   // Input data passed to pack_hwinfo()
   typedef struct {
@@ -132,9 +144,12 @@
     bool     bUptime;
     uint16_t uptime_min;    // uptime in minutes
 
-    // debug data (decode type 0x01)
+    // debug data: debug_type selects which struct is serialised (0x01 / 0x02 / ...)
+    uint8_t         debug_type;
     hwinfo_debug_t1 debug;
+    hwinfo_debug_t2 debug2;
   } hwInfoData;
+
 
   // Returns total packet length written into buffer.
   // buffer must be at least 32 bytes.
