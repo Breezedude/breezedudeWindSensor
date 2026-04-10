@@ -16,6 +16,10 @@ extern PhysicalLayer* radio_phy;
 extern bool transmittedFlag;
 extern bool loraReceivedFlag;
 
+// Runtime counters reset on boot, exposed via HW Info debug type 3
+extern uint16_t fanet_forward_counter;
+extern uint16_t fanet_rx_counter;
+
 
 void set_fanet_send_flag(void);
 
@@ -32,5 +36,11 @@ void radio_sleep();
 // Call after dis_rx_sleep(). max_attempts: number of CAD retries (default 5).
 bool lbt_channel_free(int max_attempts = 5);
 
-void fanet_rx();
+bool fanet_rx();
+// Returns ms until the queued forward packet should be sent, 0 if none pending
+// or if the scheduled time has already passed. Use to reschedule RTC wakeup.
+uint32_t fanet_forward_delay_ms();
+// Transmits a queued FANET forward packet. Call from main loop when no TX is active.
+// Returns true when transmission was started (caller should set send_active).
+bool fanet_forward_check();
 bool radio_init();

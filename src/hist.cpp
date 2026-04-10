@@ -49,9 +49,10 @@ void add_wind_history_dir(int val_dir){
   wind_history[wind_hist_pos].time = time();
 }
 
-// gets the highest wind value in ringbuffer, not older than age
+// Returns the average wind speed and direction over all ringbuffer slots not older than age.
+// ret.gust is not used by the caller (get_gust_from_hist is used instead).
 WindSample get_wind_from_hist(uint32_t age){
-  WindSample ret = {0,0,0,0};
+  WindSample ret = {};
   uint32_t now = time();
 
   float y_part = 0;
@@ -60,7 +61,7 @@ WindSample get_wind_from_hist(uint32_t age){
 
   int p = wind_hist_pos;
   for( int i = 0; i < WIND_HIST_LEN; i++){
-    if(p == WIND_HIST_LEN){
+    if(p >= WIND_HIST_LEN){
       p -= WIND_HIST_LEN;
     }
     if( ( wind_history[p].time && (now - wind_history[p].time) < age)){
@@ -73,16 +74,15 @@ WindSample get_wind_from_hist(uint32_t age){
     p++;
   }
   if(samplecount > 0){
-    ret.dir_raw = atan2 (y_part / samplecount, x_part / samplecount) * 180 / M_PI;
-    if(ret.dir_raw <0){ ret.dir_raw +=360;}
-
-   // log_i("Sum Wind: ", ret.wind);
-   // log_i("Sum Gust: ", ret.gust);
-   // log_i("Samples: ", samplecount);
+    ret.valid   = true;
+    ret.dir_raw = (int)(atan2 (y_part, x_part) * 180.0 / M_PI);
+    if(ret.dir_raw < 0){ ret.dir_raw += 360;}
     ret.wind /= samplecount;
     ret.gust /= samplecount;
+    ret.valid = true;
   } else {
     //log_e("Samplecount is 0\r\n");
+    ret.valid = false;
   }
   return ret;
 }

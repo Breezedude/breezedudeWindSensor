@@ -127,6 +127,12 @@
 
   } __attribute__((packed)) hwinfo_debug_t2;
 
+  // Debug data decode type 0x03: RX / forwarding statistics
+  typedef struct {
+    uint16_t rx_count;       // total FANET packets received since boot
+    uint16_t forward_count;  // total FANET packets forwarded since boot
+  } __attribute__((packed)) hwinfo_debug_t3;
+
   // Input data passed to pack_hwinfo()
   typedef struct {
     uint16_t vid;
@@ -144,10 +150,11 @@
     bool     bUptime;
     uint16_t uptime_min;    // uptime in minutes
 
-    // debug data: debug_type selects which struct is serialised (0x01 / 0x02 / ...)
+    // debug data: debug_type selects which struct is serialised (0x01 / 0x02 / 0x03 / ...)
     uint8_t         debug_type;
     hwinfo_debug_t1 debug;
     hwinfo_debug_t2 debug2;
+    hwinfo_debug_t3 debug3;
   } hwInfoData;
 
 

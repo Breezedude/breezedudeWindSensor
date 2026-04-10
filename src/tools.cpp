@@ -211,7 +211,7 @@ bool apply_setting(char* settingName,  char* settingValue){
 // Test commands
   if(strcmp(settingName,"LBT")==0) {settings.lora_lbt = atoi(settingValue); return 1;}
   if(strcmp(settingName,"LBT_RSSI_THRESHOLD")==0) {settings.lora_rssi_threshold = atoi(settingValue); return 1;}
-  if(strcmp(settingName,"FANET_RECEIVE")==0) {settings.lora_smart_rcv = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"FANET_SMART_FORWARD")==0) {settings.lora_smart_rcv = atoi(settingValue); return 1;}
   if(strcmp(settingName,"SLEEP")==0) {usb_connected =false; return 1;}
   if(strcmp(settingName,"FORMAT")==0) {if(format_flash()){NVIC_SystemReset();} else {log_i("Error Formating Flash\r\n");} return 1;}
   if(strcmp(settingName,"RESET")==0) {setup(); return 1;}
@@ -342,6 +342,43 @@ static bool sync_flash_fs(){
   return true;
 }
 
+// Returns FAT-encoded (date<<16 | time) for a file's last modification, or 0 if unavailable.
+static uint32_t get_fat_mtime(const char *path){
+  File f = fatfs.open(path, O_RDONLY);
+  if(!f){ return 0; }
+  uint16_t d = 0, t = 0;
+  f.getModifyDateTime(&d, &t);
+  f.close();
+  return ((uint32_t)d << 16) | t;
+}
+
+// Sets the T_WRITE timestamp of an open FatFile from a packed FAT mtime value.
+// Call after sync() and before close() to stamp the file with a specific time.
+static void fat_set_mtime(FatFile &f, uint32_t mtime){
+  if(!mtime){ return; }
+  uint16_t d = (uint16_t)(mtime >> 16);
+  uint16_t t = (uint16_t)(mtime & 0xFFFF);
+  uint16_t year  = ((d >> 9) & 0x7F) + 1980;
+  uint8_t  month = (d >> 5) & 0x0F;
+  uint8_t  day   = d & 0x1F;
+  uint8_t  hour  = (t >> 11) & 0x1F;
+  uint8_t  min   = (t >> 5)  & 0x3F;
+  uint8_t  sec   = (uint8_t)((t & 0x1F) * 2);
+  f.timestamp(T_WRITE, year, month, day, hour, min, sec);
+}
+
+// Formats a FAT-encoded (date<<16 | time) value as "YYYY-MM-DD HH:MM" into buf.
+static void format_fat_datetime(uint32_t mtime, char *buf, size_t len){
+  uint16_t d = (uint16_t)(mtime >> 16);
+  uint16_t t = (uint16_t)(mtime & 0xFFFF);
+  int year  = ((d >> 9) & 0x7F) + 1980;
+  int month = (d >> 5) & 0x0F;
+  int day   = d & 0x1F;
+  int hour  = (t >> 11) & 0x1F;
+  int min   = (t >> 5)  & 0x3F;
+  snprintf(buf, len, "%04d-%02d-%02d %02d:%02d", year, month, day, hour, min);
+}
+
 static void parse_versionfile_line(const char *line, String &file_version){
   if(strncmp(line, "Version: ", 9) == 0){
     file_version = String(line + 9);
@@ -396,6 +433,15 @@ static bool versionfile_needs_rewrite(const char *path){
     log_i("Version changed, rewrite version file\n");
     return true;
   }
+
+  // Rewrite if settings.txt was modified after version.txt
+  uint32_t mtime_settings = get_fat_mtime("settings.txt");
+  uint32_t mtime_version  = get_fat_mtime(path);
+  if(mtime_settings && mtime_version && mtime_settings > mtime_version){
+    log_i("Settings newer than version file, rewrite\n");
+    return true;
+  }
+
   return false;
 }
 
@@ -450,9 +496,26 @@ bool create_versionfile(const char *filename){
   n = snprintf(line, sizeof(line), "Barometer: %s\r\n", baro_name);
   if(n > 0) { f.write((const uint8_t*)line, n); }
 
+  uint32_t mtime_settings = get_fat_mtime("settings.txt");
+  if(mtime_settings){
+    char ts[24];
+    format_fat_datetime(mtime_settings, ts, sizeof(ts));
+    n = snprintf(line, sizeof(line), "Settings modified: %s\r\n", ts);
+    if(n > 0) { f.write((const uint8_t*)line, n); }
+  }
+
   if(!f.sync()){
     log_v("file sync failed\n");
   }
+
+  // Stamp version.txt with the same mtime as settings.txt so that the
+  // "settings newer than version" check does not trigger a rewrite on the
+  // next boot (the firmware has no RTC and SdFat would otherwise leave
+  // the new file at the FAT default time, always older than settings.txt).
+  if(mtime_settings){
+    fat_set_mtime(f, mtime_settings);
+  }
+
   if(!f.close()){
     log_v("file close failed\n");
     return false;

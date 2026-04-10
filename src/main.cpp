@@ -87,10 +87,20 @@ void switch_WS_power (bool state){
     current_power_state = true;
     pinMode(PIN_PS_WS,OUTPUT);
     digitalWrite(PIN_PS_WS, 0);
+    // Re-connect UART pins to SERCOM0 peripheral before the sensor can respond
+    pinPeripheral(PIN_RX, PIO_SERCOM);
+    pinPeripheral(PIN_TX, PIO_SERCOM);
+    SENSOR_UART.begin(115200 * div_cpu);
+    log_i("WS sensor power ON\r\n");
   }
   if(!state && current_power_state){ // turn off
     current_power_state = false;
     digitalWrite(PIN_PS_WS, 1);
+    // Disable UART pins so the idle-HIGH TX line cannot leak current into the
+    // sensor through its input protection diodes when its VCC is removed.
+    pinDisable(PIN_TX); // PA10 – UART idles HIGH, would source 8mA into sensor
+    pinDisable(PIN_RX); // PA11 – symmetric isolation
+    log_i("WS sensor power OFF\r\n");
   }
 }
 
@@ -308,6 +318,9 @@ enum TxAttemptResult : uint8_t {
 // If LBT is disabled, the scan is skipped and transmission starts immediately.
 static TxAttemptResult start_lbt_transmit(const uint8_t *data, size_t len) {
   dis_rx_sleep();
+  // Arm TX-done callback here (not in dis_rx_sleep) to avoid re-arming DIO1
+  // while the radio is in the sleep path, which causes spurious IRQ on LLCC68.
+  radio_phy->setPacketSentAction(set_fanet_send_flag);
   if(!settings.lora_lbt) {
     radio_phy->startTransmit(data, len);
     return TX_ATTEMPT_STARTED;
@@ -349,7 +362,6 @@ uint32_t calc_time_to_sleep(){
     if(undervoltage){
       tts = 1000*30*60; // sleep 30min
       broadcast_scale_factor = 5;
-      log_i("Undervoltage\r\n");
       next_tx_time = time()+tts;
       return tts;
     } else if(sensor.batt_volt < settings.reduce_interval_voltage){
@@ -423,12 +435,15 @@ void go_sleep(){
   }
 
   uint32_t time_to_sleep = calc_time_to_sleep();
+  if(time_to_sleep == 0){ return;} // if time_to_sleep = 0, do not sleep at all
   rtc_sleep_cfg(time_to_sleep);
 
   if(undervoltage){
+    radio_sleep(); // ensure radio is in PHY sleep and DIO1 interrupt is detached
     log_i("Undervoltage. will sleep for ", time_to_sleep);
     log_flush();
-    sleep(false);
+    sleep(false); // will sleep in 30min blocks with 70µA current draw until battery recovers.
+    wakeup(); // re-read battery so undervoltage clears if voltage has recovered
     return; // do not read sensors
   }
 
@@ -449,7 +464,10 @@ void go_sleep(){
   log_i("will sleep for ", time_to_sleep > 200000UL?-1: time_to_sleep);
   log_flush();
 
-
+  // Ensure radio is in the correct state for the sleep window (RX if conditions
+  // are met, PHY sleep otherwise). This also covers the period before the first
+  // TX, when radio_sleep() has not yet been called from the TX-done path.
+  radio_sleep();
 
 // Using TC3 for hardware pulsecounting on Falling edge on pin PA04 (D17). No interrupts needed.
   if(settings.sensor_type == s_DAVIS6410){ // pulse counting anemometer
@@ -458,6 +476,17 @@ void go_sleep(){
 
     while(wakeup_source != WAKEUP_RTC){ // ignore other wakeups (external pin Interrupt, if configured)
       t += sleep(false);
+      if(loraReceivedFlag && settings.lora_smart_rcv) {
+        // Process immediately: readData() clears the LLCC68 IRQ flag so DIO1 goes LOW.
+        // Without this, DIO1 stays HIGH and subsequent packets cannot trigger a rising edge.
+        if(fanet_rx()) {
+          radio_sleep();
+          // If a forward was queued, reschedule RTC to wake at the forward time
+          // rather than waiting for the full RTC period (which could be up to 40s).
+          uint32_t fwd_delay = fanet_forward_delay_ms();
+          if (fwd_delay) rtc_sleep_cfg(fwd_delay);
+        }
+      }
     }
     pulsecount = read_pulse_counter();
     calc_pulse_sensor(pulsecount, t);
@@ -468,6 +497,18 @@ void go_sleep(){
 
     while(wakeup_source != WAKEUP_RTC){
       sleep(true); // sleep til UART interrupt
+
+      // Process any received LoRa packet immediately so readData() clears the LLCC68
+      // IRQ / DIO1 line. If DIO1 stays HIGH, no rising edge fires for subsequent packets.
+      if(loraReceivedFlag && settings.lora_smart_rcv) {
+        if(fanet_rx()) {
+          radio_sleep();
+          // If a forward was queued, reschedule RTC to wake at the forward time
+          // rather than waiting for the full RTC period (up to 40s).
+          uint32_t fwd_delay = fanet_forward_delay_ms();
+          if (fwd_delay) rtc_sleep_cfg(fwd_delay);
+        }
+      }
 
       if(is_wsxx()){
         res = read_wsxx();
@@ -637,8 +678,13 @@ static void log_v_hex_dump(const uint8_t *data, size_t len){
 TxAttemptResult send_msg_weather(){
   if(settings.sensor_type == s_invalid){ return TX_ATTEMPT_NONE;}
 
-  led_status(1);
+  
   WindSample current_wind = get_wind_from_hist(settings.wind_age);
+  if(!current_wind.valid){
+    log_i("No valid wind data\r\n");
+    return TX_ATTEMPT_NONE;
+  }
+  led_status(1);
   sensor.wind_gust = get_gust_from_hist(settings.gust_age);
   sensor.wind_speed = current_wind.wind/10.0;
   sensor.wind_dir_raw = current_wind.dir_raw;
@@ -725,6 +771,7 @@ bool allowed_to_send_weather(){
     if(settings.use_baro){ok &= ((time() - sensor.last_baro_reading) < 40000 );} // accept baro reading from last cacle. this reduces cp
     if(is_wsxx() || settings.sensor_type == s_WS85_UART) { ok &= (sensor.last_data || settings.testmode); } // only send if weather data is up to date or testmode is enabled // && (time()- last_ws80_data < 9000))
     if(settings.use_gps)  { ok &= (tinyGps.location.isValid()); } // only send if position is valid
+    if(undervoltage) { ok = false;} // if undervoltage, do not send at all
   }
 
  // if(next_baro_reading){
@@ -733,7 +780,7 @@ bool allowed_to_send_weather(){
 
  // Print reasons for not beeing ready
   if(!ok){
-    if(sensor.last_data && !sensor.next_baro_reading){ // ever got some sensor data and baro currently not waiting for data
+    if(sensor.last_data && !sensor.next_baro_reading && !undervoltage){ // ever got some sensor data and baro currently not waiting for data
       log_i("Wind Sensor data age: ", time()- sensor.last_data);
       log_i("Baro data age: ", time()- sensor.last_baro_reading);
     }
@@ -807,10 +854,10 @@ TxAttemptResult send_msg_info(){
   info.bUptime    = true;
   info.uptime_min = (uint16_t)(time() / 60000UL);
 
-  // Rotate debug type on each call: 0x01, 0x02, 0x01, 0x02, ...
+  // Rotate debug type on each call: 0x01, 0x02, 0x03, 0x01, ...
   // Add new types by incrementing DEBUG_TYPE_COUNT.
   static uint8_t s_debug_type_idx = 0;
-  constexpr uint8_t DEBUG_TYPE_COUNT = 2;
+  constexpr uint8_t DEBUG_TYPE_COUNT = 3;
   const uint8_t debug_type = (s_debug_type_idx % DEBUG_TYPE_COUNT) + 1u;
   s_debug_type_idx++;
 
@@ -848,6 +895,11 @@ TxAttemptResult send_msg_info(){
     info.debug2.gust_age      = (uint16_t)(settings.gust_age/1000);
     info.debug2.sensor_integ_s = (uint8_t)(settings.sensor_integration_time / 1000u);
     info.debug2.reduce_interval_voltage = (uint8_t)((settings.reduce_interval_voltage-2.0f) * 100.0f);
+
+  } else if (debug_type == 0x03u) {
+    // Debug type 3: RX / forwarding statistics
+    info.debug3.rx_count      = fanet_rx_counter;
+    info.debug3.forward_count = fanet_forward_counter;
   }
 
   size_t msg_size = pack_hwinfo(&info, buffer.data());
@@ -1066,6 +1118,11 @@ loopcounter++;
         send_active = time();
       } else if(tx_result == TX_ATTEMPT_DEFERRED_LBT) {
         defer_next_send(last_msg_weather, settings.broadcast_interval_weather, "weather");
+      } else if(tx_result == TX_ATTEMPT_NONE) {
+        // no valid wind data yet, retry in 10 seconds
+        last_msg_weather = time() - (settings.broadcast_interval_weather * broadcast_scale_factor) + 10000;
+        sleep_allowed = time() + 1;
+        log_i("Weather TX skipped, retry in 10s\r\n");
       }
     } else {
       if((is_wsxx() || settings.sensor_type == s_WS85_UART) && sensor.last_data && !sensor.next_baro_reading && (time()- sensor.last_data > 10000)){
@@ -1113,7 +1170,17 @@ loopcounter++;
   }
 
   if(settings.lora_smart_rcv){
-    fanet_rx();
+    if(fanet_rx() && !send_active) {
+      // readData() in fanet_rx() left radio in standby; re-arm RX now that we
+      // know no TX is in progress (avoids clearing the TX-done DIO1 handler).
+      radio_sleep();
+    }
+  }
+
+  if(!send_active && settings.lora_smart_rcv) {
+    if(fanet_forward_check()) {
+      send_active = time();
+    }
   }
 
 // Check if everything is done --> sleep

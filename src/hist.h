@@ -8,6 +8,7 @@ extern uint32_t time();
 
 // Gust History, for data transmission
 typedef struct g{
+  bool valid = false;
   uint32_t time;
   uint32_t gust;
   uint32_t wind;
