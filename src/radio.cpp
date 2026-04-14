@@ -36,9 +36,15 @@ static bool fwd_dedup_check_and_add(uint32_t sender_id) {
   return true;
 }
 
+#if BREEZEDUDE_RADIO_SX1276
 SX1276 radio_sx1276 = new Module(PIN_LORA_CS, PIN_LORA_DIO0, PIN_LORA_RESET, PIN_LORA_DIO1);
+#endif
+#if BREEZEDUDE_RADIO_SX1262
 SX1262 radio_sx1262 = new Module(PIN_LORA_CS, PIN_LORA_DIO1, PIN_LORA_RESET, PIN_LORA_DIO2);
+#endif
+#if BREEZEDUDE_RADIO_LLCC68
 LLCC68 radio_llcc68 = new Module(PIN_LORA_CS, PIN_LORA_DIO1, PIN_LORA_RESET, PIN_LORA_DIO2);
+#endif
 
 PhysicalLayer* radio_phy = nullptr;
 bool transmittedFlag = false;
@@ -134,8 +140,15 @@ bool lbt_channel_free(int max_attempts) {
       
       radio_phy->standby();  // Back to standby
       
-      log_if("LBT: attempt %d/%d RSSI avg %d dBm (threshold %d dBm)\r\n", 
-            i + 1, max_attempts, rssi_avg, settings.lora_rssi_threshold);
+      log_i("LBT: attempt ");
+      log_write(i + 1);
+      log_i("/");
+      log_write(max_attempts);
+      log_i(" RSSI avg ");
+      log_write(rssi_avg);
+      log_i(" dBm (threshold ");
+      log_write(settings.lora_rssi_threshold);
+      log_i(" dBm)\r\n");
       
       if (rssi_avg < settings.lora_rssi_threshold) {
         led_error(0);
@@ -200,9 +213,23 @@ bool fanet_rx(){
 
     float rssi = radio_phy->getRSSI();
     float snr  = radio_phy->getSNR();
-    log_if("FANET RX #%u: type=%02X vendor=%02X addr=%04X fwd=%d len=%d RSSI=%.0f SNR=%.1f\r\n",
-           fanet_rx_counter, header->type, header->vendor, header->address,
-           header->forward, numBytes, rssi, snr);
+    log_i("FANET RX #");
+    log_write(fanet_rx_counter);
+    log_i(": type=0x");
+    log_write_hex(header->type, 2);
+    log_i(" vendor=0x");
+    log_write_hex(header->vendor, 2);
+    log_i(" addr=0x");
+    log_write_hex(header->address, 4);
+    log_i(" fwd=");
+    log_write((int)header->forward);
+    log_i(" len=");
+    log_write(numBytes);
+    log_i(" RSSI=");
+    log_write(rssi);
+    log_i(" SNR=");
+    log_write(snr);
+    log_i("\r\n");
 
     // Forward any packet with the forward bit set (spec: clear forward bit on re-TX
     // to prevent cascaded forwarding). Skip if a forward is already queued or
@@ -217,12 +244,24 @@ bool fanet_rx(){
           forward_pending = true;
           uint32_t delay_ms = 500u + (millis() % 1000u);
           forward_after_time = time() + delay_ms;
-          log_if("FANET: queued fwd type=%02X from %02X:%04X len=%d delay=%lums\r\n",
-                 header->type, header->vendor, header->address, numBytes, delay_ms);
+          log_i("FANET: queued fwd type=0x");
+          log_write_hex(header->type, 2);
+          log_i(" from ");
+          log_write_hex(header->vendor, 2);
+          log_i(":");
+          log_write_hex(header->address, 4);
+          log_i(" len=");
+          log_write(numBytes);
+          log_i(" delay=");
+          log_write(delay_ms);
+          log_i("ms\r\n");
         }
       } else {
-        log_if("FANET: skip fwd (dedup) from %02X:%04X\r\n",
-               header->vendor, header->address);
+        log_i("FANET: skip fwd (dedup) from ");
+        log_write_hex(header->vendor, 2);
+        log_i(":");
+        log_write_hex(header->address, 4);
+        log_i("\r\n");
       }
     }
     return true; // packet consumed
@@ -262,7 +301,11 @@ bool fanet_forward_check() {
     return false;
   }
   fanet_forward_counter++;
-  log_if("FANET fwd #%u: TX started len=%d\r\n", fanet_forward_counter, forward_len);
+  log_i("FANET fwd #");
+  log_write(fanet_forward_counter);
+  log_i(": TX started len=");
+  log_write(forward_len);
+  log_i("\r\n");
   return true;
 }
 
@@ -275,30 +318,36 @@ bool radio_init(){
     settings.lora_bw = LORA_BW_NA;
   }
 
+  #if BREEZEDUDE_RADIO_SX1276
+  if(radio_sx1276.begin(settings.lora_freq, settings.lora_bw, settings.lora_sf, settings.lora_cr, LORA_SYNCWORD, 10, 12, 0) == RADIOLIB_ERR_NONE){
+    radio_phy = (PhysicalLayer*)&radio_sx1276;
+    log_i("Found LoRa SX1276\r\n");
+    lora_module = LORA_SX1276;
+    return true;
+  }
+  #endif
 
+  #if BREEZEDUDE_RADIO_LLCC68
+  if(radio_llcc68.begin(settings.lora_freq, settings.lora_bw, settings.lora_sf, settings.lora_cr, LORA_SYNCWORD, 10, 12) == RADIOLIB_ERR_NONE){
+    radio_phy = (PhysicalLayer*)&radio_llcc68;
+    log_i("Found LoRa LLCC68\r\n");
+    lora_module = LORA_LLCC68;
+    radio_phy->setOutputPower(22);
+    return true;
+  }
+  #endif
 
-    if(radio_sx1276.begin(settings.lora_freq, settings.lora_bw, settings.lora_sf, settings.lora_cr, LORA_SYNCWORD, 10, 12, 0) == RADIOLIB_ERR_NONE){
-      radio_phy = (PhysicalLayer*)&radio_sx1276;
-      log_i("Found LoRa SX1276\r\n");
-      lora_module = LORA_SX1276;
-      return true;
-    } 
-    if(radio_llcc68.begin(settings.lora_freq, settings.lora_bw, settings.lora_sf, settings.lora_cr, LORA_SYNCWORD, 10, 12) == RADIOLIB_ERR_NONE){
-      radio_phy = (PhysicalLayer*)&radio_llcc68;
-      log_i("Found LoRa LLCC68\r\n");
-      lora_module = LORA_LLCC68;
-      radio_phy->setOutputPower(22);
-      return true;
-    }
-    if(radio_sx1262.begin(settings.lora_freq, settings.lora_bw, settings.lora_sf, settings.lora_cr, LORA_SYNCWORD, 10, 12) == RADIOLIB_ERR_NONE){
-      // NiceRF SX1262 issue https://github.com/jgromes/RadioLib/issues/689
-      radio_phy = (PhysicalLayer*)&radio_sx1262;
-      log_i("Found LoRa SX1262\r\n");
-      lora_module = LORA_SX1262;
-      radio_phy->setOutputPower(22);
-      return true;
-    }  else {
-        log_i("No LoRa found\r\n");
-        return false;
-    }
+  #if BREEZEDUDE_RADIO_SX1262
+  if(radio_sx1262.begin(settings.lora_freq, settings.lora_bw, settings.lora_sf, settings.lora_cr, LORA_SYNCWORD, 10, 12) == RADIOLIB_ERR_NONE){
+    // NiceRF SX1262 issue https://github.com/jgromes/RadioLib/issues/689
+    radio_phy = (PhysicalLayer*)&radio_sx1262;
+    log_i("Found LoRa SX1262\r\n");
+    lora_module = LORA_SX1262;
+    radio_phy->setOutputPower(22);
+    return true;
+  }
+  #endif
+
+  log_i("No LoRa found\r\n");
+  return false;
 }

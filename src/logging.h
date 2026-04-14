@@ -2,14 +2,12 @@
 #include <Arduino.h>
 #include "display.h"
 
-
 extern Uart Serial2;
 #define DEBUGSER Serial2
 extern int div_cpu;
 extern bool usb_connected;
 
 void log_i(const char * msg);
-void log_if(const char * fmt, ...);
 void log_i(const char * msg, uint32_t num);
 void log_i(const char * msg, int32_t num);
 void log_i(const char * msg, int num);
@@ -19,6 +17,12 @@ void log_v(const char * msg, uint32_t num);
 void log_v(const char * msg, int32_t num);
 void log_v(const char * msg, int num);
 void log_v(const char * msg, float num);
+void log_write(const char * msg);
+void log_write(uint32_t num);
+void log_write(int32_t num);
+void log_write(int num);
+void log_write(float num);
+void log_write_hex(uint32_t num, uint8_t width = 0);
 void log_e(const char * msg);
 void log_flush();
 void log_ser_begin();

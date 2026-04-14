@@ -1,5 +1,16 @@
 #include <Arduino.h>
 #include <RadioLib.h>
+
+#ifndef BREEZEDUDE_RADIO_SX1276
+  #define BREEZEDUDE_RADIO_SX1276 1
+#endif
+#ifndef BREEZEDUDE_RADIO_SX1262
+  #define BREEZEDUDE_RADIO_SX1262 1
+#endif
+#ifndef BREEZEDUDE_RADIO_LLCC68
+  #define BREEZEDUDE_RADIO_LLCC68 1
+#endif
+
 #include "tools.h"
 #include "fanet.h"
 #include "defines.h"

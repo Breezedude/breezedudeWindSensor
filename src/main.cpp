@@ -2,9 +2,6 @@
 #include <Adafruit_TinyUSB.h>
 #include <array>
 
-
-#include <LibPrintf.h>
-
 #include <SdFat.h>
 #include <SAMD_InternalFlash.h>
 #include "wiring_private.h" // pinPeripheral() function
@@ -659,17 +656,14 @@ static void log_v_hex_dump(const uint8_t *data, size_t len){
     return;
   }
 
-  char line[3 * 24 + 1];
   size_t i = 0;
   while(i < len){
     size_t chunk = min((size_t)24, len - i);
-    int off = 0;
     for(size_t j = 0; j < chunk; j++){
-      off += snprintf(&line[off], sizeof(line) - off, "%02X ", data[i + j]);
+      log_write_hex(data[i + j], 2);
+      log_i(" ");
     }
-    line[off] = '\0';
-    log_v(line);
-    log_v("\r\n");
+    log_i("\r\n");
     i += chunk;
   }
 }
@@ -770,7 +764,9 @@ bool allowed_to_send_weather(){
   if (ok){
     if(settings.use_baro){ok &= ((time() - sensor.last_baro_reading) < 40000 );} // accept baro reading from last cacle. this reduces cp
     if(is_wsxx() || settings.sensor_type == s_WS85_UART) { ok &= (sensor.last_data || settings.testmode); } // only send if weather data is up to date or testmode is enabled // && (time()- last_ws80_data < 9000))
+    #if BREEZEDUDE_ENABLE_GPS
     if(settings.use_gps)  { ok &= (tinyGps.location.isValid()); } // only send if position is valid
+    #endif
     if(undervoltage) { ok = false;} // if undervoltage, do not send at all
   }
 
@@ -784,11 +780,13 @@ bool allowed_to_send_weather(){
       log_i("Wind Sensor data age: ", time()- sensor.last_data);
       log_i("Baro data age: ", time()- sensor.last_baro_reading);
     }
+    #if BREEZEDUDE_ENABLE_GPS
     if(settings.use_gps){
       if(time()-sensor.last_gps_valid > 3000){
         log_i("No GPS fix");
       }
     }
+    #endif
   }
 
 
@@ -923,11 +921,13 @@ void setup(){
   pinPeripheral(PIN_SERCOM1_RX, PIO_SERCOM_ALT); 
   pinPeripheral(PIN_SERCOM1_TX, PIO_SERCOM_ALT); 
 
-  printf_init(DEBUGSER);
   log_i("\r\n--------------- RESET -------------------\r\n");
   log_i("Version: ");  log_i(VERSION); log_i("\r\n");
   log_i("FW Build Time: ");  log_i(__DATE__); log_i(" "); log_i(__TIME__); log_i("\r\n");
-  log_if("FANET ID: %02X%04X\r\n", FANET_VENDOR_ID, get_fanet_id());
+  log_i("FANET ID: ");
+  log_write_hex(FANET_VENDOR_ID, 2);
+  log_write_hex(get_fanet_id(), 4);
+  log_i("\r\n");
 
   
   //printf("code end: %p\n", (void *)(&__etext));
@@ -1027,10 +1027,14 @@ void setup(){
     led_error(1);
   }
 
+  #if BREEZEDUDE_ENABLE_GPS
   if(settings.use_gps){
     GPS_SERIAL.begin(settings.gps_baud);
     log_i("Starting GPS with baud: ", settings.gps_baud);
   }
+  #else
+  settings.use_gps = false;
+  #endif
 
 // init history array
   for( int i = 0; i< HISTORY_LEN; i++){
@@ -1091,7 +1095,9 @@ loopcounter++;
   }
 
   if(settings.use_baro){read_baro();}
+  #if BREEZEDUDE_ENABLE_GPS
   if(settings.use_gps){read_gps();}
+  #endif
 
   if(fanet_cooldown_ok() && settings.broadcast_interval_name && ( (time()- last_msg_name) > (settings.broadcast_interval_name* broadcast_scale_factor)) ){ // once a hour
     if(settings.station_name.length() > 1){
@@ -1221,170 +1227,3 @@ loopcounter++;
     wdt_reset();
   }
 }
-
-
-/* Heater voltage/current:
-3.5V 280mA
-3.9 320mA
-3.7 300mA
-4.2v 340mA
-5V 400mA
-8V 650mA
-10V 800mA
-12V 980mA
-*/
-
-/*
-========== WS85 Ver:1.0.7 ===========
->> g_RrFreqSel = 868M
->> Device_ID  = 0x002794
--------------------------------------
-WindDir      = 76
-WindSpeed    = 0.5
-WindGust     = 0.6
-GXTS04Temp   = 24.4
-
-UltSignalRssi  = 2
-UltStatus      = 0
-SwitchCnt      = 0
-RainIntSum     = 0
-Rain           = 0.0
-WaveCnt[CH1]   = 0
-WaveCnt[CH2]   = 0
-WaveRain       = 0
-ToaltWave[CH1] = 0
-ToaltWave[CH2] = 0
-ResAdcCH1      = 4095
-ResAdcSloCH1   = 0.0
-ResAdcCH2      = 4095
-ResAdcSloCH2   = 0.0
-CapVoltage     = 0.80V
-BatVoltage     = 3.26V
-=====================================
-
-========== WH80 Ver:1.2.8 ===========
->> RF_FreqSel = 868M
->> Device_ID  = 0x70014
--------------------------------------
-WindDir      = 63
-WindSpeed    = 0.6
-WindGust     = 0.6
-
--------SHT30--------
-Temperature  = 20.7
-Humi         = 56%
-
--------Si1132-------
-Light        = 150 lux
-
-UV_Value     = 0.0
-
-Not Detected Pressure Sensor!
-Pressure     = --
-
-BatVoltage      = 3.26V
-=====================================
-*/
-
-// WS80 extended serial output
-
-/*========== WH80 Ver:1.2.5 ===========
->> RF_FreqSel = 868M
->> Device_ID  = 0x00048
--------------------------------------
-WindDir      = 338
-WindSpeed    = 0.0
-WindGust     = 0.8
-
--------SHT40--------
-Temperature  = 24.3
-Humi         = 57%
-
--------Si1132-------
-Light        = 2630 lux
-UV_Value     = 0.2
-
-Not Detected Pressure Sensor!
-Pressure     = --
-
-BatVoltage      = 2.60V
-=====================================
-
-=====================================
-max = 787, min = 783
-max -min = 4
-max = 786, min = 783
-max -min = 3
-max = 788, min = 783
-max -min = 5
-max = 787, min = 785
-max -min = 2
-------------------
-CH_1 mag. normal
-CH_2 mag. normal
-CH_3 mag. normal
-CH_4 mag. normal
-------------------
-Vol_CH1_3 = 252
-Vol_CH3_1 = 262
-Vol_CH4_2 = 264
-Vol_CH2_4 = 265
-SqWave_CH1_3 = 2
-SqWave_CH3_1 = 2
-SqWave_CH4_2 = 2
-SqWave_CH2_4 = 2
-min_index = 0
-Min_Voltage = 252
-absTv0 = 5
-Source_CH1_3 = 100.00,3200
-Source_CH3_1 = 99.81,3194
-Source_CH4_2 = 99.88,3196
-Source_CH2_4 = 99.56,3186
-g_UltTimeV01_3 = 99.91,3197
-datCnt1_3 = 2
-g_UltTimeV04_2 = 99.72,3191
-datCnt4_2 = -5
-x_y = 53
-Get_Cali_Ult_X = 51778
-direction = 290
-wind = 3
-
-=====================================
-max = 787, min = 784
-max -min = 3
-max = 784, min = 782
-max -min = 2
-max = 787, min = 783
-max -min = 4
-max = 789, min = 781
-max -min = 8
-------------------
-CH_1 mag. normal
-CH_2 mag. normal
-CH_3 mag. normal
-CH_4 mag. normal
-------------------
-Vol_CH1_3 = 254
-Vol_CH3_1 = 261
-Vol_CH4_2 = 263
-Vol_CH2_4 = 263
-SqWave_CH1_3 = 2
-SqWave_CH3_1 = 2
-SqWave_CH4_2 = 2
-SqWave_CH2_4 = 2
-min_index = 0
-Min_Voltage = 254
-absTv0 = 5
-Source_CH1_3 = 100.06,3202
-Source_CH3_1 = 100.00,3200
-Source_CH4_2 = 99.91,3197
-Source_CH2_4 = 99.78,3193
-g_UltTimeV01_3 = 100.03,3201
-datCnt1_3 = 6
-g_UltTimeV04_2 = 99.84,3195
-datCnt4_2 = 1
-x_y = 60
-Get_Cali_Ult_X = 55200
-direction = 9
-wind = 4
-*/

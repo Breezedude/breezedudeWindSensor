@@ -217,15 +217,13 @@ uint16_t crc16(const uint8_t* data, size_t len) {
     uint16_t ccrc = crc16(rx, rxPos - 2);
 
     if (ccrc != rcrc) {
-        printf("CRC error: received=0x%04X, calculated=0x%04X\n", rcrc, ccrc);
-
-        // For deeper debugging, you can also dump the payload bytes:
-      //  printf("Payload (%d bytes):", rxPos - 2);
-      //  for (int i = 0; i < rxPos - 2; i++) {
-      //      printf(" %02X", rx[i]);
-      //  }
-      //  printf("\n");
-        return false;
+      if (debug_enabled()) {
+        DEBUGSER.print("CRC error: received=0x");
+        DEBUGSER.print(rcrc, HEX);
+        DEBUGSER.print(", calculated=0x");
+        DEBUGSER.println(ccrc, HEX);
+      }
+      return false;
     } else {
      // log_i("CRC ok\r\n");
     }
@@ -272,7 +270,13 @@ uint16_t crc16(const uint8_t* data, size_t len) {
         E4 6D : CRC16_modbus
         */
 
-        uint16_t r5 = readReg(5), r6 = readReg(6), r7 = readReg(7), r8 = readReg(8), r9 = readReg(9), r10 = readReg(10), r11 = readReg(11), r12 = readReg(12), r13 = readReg(13);
+        uint16_t r5 = readReg(5), 
+        r6 = readReg(6), 
+        r7 = readReg(7),  
+        r9 = readReg(9),
+        r10 = readReg(10), 
+        r11 = readReg(11), 
+        r12 = readReg(12);
 
         measurement.lightLux = inv(r5) ? 0 : uint32_t(r5) * 10;
         measurement.uvi = inv(r6) ? NAN : r6 / 10.0f;

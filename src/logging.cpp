@@ -1,7 +1,5 @@
 #include "logging.h"
 #include "tools.h"
-#include <stdarg.h>
-#include <stdio.h>
 
 bool debug_en = false;
 bool errors_en = false;
@@ -41,6 +39,47 @@ static void log_info_msg_value(const char * msg, T num){
   }
 }
 
+template <typename T>
+static void log_info_write_value(T num){
+  if(debug_en){
+    DEBUGSER.print(num);
+    DEBUGSER.flush();
+  }
+  if(usb_connected){
+    Serial.print(num);
+    usb_flush();
+  }
+}
+
+static void write_hex_to_stream(Stream &stream, uint32_t num, uint8_t width){
+  char buf[9];
+  uint8_t digits = 0;
+  do {
+    uint8_t nibble = num & 0x0F;
+    buf[digits++] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
+    num >>= 4;
+  } while (num && digits < sizeof(buf));
+
+  while (digits < width && digits < sizeof(buf)) {
+    buf[digits++] = '0';
+  }
+
+  while (digits > 0) {
+    stream.print(buf[--digits]);
+  }
+}
+
+static void log_info_write_hex(uint32_t num, uint8_t width){
+  if(debug_en){
+    write_hex_to_stream(DEBUGSER, num, width);
+    DEBUGSER.flush();
+  }
+  if(usb_connected){
+    write_hex_to_stream(Serial, num, width);
+    usb_flush();
+  }
+}
+
 static void log_verbose_msg(const char * msg){
   if(debug_en){
     DEBUGSER.print(msg);
@@ -70,15 +109,6 @@ static void log_verbose_msg_value(const char * msg, T num){
 
 void log_i(const char * msg){
   log_info_msg(msg);
-}
-
-void log_if(const char * fmt, ...){
-  char buffer[192];
-  va_list args;
-  va_start(args, fmt);
-  vsnprintf(buffer, sizeof(buffer), fmt, args);
-  va_end(args);
-  log_info_msg(buffer);
 }
 
 void log_i(const char * msg, uint32_t num){
@@ -117,8 +147,29 @@ void log_v(const char * msg, float num){
   log_verbose_msg_value(msg, num);
 }
 
+void log_write(const char * msg){
+  log_info_msg(msg);
+}
 
+void log_write(uint32_t num){
+  log_info_write_value(num);
+}
 
+void log_write(int32_t num){
+  log_info_write_value(num);
+}
+
+void log_write(int num){
+  log_info_write_value(num);
+}
+
+void log_write(float num){
+  log_info_write_value(num);
+}
+
+void log_write_hex(uint32_t num, uint8_t width){
+  log_info_write_hex(num, width);
+}
 
 void log_e(const char * msg){
   if(errors_en){

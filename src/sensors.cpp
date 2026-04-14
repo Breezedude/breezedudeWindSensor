@@ -1,14 +1,23 @@
 #include "sensors.h"
 
 
+#if BREEZEDUDE_ENABLE_GPS
 TinyGPSPlus tinyGps;
-
+#endif
 
 // I2C Barometer
+#if BREEZEDUDE_BARO_BMP280
 BMP280 bmp280; // Bosch BMP280
+#endif
+#if BREEZEDUDE_BARO_SPL06
 SPL06 spl; // Goertek SPL06-001
+#endif
+#if BREEZEDUDE_BARO_HP203B
 HP203B hp; // HP203B 0x76 or 0x77
+#endif
+#if BREEZEDUDE_BARO_BMP3XX
 Adafruit_BMP3XX bmp3xx;
+#endif
 QMC5883P qmc5883p; // GY-271
 // DPS310 as alternative?
 
@@ -76,32 +85,40 @@ void get_imu(){
 bool init_baro(){
     // ToDo: Crashes with HP203B installed when checking for bmp3xx
 
-    //if(bmp280.begin()){ //0x76
-    //   chip_baro = BARO_BMP280;
-    //   log_i("Baro: BMP280\r\n");
-    //   bmp280.setOversampling(4);
-    // return true;
-    // }
+    #if BREEZEDUDE_BARO_BMP280
+    if(bmp280.begin()){
+      chip_baro = BARO_BMP280;
+      log_i("Baro: BMP280\r\n");
+      bmp280.setOversampling(4);
+      return true;
+    }
+    #endif
 
+    #if BREEZEDUDE_BARO_SPL06
     if(spl.begin(0x77)){
       chip_baro = BARO_SPL06;
       log_i("Baro: SPL06\r\n");
       return true;
     }
+    #endif
 
-    //if(bmp3xx.begin_I2C(0x76)){
-    //  chip_baro = BARO_BMP3xx;
-    //  log_i("Baro: BMP3XX\r\n");
-    // return true;
-    //}
-
-    if(hp.begin(0x76, OSR_2048)){
-        chip_baro = BARO_HP203B;
-        hp.setOSR(OSR_512); // 16.4ms conversion time
-        log_i("Baro: HP203B\r\n");
-        return true;
+    #if BREEZEDUDE_BARO_BMP3XX
+    if(bmp3xx.begin_I2C(0x76)){
+      chip_baro = BARO_BMP3xx;
+      log_i("Baro: BMP3XX\r\n");
+      return true;
     }
- 
+    #endif
+
+    #if BREEZEDUDE_BARO_HP203B
+    if(hp.begin(0x76, OSR_2048)){
+      chip_baro = BARO_HP203B;
+      hp.setOSR(OSR_512); // 16.4ms conversion time
+      log_i("Baro: HP203B\r\n");
+      return true;
+    }
+    #endif
+
     log_e("Baro: not found\r\n");
     settings.use_baro = false;
     return false; 
@@ -114,77 +131,90 @@ void baro_start_reading(){
   //Wire.begin();
   uint32_t now = time();
   if(!sensor.next_baro_reading){
+    #if BREEZEDUDE_BARO_BMP280
     if(chip_baro == BARO_BMP280){ 
       sensor.next_baro_reading = now + bmp280.startMeasurment();
     }
+    #endif
+    #if BREEZEDUDE_BARO_SPL06
     if(chip_baro == BARO_SPL06){ 
       spl.start_measure();
       sensor.next_baro_reading = now + 27;
     }
+    #endif
+    #if BREEZEDUDE_BARO_BMP3XX
     if(chip_baro == BARO_BMP3xx){ 
       bmp3xx.setOutputDataRate(BMP3_ODR_50_HZ);
-    // bmp3xx.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
-    // bmp3xx.setPressureOversampling(BMP3_OVERSAMPLING_16X);
-    // bmp3xx.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
       bmp3xx.performReading();
       sensor.next_baro_reading = now + 5;
     }
+    #endif
+    #if BREEZEDUDE_BARO_HP203B
     if(chip_baro == BARO_HP203B){ 
       hp.startMeasure();
       sensor.next_baro_reading = now + 25; // OSR512
     }
-    } else {
-      if(now > (sensor.next_baro_reading +200)){
-        sensor.next_baro_reading = 0;
-      }
+    #endif
+  } else {
+    if(now > (sensor.next_baro_reading + 200)){
+      sensor.next_baro_reading = 0;
     }
+  }
 }
 
 // read value of baro, needs baro_start_reading in advance
 void read_baro(){
   bool data_ok = false;
-  double T,P;
+  double T = 0, P = 0;
   uint32_t now = time();
 
+  #if BREEZEDUDE_BARO_BMP280
   if(chip_baro == BARO_BMP280){
     if(sensor.next_baro_reading && (now > sensor.next_baro_reading)){
-      uint8_t result = bmp280.getTemperatureAndPressure(T,P);
-      if(result!=0){
+      uint8_t result = bmp280.getTemperatureAndPressure(T, P);
+      if(result != 0){
         data_ok = true;
       }
-    } else {return;}
+    } else { return; }
   }
+  #endif
 
-  else if(chip_baro == BARO_SPL06){
+  #if BREEZEDUDE_BARO_SPL06
+  if(chip_baro == BARO_SPL06){
     if(sensor.next_baro_reading && (now > sensor.next_baro_reading)){
       P = spl.get_pressure();
       T = spl.get_temp_c();
-      spl.sleep(); 
-      
+      spl.sleep();
       if(P > 0){
         data_ok = true;
       }
-    }  else {return;}
+    } else { return; }
   }
-  else if(chip_baro == BARO_BMP3xx){ 
-    if(sensor.next_baro_reading && (now > sensor.next_baro_reading)){
-    P = bmp3xx.pressure/100;
-    T = bmp3xx.temperature;
-    bmp3xx.setOutputDataRate(BMP3_ODR_0_001_HZ);
-    if(P > 0){data_ok = true;}
-    } else {return;}
-  }
-  else if(chip_baro == BARO_HP203B){ 
-    if(sensor.next_baro_reading && (now > sensor.next_baro_reading)){
-    hp.Measure_Pressure();
-    hp.Measure_Temperature();
-    hp.startMeasure();
-    P = hp.hp_sensorData.P;
-    T = hp.hp_sensorData.T;
-    if(P > 0){data_ok = true;}
-    } else {return;}
-  }
+  #endif
 
+  #if BREEZEDUDE_BARO_BMP3XX
+  if(chip_baro == BARO_BMP3xx){
+    if(sensor.next_baro_reading && (now > sensor.next_baro_reading)){
+      P = bmp3xx.pressure / 100;
+      T = bmp3xx.temperature;
+      bmp3xx.setOutputDataRate(BMP3_ODR_0_001_HZ);
+      if(P > 0){ data_ok = true; }
+    } else { return; }
+  }
+  #endif
+
+  #if BREEZEDUDE_BARO_HP203B
+  if(chip_baro == BARO_HP203B){
+    if(sensor.next_baro_reading && (now > sensor.next_baro_reading)){
+      hp.Measure_Pressure();
+      hp.Measure_Temperature();
+      hp.startMeasure();
+      P = hp.hp_sensorData.P;
+      T = hp.hp_sensorData.T;
+      if(P > 0){ data_ok = true; }
+    } else { return; }
+  }
+  #endif
 
   if(data_ok){
     sensor.baro_temp = T;
@@ -214,7 +244,13 @@ void forward_analog_test_serial(){
 
     if(settings.analog_test_mode && (time() - last_print > 25)){
       last_print = time();
-      log_if("%lu Speed/Dir state: %c\t%i\r\n", time(), s?'o':'-', d);
+      log_i("Speed/Dir state: ");
+      log_write((uint32_t)time());
+      log_i(" ");
+      log_i(s ? "o" : "-");
+      log_i("\t");
+      log_write(d);
+      log_i("\r\n");
     }
     
   } else {
@@ -255,15 +291,14 @@ void forward_sensor_serial(){
       // Output the data
       if(bufferpos){
         if(usb_connected){
-          char line[3 * 64 + 1];
           int i = 0;
           while (i < bufferpos) {
             int chunk = min(64, bufferpos - i);
-            int off = 0;
             for (int j = 0; j < chunk; j++) {
-              off += snprintf(&line[off], sizeof(line) - off, "%02X ", buffer[i + j]);
+              log_write_hex(buffer[i + j], 2);
+              log_i(" ");
             }
-            Serial.println(line);
+            log_i("\r\n");
             i += chunk;
           }
         }
@@ -279,8 +314,8 @@ bool set_value(char* key,  char* value){
   //printf("%s = %s\r\n",key, value);
 
   if(strcmp(key,"WindDir")==0) {sensor.wind_dir_raw = atoi(value); add_wind_history_dir(sensor.wind_dir_raw); return false;}
-  if(strcmp(key,"WindSpeed")==0) {sensor.wind_speed = atof(value)*3.6; add_wind_history_wind(sensor.wind_speed); printf("%s = %0.2f\r\n",key, sensor.wind_speed); return false;}
-  if(strcmp(key,"WindGust")==0) {sensor.wind_gust = atof(value)*3.6; add_wind_history_gust(sensor.wind_gust); printf("%s = %0.2f\r\n",key, sensor.wind_gust); return false;}
+  if(strcmp(key,"WindSpeed")==0) {sensor.wind_speed = atof(value)*3.6; add_wind_history_wind(sensor.wind_speed); log_v("WindSpeed: ", sensor.wind_speed); return false;}
+  if(strcmp(key,"WindGust")==0) {sensor.wind_gust = atof(value)*3.6; add_wind_history_gust(sensor.wind_gust); log_v("WindGust: ", sensor.wind_gust); return false;}
   if(strcmp(key,"Temperature")==0) {sensor.temperature = atof(value); if(settings.sensor_type != s_WS80){settings.sensor_type = s_WS80; log_i("Detected WS80\n");} return false;} // WS80 only - autodetection
   if(strcmp(key,"GXTS04Temp")==0) {sensor.temperature = atof(value);  if(settings.sensor_type != s_WS85){settings.sensor_type = s_WS85; log_i("Detected WS85\n");} return false;} // WS85 only
   if(strcmp(key,"Humi")==0) {sensor.humidity = atoi(value); return false;}
@@ -310,7 +345,7 @@ bool parse_wsdat(char* input, int len){
     while (token != NULL) {
         if(num == 0){
           if(strcmp(token, "$WSDAT")==0){
-            printf("%s\n", token);
+            log_v("$WSDAT\n");
             num =1;
           }
         }
@@ -578,16 +613,20 @@ void get_solar_charger_state(){
 
 // GPS ----------------------------------------------------------------------------------------------------------------------
 void read_gps(){
+#if BREEZEDUDE_ENABLE_GPS
   while (GPS_SERIAL.available() > 0){
     uint8_t c = GPS_SERIAL.read();
     //DEBUGSER.print(c);
     tinyGps.encode(c);
     if (tinyGps.location.isUpdated() && tinyGps.location.isValid() ){
-        settings.pos_lat = tinyGps.location.lat();
-        settings.pos_lon = tinyGps.location.lng();
-        settings.altitude = tinyGps.altitude.meters();
-        sensor.last_gps_valid = time();
-        //DEBUGSER.println("Position Update");
+      settings.pos_lat = tinyGps.location.lat();
+      settings.pos_lon = tinyGps.location.lng();
+      settings.altitude = tinyGps.altitude.meters();
+      sensor.last_gps_valid = time();
+      //DEBUGSER.println("Position Update");
     }
   }
+#else
+  settings.use_gps = false;
+#endif
 }

@@ -1,7 +1,5 @@
 #pragma once
 
-#define HAS_HEATER // support for Heater (HW V1.x)
-
 #define BROADCAST_INTERVAL 40*1000UL // dafault value,  overwritten by settingfile
 
 #define LORA_FREQ_EU 868.2
@@ -39,12 +37,6 @@
 // Pins with solder jumpers 
 #define PIN_ID0 6 // PA20 - SERCOM5/PAD[2]
 #define PIN_ID1 7 // PA21 - SERCOM5/PAD[3]
-
-#ifdef HAS_HEATER
-  #define HEATER_MAX_V 9.20 // Maximum setpoint voltage, thermal limit by inductor (~1,8A conntiniuos, actual voltage ~8V)
-  #define PIN_EN_DCDC 19 // A5 19 PB02
-  #define PIN_EN_HEATER 4 //D4/A8 PA08
-#endif
 
 
 #define FANET_VENDOR_ID 0xBD

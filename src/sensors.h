@@ -5,22 +5,58 @@
 #include "ws85uart.h"
 
 #include <Wire.h>
+
+#ifndef BREEZEDUDE_BARO_BMP280
+  #define BREEZEDUDE_BARO_BMP280 0
+#endif
+#ifndef BREEZEDUDE_BARO_SPL06
+  #define BREEZEDUDE_BARO_SPL06 1
+#endif
+#ifndef BREEZEDUDE_BARO_BMP3XX
+  #define BREEZEDUDE_BARO_BMP3XX 0
+#endif
+#ifndef BREEZEDUDE_BARO_HP203B
+  #define BREEZEDUDE_BARO_HP203B 1
+#endif
+#ifndef BREEZEDUDE_ENABLE_GPS
+  #define BREEZEDUDE_ENABLE_GPS 1
+#endif
+
+#if BREEZEDUDE_BARO_SPL06
 #include <SPL06.h>
+#endif
+#if BREEZEDUDE_BARO_BMP3XX
 #include <Adafruit_BMP3XX.h>
+#endif
+#if BREEZEDUDE_BARO_BMP280
 #include <BMP280.h>
+#endif
+#if BREEZEDUDE_BARO_HP203B
 #include <HP203B.h> // https://github.com/ncdcommunity/Arduino_Library_HP203B_Barometer_Altimeter_Sensor/tree/master
+#endif
 #include <qmc5883p.h>
+#if BREEZEDUDE_ENABLE_GPS
 #include <TinyGPS++.h>
+#endif
 
 extern WS85WindSensor ws85uart;
+#if BREEZEDUDE_ENABLE_GPS
 extern TinyGPSPlus tinyGps;
-
+#endif
 
 // I2C Barometer
+#if BREEZEDUDE_BARO_BMP280
 extern BMP280 bmp280; // Bosch BMP280
+#endif
+#if BREEZEDUDE_BARO_SPL06
 extern SPL06 spl; // Goertek SPL06-001
+#endif
+#if BREEZEDUDE_BARO_HP203B
 extern HP203B hp; // HP203B 0x76 or 0x77
+#endif
+#if BREEZEDUDE_BARO_BMP3XX
 extern Adafruit_BMP3XX bmp3xx;
+#endif
 extern QMC5883P qmc5883p; // GY-271
 
 

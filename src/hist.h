@@ -17,7 +17,7 @@ typedef struct g{
 
 
 
-// Data histroy, mainly for heater control
+// Data history
 typedef struct h{
   bool set = false;
   int8_t wind;
