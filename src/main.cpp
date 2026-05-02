@@ -89,10 +89,8 @@ static bool keep_usb_active_during_sleep(){
   if(settings.test_with_usb){
     return true;
   }
-  if(usb_connected || TinyUSBDevice.mounted()){
-    return true;
-  }
-  return millis() < 15000UL;
+  // Keep USB only while a host has an open CDC session.
+  return Serial.dtr();
 }
 
 uint32_t sleep(bool enable_uart_interrupt){
@@ -981,7 +979,7 @@ loopcounter++;
   }
 
 // Check if everything is done --> sleep
-  if(!send_active && !ota_lora_busy() && sleep_allowed && (time() > sleep_allowed) && (!usb_connected || keep_usb_active_during_sleep()) && (time() > 2500)){ // allow sleep after 2500 ms to get a chance to detect USB / CDC commands
+  if(!send_active && !ota_lora_busy() && sleep_allowed && (time() > sleep_allowed) && (time() > 2500)){ // allow sleep after 2500 ms to get a chance to detect USB / CDC commands
     go_sleep();
   }
 

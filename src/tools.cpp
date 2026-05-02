@@ -14,6 +14,7 @@ uint32_t sleeptime_cum = 0; // cumulative time spend in sleepmode, used for time
 Settings settings;
 volatile bool usb_detach_event = false;
 volatile bool usb_ignore_detach_event = false;
+static uint32_t usb_last_activity_ms = 0;
 
 bool format_flash(){
   bool ok = ota_storage_write_text(OTA_SETTINGS_ADDRESS, OTA_SETTINGS_SIZE, "");
@@ -143,6 +144,7 @@ void read_serial_cmd(){
 
   while (Serial.available()){
     usb_connected = true;
+    usb_last_activity_ms = millis();
     buffer[co] = Serial.read();
     if(buffer[co] == '\n'){
       ok = process_line(buffer, co, &apply_setting); // Line complete
@@ -174,6 +176,7 @@ void log_v_hex_dump(const uint8_t *data, size_t len){
 
 extern "C" void tud_mount_cb(void) {
   usb_connected = true;
+  usb_last_activity_ms = millis();
   usb_detach_event = false;
   usb_ignore_detach_event = false;
 }
@@ -199,77 +202,42 @@ static bool usb_frame_changed(){
 }
 
 void handle_usb_link_watchdog(){
-  // USB link watchdog must run before any MSC early-return path in loop().
-  static uint32_t usb_link_lost_at = 0;
-  static uint32_t usb_frame_alive_at = 0;
-  static bool usb_seen_dtr = false;
+  static bool usb_prev_connected = false;
+  const uint32_t now = millis();
 
   if(ota_lora_busy()) {
-    usb_link_lost_at = 0;
     usb_detach_event = false;
     return;
   }
 
-  if(usb_connected){
-    if(usb_frame_changed()){
-      usb_frame_alive_at = millis();
-    } else if(!usb_frame_alive_at){
-      usb_frame_alive_at = millis();
-    }
-  } else {
-    usb_frame_alive_at = 0;
+  const bool dtr = Serial.dtr();
+  const bool fsm_disconnected = usb_fsm_disconnected();
+  const bool frame_progress = usb_frame_changed();
+
+  if(frame_progress || dtr) {
+    usb_last_activity_ms = now;
   }
 
-  if(usb_connected && Serial.dtr()){
-    usb_seen_dtr = true;
+  const bool recent_activity = usb_last_activity_ms && ((now - usb_last_activity_ms) <= 1500UL);
+  bool connected = (dtr || recent_activity) && !fsm_disconnected;
+
+  if(usb_detach_event && !usb_ignore_detach_event){
+    connected = false;
   }
 
-  bool usb_link_lost = false;
-  if(usb_connected && !usb_ignore_detach_event){
-    if(usb_detach_event){
-      usb_link_lost = true;
-    }
-    if(!TinyUSBDevice.mounted()){
-      usb_link_lost = true;
-    }
-    if(usb_seen_dtr && !Serial.dtr()){
-      usb_link_lost = true;
-    }
-    if(usb_fsm_disconnected()){
-      usb_link_lost = true;
-    }
-    // No SOF/frame progress for >1.5s indicates dead USB link, even when mounted()
-    // or callbacks remain stale due to missing VBUS sense on some boards.
-    if(usb_frame_alive_at && (millis() - usb_frame_alive_at > 1500)){
-      usb_link_lost = true;
-    }
-  }
+  usb_connected = connected;
 
-  if(usb_link_lost){
-    if(!usb_link_lost_at){
-      usb_link_lost_at = millis();
-      if(usb_detach_event) {
-        log_i("USB watchdog: detach event\r\n");
-      } else if(!TinyUSBDevice.mounted()) {
-        log_i("USB watchdog: TinyUSB unmounted\r\n");
-      } else if(usb_seen_dtr && !Serial.dtr()) {
-        log_i("USB watchdog: DTR dropped\r\n");
-      } else if(usb_fsm_disconnected()) {
-        log_i("USB watchdog: USB FSM disconnected\r\n");
-      } else {
-        log_i("USB watchdog: no USB frame progress\r\n");
-      }
-    }
-    if(millis() - usb_link_lost_at > 500){
-      log_i("USB link lost, restart\r\n");
-      log_flush();
+  if(connected != usb_prev_connected){
+    if(connected){
+      log_i("USB connected\r\n");
       usb_detach_event = false;
-      usb_link_lost_at = 0;
-      usb_seen_dtr = false;
-      NVIC_SystemReset();
+      usb_ignore_detach_event = false;
+    } else {
+      log_i("USB disconnected\r\n");
+      usb_detach_event = false;
+      usb_last_activity_ms = 0;
     }
-  } else {
-    usb_link_lost_at = 0;
+    usb_prev_connected = connected;
   }
 }
 
