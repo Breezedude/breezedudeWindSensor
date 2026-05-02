@@ -101,36 +101,44 @@
     uint16_t develop     :1;  // bit  15:   0 = Release, 1 = Develop/Experimental
   } __attribute__((packed)) hwinfo_builddate_t;
 
+  enum {
+    HWINFO_DEBUG_DYNAMIC = 0x01,
+    HWINFO_DEBUG_OTA     = 0x02,
+    HWINFO_DEBUG_STATIC  = 0x03,
+  };
+
   // Debug data appended after HW Info payload.
-  // First byte is the decode type; struct below is for decode type 0x01.
+  // First byte is the decode type selecting one of the grouped payloads below.
+
+  // Debug data decode type 0x01: fast-changing runtime data
   typedef struct {
-    uint16_t vbatt_mv;          // battery voltage in mV
-    uint8_t  batt_perc;         // battery state-of-charge 0-100 %
-    uint8_t  pv_state;          // bit0: charging active, bit1: charge done
-    // Config byte
+    uint16_t vbatt_mv;       // battery voltage in mV
+    uint8_t  batt_perc;      // battery state-of-charge 0-100 %
+    uint8_t  pv_state;       // bit0: charging active, bit1: charge done
+    uint16_t rx_count;       // total FANET packets received since boot
+    uint16_t forward_count;  // total FANET packets forwarded since boot
+    uint8_t  lbt_counter;    // LBT retry counter, resets on boot
+    uint8_t  reserved;       // reserved for future dynamic counters
+  } __attribute__((packed)) hwinfo_debug_t1;
+
+  // Debug data decode type 0x02: OTA / update-relevant data
+  typedef struct {
+    uint16_t version_bcd;      // major.minor.patch packed into nibbles, e.g. 0x072
+    uint32_t nonce;            // challenge nonce for the OTA offer reply
+    uint16_t slot_capacity_kb; // currently available inactive slot size in KiB
+    uint8_t  ota_proto;        // OTA protocol version
+    uint8_t  ota_state;        // bit0: currently active slot (0=A, 1=B)
+  } __attribute__((packed)) hwinfo_debug_t2;
+
+  // Debug data decode type 0x03: static / slowly changing configuration
+  typedef struct {
     unsigned int sensor_type  :5;   // wind sensor type (maps to Sensor enum: 0=invalid,1=WS80,2=WS85,3=WS85_UART,4=DAVIS6410,5=WINDNERD)
     unsigned int use_baro     :1;   // barometer enabled
     unsigned int uv_triggered :1;   // undervoltage triggered
     unsigned int lbt          :1;   // LBT enabled
-    uint8_t  lbt_counter;           // LBT retry counter, resets on boot
-    uint8_t  lora_rssi_threshold;   // LBT RSSI threshold in dBm, inversed to fit in uint8_t (stored as -rssi_threshold, e.g. 104 for -104dBm)
-    // Compact BCD version: major.minor.patch in 3 nibbles, e.g. 0.7.1 -> 0x071
-    uint16_t version_bcd;
-  } __attribute__((packed)) hwinfo_debug_t1;
-
-  // Debug data decode type 0x02: LoRa + station configuration
-  typedef struct {
-    uint16_t gust_age;       // gust age in seconds
-    uint16_t wind_age;        // wind age in seconds
-    uint8_t sensor_integ_s; // sensor integration time in seconds (e.g. for pulse counting)
-    uint8_t reduce_interval_voltage; // voltage threshold for reduced send interval in 2V + 0.01V (e.g. 141 = 3.41V)
-
-  } __attribute__((packed)) hwinfo_debug_t2;
-
-  // Debug data decode type 0x03: RX / forwarding statistics
-  typedef struct {
-    uint16_t rx_count;       // total FANET packets received since boot
-    uint16_t forward_count;  // total FANET packets forwarded since boot
+    uint8_t  lora_rssi_threshold;   // inverted RSSI threshold, e.g. 104 for -104 dBm
+    uint8_t  sensor_integ_s;        // sensor integration time in seconds
+    uint8_t  reduce_interval_voltage; // threshold encoded as voltage*100 - 200 (e.g. 141 = 3.41 V)
   } __attribute__((packed)) hwinfo_debug_t3;
 
   // Input data passed to pack_hwinfo()
@@ -150,11 +158,11 @@
     bool     bUptime;
     uint16_t uptime_min;    // uptime in minutes
 
-    // debug data: debug_type selects which struct is serialised (0x01 / 0x02 / 0x03 / ...)
+    // debug data: debug_type selects one grouped payload (dynamic / ota / static)
     uint8_t         debug_type;
-    hwinfo_debug_t1 debug;
-    hwinfo_debug_t2 debug2;
-    hwinfo_debug_t3 debug3;
+    hwinfo_debug_t1 debug_dynamic;
+    hwinfo_debug_t2 debug_ota;
+    hwinfo_debug_t3 debug_static;
   } hwInfoData;
 
 

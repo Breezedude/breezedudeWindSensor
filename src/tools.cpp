@@ -2,7 +2,9 @@
 #include "defines.h"
 #include "logging.h"
 #include "sleep.h"
-#include "msc.h"
+#include "ota_ab.h"
+#include "ota_lora.h"
+#include "config_update.h"
 #include <Adafruit_TinyUSB.h>
 
 extern LORA_MODULE lora_module;
@@ -12,6 +14,163 @@ uint32_t sleeptime_cum = 0; // cumulative time spend in sleepmode, used for time
 Settings settings;
 volatile bool usb_detach_event = false;
 volatile bool usb_ignore_detach_event = false;
+
+bool format_flash(){
+  bool ok = ota_storage_write_text(OTA_SETTINGS_ADDRESS, OTA_SETTINGS_SIZE, "");
+  if(ok){
+    ota_storage_write_text(OTA_VERSIONS_ADDRESS, OTA_VERSIONS_SIZE, "");
+    log_i("Bootloader settings storage erased\r\n");
+  } else {
+    log_e("Error: failed to erase bootloader settings storage\r\n");
+  }
+  return ok;
+}
+
+bool setup_flash(){
+  char probe[8] = {0};
+  if(ota_storage_read_text(OTA_SETTINGS_ADDRESS, probe, sizeof(probe))){
+    log_i("Bootloader settings storage ready\r\n");
+  } else {
+    log_i("Bootloader settings storage empty, waiting for user config\r\n");
+  }
+  return true;
+}
+
+void log_reset_cause(){
+  const uint8_t cause = PM->RCAUSE.reg;
+  log_write("Reset cause: 0x");
+  log_write_hex(cause, 2);
+  log_write(" [");
+
+  bool any = false;
+  if(cause & PM_RCAUSE_POR)   { log_write("POR "); any = true; }
+  if(cause & PM_RCAUSE_BOD12) { log_write("BOD12 "); any = true; }
+  if(cause & PM_RCAUSE_BOD33) { log_write("BOD33 "); any = true; }
+  if(cause & PM_RCAUSE_EXT)   { log_write("EXT "); any = true; }
+  if(cause & PM_RCAUSE_WDT)   { log_write("WDT "); any = true; }
+  if(cause & PM_RCAUSE_SYST)  { log_write("SYST "); any = true; }
+  if(!any) {
+    log_write("unknown");
+  }
+  log_write("]\r\n");
+}
+
+bool parse_file(char * filename){
+  #define LINEBUFFERSIZE 512
+  bool ret = false;
+  bool parsed = false;
+  led_status(1);
+
+  // Reset to struct defaults before each parse attempt.
+  // Optional parameters keep their built-in defaults, while mandatory fields
+  // must be supplied by the user config below.
+  settings = Settings();
+
+  if(strcmp(filename, SETTINGSFILE) == 0){
+    char linebuffer[LINEBUFFERSIZE] = {0};
+    char rawbuf[LINEBUFFERSIZE] = {0};
+    const char *text = nullptr;
+    int co = 0;
+    auto parse_settings_line = [&](int line_length) {
+      if(line_length <= 0){
+        return;
+      }
+      linebuffer[line_length] = '\0';
+      process_line(linebuffer, line_length, &apply_setting);
+    };
+
+    if(ota_storage_read_text(OTA_SETTINGS_ADDRESS, rawbuf, sizeof(rawbuf))){
+      log_i("Reading settings from bootloader storage\r\n");
+      text = rawbuf;
+    } else {
+      log_e("Bootloader settings empty, waiting for user config\r\n");
+      text = nullptr;
+    }
+
+    if(text){
+      for(size_t i = 0; text[i] != '\0'; ++i){
+        linebuffer[co] = text[i];
+        if(linebuffer[co] == '\n'){
+          parse_settings_line(co);
+          co = -1;
+        }
+        co++;
+        if(co >= LINEBUFFERSIZE){
+          log_e("Bootloader settings buffer error\r\n");
+          return false;
+        }
+      }
+      if(co > 0){
+        parse_settings_line(co);
+      }
+      parsed = true;
+    }
+  }
+
+  if(parsed){
+    ret = true;
+
+    if(settings.station_name.length() == 0){
+      ret = false;
+      log_e("Missing mandatory setting: NAME\r\n");
+    }
+
+    if(settings.pos_lat == 0 || settings.pos_lon == 0){
+      ret = false;
+      log_e("Missing or invalid mandatory location (LAT/LON)\r\n");
+    }
+
+    if(settings.sensor_type == s_invalid){
+      ret = false;
+      log_e("Missing mandatory setting: sensor type\r\n");
+    }
+
+    led_status(0);
+  }
+  if(!ret){
+    led_status(0);
+    led_error(1);
+  }
+  log_flush();
+  return ret;
+}
+
+void read_serial_cmd(){
+  #define CMDBUFFERSIZE 127
+  static char buffer [CMDBUFFERSIZE];
+  static int co = 0;
+  bool ok = false;
+
+  while (Serial.available()){
+    usb_connected = true;
+    buffer[co] = Serial.read();
+    if(buffer[co] == '\n'){
+      ok = process_line(buffer, co, &apply_setting); // Line complete
+      co=-1; // against +1 below
+    }
+    co++;
+  }
+  if(ok){
+    // Apply new mppt voltage
+  }
+}
+
+void log_v_hex_dump(const uint8_t *data, size_t len){
+  if(!settings.verbose_usb || !usb_connected){
+    return;
+  }
+
+  size_t i = 0;
+  while(i < len){
+    size_t chunk = min((size_t)24, len - i);
+    for(size_t j = 0; j < chunk; j++){
+      log_write_hex(data[i + j], 2);
+      log_i(" ");
+    }
+    log_i("\r\n");
+    i += chunk;
+  }
+}
 
 extern "C" void tud_mount_cb(void) {
   usb_connected = true;
@@ -44,6 +203,12 @@ void handle_usb_link_watchdog(){
   static uint32_t usb_link_lost_at = 0;
   static uint32_t usb_frame_alive_at = 0;
   static bool usb_seen_dtr = false;
+
+  if(ota_lora_busy()) {
+    usb_link_lost_at = 0;
+    usb_detach_event = false;
+    return;
+  }
 
   if(usb_connected){
     if(usb_frame_changed()){
@@ -81,7 +246,20 @@ void handle_usb_link_watchdog(){
   }
 
   if(usb_link_lost){
-    if(!usb_link_lost_at){ usb_link_lost_at = millis(); }
+    if(!usb_link_lost_at){
+      usb_link_lost_at = millis();
+      if(usb_detach_event) {
+        log_i("USB watchdog: detach event\r\n");
+      } else if(!TinyUSBDevice.mounted()) {
+        log_i("USB watchdog: TinyUSB unmounted\r\n");
+      } else if(usb_seen_dtr && !Serial.dtr()) {
+        log_i("USB watchdog: DTR dropped\r\n");
+      } else if(usb_fsm_disconnected()) {
+        log_i("USB watchdog: USB FSM disconnected\r\n");
+      } else {
+        log_i("USB watchdog: no USB frame progress\r\n");
+      }
+    }
     if(millis() - usb_link_lost_at > 500){
       log_i("USB link lost, restart\r\n");
       log_flush();
@@ -110,6 +288,103 @@ void attachInterruptWakeup(uint32_t pin, voidFuncPtr callback, uint32_t mode, bo
 // Helper ----------------------------------------------------------------------------------------------------------------------
 
 const char* wakeup_source_string[] = {"NONE", "RTC", "EIC", "WDT", "UART", "LORA"};
+
+String get_bootloader_version(){
+  static bool cached = false;
+  static String version = "unknown";
+  if(cached){
+    return version;
+  }
+  cached = true;
+
+  constexpr uintptr_t BOOT_FLASH_START = 0x00000000UL;
+  constexpr uintptr_t BOOT_FLASH_END   = 0x00004000UL;
+  static const char prefix[] = "UF2 Bootloader ";
+  constexpr size_t prefix_len = sizeof(prefix) - 1u;
+
+  const uint8_t *flash_ptr = reinterpret_cast<const uint8_t *>(BOOT_FLASH_START);
+  const size_t scan_len = (size_t)(BOOT_FLASH_END - BOOT_FLASH_START);
+
+  for(size_t i = 0; i + prefix_len < scan_len; ++i){
+    if(memcmp(flash_ptr + i, prefix, prefix_len) != 0){
+      continue;
+    }
+
+    char buf[40];
+    size_t n = 0;
+    const char *s = reinterpret_cast<const char *>(flash_ptr + i + prefix_len);
+    while(n < sizeof(buf) - 1u){
+      char c = s[n];
+      if(c == '\0' || c == '\r' || c == '\n' || (uint8_t)c == 0xFFu){
+        break;
+      }
+      buf[n++] = c;
+    }
+    buf[n] = '\0';
+
+    if(n > 0u){
+      version = String(buf);
+    }
+    break;
+  }
+
+  return version;
+}
+
+static String get_bootloader_version_for_version_text(){
+#ifdef BOOTLOADER_VERSION_TXT_OVERRIDE
+  return String(BOOTLOADER_VERSION_TXT_OVERRIDE);
+#else
+  String version = get_bootloader_version();
+  int git_suffix = version.indexOf("-0-g");
+  if(git_suffix > 0){
+    version.remove(git_suffix);
+  }
+  int feature_suffix = version.indexOf(' ');
+  if(feature_suffix > 0){
+    version.remove(feature_suffix);
+  }
+  return version;
+#endif
+}
+
+float parse_decimal_fast(const char *s){
+  if(!s){
+    return 0.0f;
+  }
+
+  while(*s == ' ' || *s == '\t'){
+    s++;
+  }
+
+  bool neg = false;
+  if(*s == '-' || *s == '+'){
+    neg = (*s == '-');
+    s++;
+  }
+
+  uint32_t int_part = 0;
+  while(*s >= '0' && *s <= '9'){
+    int_part = int_part * 10u + (uint32_t)(*s - '0');
+    s++;
+  }
+
+  uint32_t frac_part = 0;
+  uint32_t frac_scale = 1;
+  if(*s == '.' || *s == ','){
+    s++;
+    while(*s >= '0' && *s <= '9'){
+      if(frac_scale < 1000000u){
+        frac_part = frac_part * 10u + (uint32_t)(*s - '0');
+        frac_scale *= 10u;
+      }
+      s++;
+    }
+  }
+
+  float value = (float)int_part + ((float)frac_part / (float)frac_scale);
+  return neg ? -value : value;
+}
 
 // if a WS80 or WS85 sensor with "DEBUG hack" is connected
 bool is_wsxx(){
@@ -155,17 +430,25 @@ bool process_line(char * in, int len, bool (*cb)(char*, char*)){
 }
 
 // Settings ----------------------------------------------------------------------------------------------------------------------
+static void cmd_print_uuid() {
+  String uuid = config_update_get_full_uuid_hex();
+  char line[48];
+  snprintf(line, sizeof(line), "UUID=%s\r\n", uuid.c_str());
+  log_i(line);
+  log_flush();
+}
+
 bool apply_setting(char* settingName,  char* settingValue){
   //if(debug_enabled()){printf("Setting: %s = %s\r\n",settingName, settingValue); log_flush();}
   
   if(strcmp(settingName,"NAME")==0){settings.station_name = settingValue; return 1;}
-  if(strcmp(settingName,"LON")==0) {settings.pos_lon = atof(settingValue); return 1;}
-  if(strcmp(settingName,"LAT")==0) {settings.pos_lat = atof(settingValue); return 1;}
-  if(strcmp(settingName,"ALT")==0) {settings.altitude = atof(settingValue); return 1;}
-  if(strcmp(settingName,"LORA_FREQ")==0){settings.lora_freq = atof(settingValue); return 1;} 
+  if(strcmp(settingName,"LON")==0) {settings.pos_lon = parse_decimal_fast(settingValue); return 1;}
+  if(strcmp(settingName,"LAT")==0) {settings.pos_lat = parse_decimal_fast(settingValue); return 1;}
+  if(strcmp(settingName,"ALT")==0) {settings.altitude = parse_decimal_fast(settingValue); return 1;}
+  if(strcmp(settingName,"LORA_FREQ")==0){settings.lora_freq = parse_decimal_fast(settingValue); return 1;} 
   if(strcmp(settingName,"LORA_BW")==0)  {settings.lora_bw = atoi(settingValue); return 1;}
 
-  if(strcmp(settingName,"REDU_INTERV_VOLT")==0) { settings.reduce_interval_voltage = atof(settingValue); return 1;}
+  if(strcmp(settingName,"REDU_INTERV_VOLT")==0) { settings.reduce_interval_voltage = parse_decimal_fast(settingValue); return 1;}
 
   if(strcmp(settingName,"HEADING_OFFSET")==0) {settings.heading_offset = atoi(settingValue); return 1;}
   if(strcmp(settingName,"GUST_AGE")==0) {settings.gust_age = (uint32_t)atoi(settingValue)*1000; return 1;}
@@ -196,9 +479,6 @@ bool apply_setting(char* settingName,  char* settingValue){
   if(strcmp(settingName,"ERRORS")==0) {log_set_error(atoi(settingValue)); return 1;}
   if(strcmp(settingName,"TEST_USB")==0) {
     settings.test_with_usb = atoi(settingValue);
-    // Disable MSC while in USB test mode — host-side polling makes the system
-    // very laggy when loop() is not running. Re-enable if mode is turned off.
-    usb_msc.setUnitReady(!settings.test_with_usb);
     return 1;
   }
   if(strcmp(settingName,"TESTMODE")==0) {settings.testmode = atoi(settingValue); return 1;}
@@ -212,8 +492,20 @@ bool apply_setting(char* settingName,  char* settingValue){
   if(strcmp(settingName,"LBT")==0) {settings.lora_lbt = atoi(settingValue); return 1;}
   if(strcmp(settingName,"LBT_RSSI_THRESHOLD")==0) {settings.lora_rssi_threshold = atoi(settingValue); return 1;}
   if(strcmp(settingName,"FANET_SMART_FORWARD")==0) {settings.lora_smart_rcv = atoi(settingValue); return 1;}
+
+  if(strcmp(settingName,"OTA_ENABLE")==0) {settings.ota_enable = atoi(settingValue) != 0; return 1;}
+  if(strcmp(settingName,"OTA_CONFIRM")==0) {return ota_ab_confirm_current() ? 1 : 0;}
+  if(strcmp(settingName,"GET_UUID")==0) {cmd_print_uuid(); return 1;}
+  if(strcmp(settingName,"OTA_BOOT_SLOT")==0) {
+    uint8_t slot = (uint8_t)atoi(settingValue);
+    if(ota_ab_request_slot(slot)) {
+      NVIC_SystemReset();
+    }
+    return 1;
+  }
+
   if(strcmp(settingName,"SLEEP")==0) {usb_connected =false; return 1;}
-  if(strcmp(settingName,"FORMAT")==0) {if(format_flash()){NVIC_SystemReset();} else {log_i("Error Formating Flash\r\n");} return 1;}
+  if(strcmp(settingName,"FORMAT")==0) {if(format_flash()){NVIC_SystemReset();} else {log_i("Error resetting bootloader settings\r\n");} return 1;}
   if(strcmp(settingName,"RESET")==0) {setup(); return 1;}
   if(strcmp(settingName,"SKIP_LORA")==0) {settings.skip_lora = true; return 1;}
   if(strcmp(settingName,"DELAY")==0) {delay(atoi(settingValue)); return 1;} // delay for WDT testing
@@ -234,6 +526,8 @@ void print_settings(){
     log_flush();
     log_i("Heading offset: ", settings.heading_offset); 
     log_i("Broadcast interval weather [s]: ", settings.broadcast_interval_weather/1000);
+    log_i("Broadcast interval name [s]: ", settings.broadcast_interval_name/1000);
+    log_i("Broadcast interval info [s]: ", settings.broadcast_interval_info/1000);
     log_i("LBT: "); log_i(settings.lora_lbt ? "ON\r\n" : "OFF\r\n");
     if(is_wsxx()){log_i("Sensor: WSXX Auto detect\r\n");}
     if(settings.sensor_type == s_DAVIS6410){log_i("Sensor: DAVIS 6410\r\n");}
@@ -241,6 +535,184 @@ void print_settings(){
     if(settings.sensor_type == s_WINDNERD){log_i("Sensor: Windnerd\r\n");}
     log_flush();
   }
+}
+
+// Update specific settings in the existing settings.txt from flash
+// Preserves all other content (comments, formatting, other parameters)
+bool update_settings_in_flash(const char* key, const char* value) {
+  const char* keys[1]   = { key };
+  const char* values[1] = { value };
+  return update_multiple_settings_in_flash(keys, values, 1);
+}
+
+// Update multiple settings in flash atomically
+// Uses static buffers to avoid heap fragmentation / large stack allocations.
+bool update_multiple_settings_in_flash(const char** keys, const char** values, size_t count) {
+  if (count == 0) {
+    return true;
+  }
+  if (count > 16) {
+    log_e("Too many settings to update at once\r\n");
+    return false;
+  }
+
+  // Static buffers: stored in BSS, never on stack or heap.
+  static char existing[OTA_SETTINGS_SIZE];
+  static char output[OTA_SETTINGS_SIZE];
+
+  memset(existing, 0, sizeof(existing));
+  memset(output,   0, sizeof(output));
+
+  if (!ota_storage_read_text(OTA_SETTINGS_ADDRESS, existing, sizeof(existing))) {
+    log_e("Settings flash empty, refusing update\r\n");
+    return false;
+  } else {
+    size_t existing_len = strlen(existing);
+    if (existing_len < 100u) {
+      // Settings appear truncated. Refuse partial rewrite until user uploads a valid file.
+      log_e("Settings truncated (");
+      char lbuf[8]; snprintf(lbuf, sizeof(lbuf), "%u", (unsigned)existing_len);
+      log_e(lbuf);
+      log_e(" bytes), refusing update\r\n");
+      return false;
+    } else {
+      if (debug_enabled()) {
+        char lbuf[8]; snprintf(lbuf, sizeof(lbuf), "%u", (unsigned)existing_len);
+        log_i("Settings read: ");
+        log_i(lbuf);
+        log_i(" bytes\r\n");
+      }
+    }
+  }
+
+  bool keys_found[16] = {false};
+  size_t out_pos = 0;
+
+  log_i("SF:loop\r\n"); log_flush();
+
+  const char* src = existing;
+  while (*src != '\0') {
+    const char* line_start = src;
+
+    // Find end of printable line content (stop before \r / \n / \0)
+    const char* line_end = src;
+    while (*line_end != '\0' && *line_end != '\r' && *line_end != '\n') {
+      line_end++;
+    }
+    size_t line_len = (size_t)(line_end - line_start);
+
+    // Check if this line matches one of the keys to replace
+    bool replaced = false;
+    for (size_t i = 0; i < count; ++i) {
+      size_t key_len = strlen(keys[i]);
+      if (line_len > key_len &&
+          line_start[key_len] == '=' &&
+          strncmp(line_start, keys[i], key_len) == 0) {
+        // Write replacement: key=value\r\n
+        size_t val_len = strlen(values[i]);
+        if (out_pos + key_len + 1u + val_len + 2u + 1u > sizeof(output)) {
+          log_e("SF:overflow replace\r\n");
+          return false;
+        }
+        memcpy(output + out_pos, keys[i], key_len); out_pos += key_len;
+        output[out_pos++] = '=';
+        memcpy(output + out_pos, values[i], val_len); out_pos += val_len;
+        output[out_pos++] = '\r';
+        output[out_pos++] = '\n';
+        keys_found[i] = true;
+        replaced = true;
+        break;
+      }
+    }
+
+    if (!replaced) {
+      if (out_pos + line_len + 1u > sizeof(output)) {
+        log_e("SF:overflow copy\r\n");
+        return false;
+      }
+      memcpy(output + out_pos, line_start, line_len);
+      out_pos += line_len;
+    }
+
+    // Advance past line ending — always consume the terminator byte(s),
+    // regardless of whether the line was replaced.
+    if (*line_end == '\0') {
+      break;
+    } else if (*line_end == '\r') {
+      if (!replaced) {
+        if (out_pos + 1u >= sizeof(output)) { log_e("SF:overflow eol\r\n"); return false; }
+        output[out_pos++] = '\r';
+      }
+      line_end++;
+      if (*line_end == '\n') {
+        if (!replaced) {
+          if (out_pos + 1u >= sizeof(output)) { log_e("SF:overflow eol\r\n"); return false; }
+          output[out_pos++] = '\n';
+        }
+        line_end++; // always advance past \n
+      }
+    } else { // '\n'
+      if (!replaced) {
+        if (out_pos + 1u >= sizeof(output)) { log_e("SF:overflow eol\r\n"); return false; }
+        output[out_pos++] = '\n';
+      }
+      line_end++;
+    }
+    src = line_end;
+  }
+
+  log_i("SF:append\r\n"); log_flush();
+
+  // Append keys that were not found in the existing file
+  for (size_t i = 0; i < count; ++i) {
+    if (!keys_found[i]) {
+      // Ensure the file ends with a newline before appending
+      if (out_pos > 0 && output[out_pos - 1] != '\n') {
+        if (out_pos + 2u >= sizeof(output)) { log_e("SF:overflow nl\r\n"); return false; }
+        output[out_pos++] = '\r';
+        output[out_pos++] = '\n';
+      }
+      size_t key_len = strlen(keys[i]);
+      size_t val_len = strlen(values[i]);
+      if (out_pos + key_len + 1u + val_len + 2u + 1u > sizeof(output)) {
+        log_e("SF:overflow append\r\n");
+        return false;
+      }
+      memcpy(output + out_pos, keys[i], key_len); out_pos += key_len;
+      output[out_pos++] = '=';
+      memcpy(output + out_pos, values[i], val_len); out_pos += val_len;
+      output[out_pos++] = '\r';
+      output[out_pos++] = '\n';
+    }
+  }
+
+  output[out_pos] = '\0';
+
+  {
+    char lbuf[24];
+    snprintf(lbuf, sizeof(lbuf), "SF:write %u bytes\r\n", (unsigned)out_pos);
+    log_i(lbuf); log_flush();
+  }
+
+  // Disable WDT for the duration of flash erase+write (can take >500ms for 2 rows).
+  // Re-enable immediately after so normal watchdog protection resumes.
+  if (settings.use_wdt) {
+    wdt_disable();
+  }
+
+  bool write_ok = ota_storage_write_text(OTA_SETTINGS_ADDRESS, OTA_SETTINGS_SIZE, output);
+
+  if (settings.use_wdt) {
+    wdt_enable(2500, false);
+  }
+
+  if (!write_ok) {
+    log_e("SF:write failed\r\n");
+    return false;
+  }
+
+  log_i("SF:done\r\n"); log_flush();
+  return true;
 }
 
 
@@ -300,7 +772,15 @@ bool ret = false;
   return ret;
 }
 
+
+
 void i2c_scan(){
+
+  #if 0
+  if(!debug_enabled()){
+    return;
+  }
+
   byte error, address;
   int nDevices;
   nDevices = 0;
@@ -323,7 +803,11 @@ void i2c_scan(){
     }    
   }
   if (nDevices == 0){DEBUGSER.println("No I2C devices found\n");}
+
+#endif
 }
+
+
 
 bool zone_not_eu(){
   return ((settings.pos_lon < -30.0 && settings.pos_lon > -180.0) ||            // North/South America
@@ -332,204 +816,64 @@ bool zone_not_eu(){
     );
 }
 
-static bool sync_flash_fs(){
-  bool ok = flash.syncBlocks();
-  if(!ok){
-    log_i("flash.syncBlocks failed\n");
-    return false;
-  }
-  my_internal_storage.flush_buffer();
-  return true;
-}
-
-// Returns FAT-encoded (date<<16 | time) for a file's last modification, or 0 if unavailable.
-static uint32_t get_fat_mtime(const char *path){
-  File f = fatfs.open(path, O_RDONLY);
-  if(!f){ return 0; }
-  uint16_t d = 0, t = 0;
-  f.getModifyDateTime(&d, &t);
-  f.close();
-  return ((uint32_t)d << 16) | t;
-}
-
-// Sets the T_WRITE timestamp of an open FatFile from a packed FAT mtime value.
-// Call after sync() and before close() to stamp the file with a specific time.
-static void fat_set_mtime(FatFile &f, uint32_t mtime){
-  if(!mtime){ return; }
-  uint16_t d = (uint16_t)(mtime >> 16);
-  uint16_t t = (uint16_t)(mtime & 0xFFFF);
-  uint16_t year  = ((d >> 9) & 0x7F) + 1980;
-  uint8_t  month = (d >> 5) & 0x0F;
-  uint8_t  day   = d & 0x1F;
-  uint8_t  hour  = (t >> 11) & 0x1F;
-  uint8_t  min   = (t >> 5)  & 0x3F;
-  uint8_t  sec   = (uint8_t)((t & 0x1F) * 2);
-  f.timestamp(T_WRITE, year, month, day, hour, min, sec);
-}
-
-// Formats a FAT-encoded (date<<16 | time) value as "YYYY-MM-DD HH:MM" into buf.
-static void format_fat_datetime(uint32_t mtime, char *buf, size_t len){
-  uint16_t d = (uint16_t)(mtime >> 16);
-  uint16_t t = (uint16_t)(mtime & 0xFFFF);
-  int year  = ((d >> 9) & 0x7F) + 1980;
-  int month = (d >> 5) & 0x0F;
-  int day   = d & 0x1F;
-  int hour  = (t >> 11) & 0x1F;
-  int min   = (t >> 5)  & 0x3F;
-  snprintf(buf, len, "%04d-%02d-%02d %02d:%02d", year, month, day, hour, min);
-}
-
-static void parse_versionfile_line(const char *line, String &file_version){
-  if(strncmp(line, "Version: ", 9) == 0){
-    file_version = String(line + 9);
-  }
-}
-
-static bool versionfile_needs_rewrite(const char *path){
-  if(!fatfs.exists(path)){
-    log_i("Version file missing\n");
-    return true;
-  }
-
-  File f = fatfs.open(path, FILE_READ);
-  if(!f){
-    log_i("Version file open failed, rewrite\n");
-    return true;
-  }
-
-  String file_version = "";
-  char line[128];
-  int idx = 0;
-
-  while(f.available()){
-    int c = f.read();
-    if(c < 0){
-      break;
-    }
-    if(c == '\r'){
-      continue;
-    }
-    if(c == '\n'){
-      line[idx] = '\0';
-      parse_versionfile_line(line, file_version);
-      idx = 0;
-      continue;
-    }
-    if(idx < (int)sizeof(line) - 1){
-      line[idx++] = (char)c;
-    }
-  }
-  if(idx > 0){
-    line[idx] = '\0';
-    parse_versionfile_line(line, file_version);
-  }
-  f.close();
-
-  if(file_version.length() == 0){
-    log_i("Version file has no version line, rewrite\n");
-    return true;
-  }
-  if(file_version != String(VERSION)){
-    log_i("Version changed, rewrite version file\n");
-    return true;
-  }
-
-  // Rewrite if settings.txt was modified after version.txt
-  uint32_t mtime_settings = get_fat_mtime("settings.txt");
-  uint32_t mtime_version  = get_fat_mtime(path);
-  if(mtime_settings && mtime_version && mtime_settings > mtime_version){
-    log_i("Settings newer than version file, rewrite\n");
-    return true;
-  }
-
-  return false;
-}
-
-bool create_versionfile(const char *filename){
-  const char *path = (filename && filename[0]) ? filename : "version.txt";
-  const char *name = path[0] == '/' ? path + 1 : path;
-
-  FatFile f;
-  FatFile root;
-  if (!fatfs.begin(&flash)) {
-    log_i("fs start fail\r\n");
-    return false;
-  }
-
-  if(!versionfile_needs_rewrite(path)){
-    //log_i("Version file up-to-date\n");
-    return true;
-  }
-
-  if(!root.open("/")){
-    log_v("open root failed\n");
-    return false;
-  }
-
-  bool opened = f.open(&root, name, O_WRONLY | O_CREAT | O_TRUNC);
-  root.close();
-  if(!opened){
-    log_v("open file error\r\n");
-    return false;
-  }
-
-  char line[96];
-  int n = snprintf(line, sizeof(line), "Version: %s\r\n", VERSION);
-  if(n > 0) { f.write((const uint8_t*)line, n); }
-  n = snprintf(line, sizeof(line), "FW Build: %s %s\r\n", __DATE__, __TIME__);
-  if(n > 0) { f.write((const uint8_t*)line, n); }
-  n = snprintf(line, sizeof(line), "FANET ID: %02X%04X\r\n", FANET_VENDOR_ID, get_fanet_id());
-  if(n > 0) { f.write((const uint8_t*)line, n); }
+static String build_version_text(){
+  String bootloader_version = get_bootloader_version_for_version_text();
 
   const char *lora_name = "UNKNOWN";
   if(lora_module == LORA_SX1276) { lora_name = "SX1276"; }
   if(lora_module == LORA_SX1262) { lora_name = "SX1262"; }
   if(lora_module == LORA_LLCC68) { lora_name = "LLCC68"; }
-  n = snprintf(line, sizeof(line), "LoRa Module: %s\r\n", lora_name);
-  if(n > 0) { f.write((const uint8_t*)line, n); }
 
   const char *baro_name = "UNKNOWN";
   if(chip_baro == BARO_BMP280) { baro_name = "BMP280"; }
   if(chip_baro == BARO_BMP3xx) { baro_name = "BMP3xx"; }
   if(chip_baro == BARO_SPL06) { baro_name = "SPL06"; }
   if(chip_baro == BARO_HP203B) { baro_name = "HP203B"; }
+
+  char line[96];
+  String rawText;
+  rawText.reserve(256);
+  rawText += "Firmware: "; rawText += VERSION; rawText += "\r\n";
+  int n = snprintf(line, sizeof(line), "FW Build: %s %s\r\n", __DATE__, __TIME__);
+  if(n > 0) { rawText += line; }
+  rawText += "Bootloader: "; rawText += bootloader_version; rawText += "\r\n";
+  n = snprintf(line, sizeof(line), "FANET ID: %02X%04X\r\n", FANET_VENDOR_ID, get_fanet_id());
+  if(n > 0) { rawText += line; }
+  n = snprintf(line, sizeof(line), "LoRa Module: %s\r\n", lora_name);
+  if(n > 0) { rawText += line; }
   n = snprintf(line, sizeof(line), "Barometer: %s\r\n", baro_name);
-  if(n > 0) { f.write((const uint8_t*)line, n); }
+  if(n > 0) { rawText += line; }
+  n = snprintf(line, sizeof(line),
+    "Chip-ID: %02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X\r\n",
+    UniqueID[0],  UniqueID[1],  UniqueID[2],  UniqueID[3],
+    UniqueID[4],  UniqueID[5],  UniqueID[6],  UniqueID[7],
+    UniqueID[8],  UniqueID[9],  UniqueID[10], UniqueID[11],
+    UniqueID[12], UniqueID[13], UniqueID[14], UniqueID[15]);
+  if(n > 0) { rawText += line; }
 
-  uint32_t mtime_settings = get_fat_mtime("settings.txt");
-  if(mtime_settings){
-    char ts[24];
-    format_fat_datetime(mtime_settings, ts, sizeof(ts));
-    n = snprintf(line, sizeof(line), "Settings modified: %s\r\n", ts);
-    if(n > 0) { f.write((const uint8_t*)line, n); }
+  return rawText;
+}
+
+static bool versionfile_needs_rewrite(const char *path){
+  (void)path;
+  char existing[OTA_VERSIONS_SIZE] = {0};
+  if(!ota_storage_read_text(OTA_VERSIONS_ADDRESS, existing, sizeof(existing))){
+    return true; // flash empty → write needed
   }
+  return build_version_text() != String(existing);
+}
 
-  if(!f.sync()){
-    log_v("file sync failed\n");
+bool create_versionfile(const char *filename){
+  (void)filename;
+  if(!versionfile_needs_rewrite(filename)){
+    return true;
   }
-
-  // Stamp version.txt with the same mtime as settings.txt so that the
-  // "settings newer than version" check does not trigger a rewrite on the
-  // next boot (the firmware has no RTC and SdFat would otherwise leave
-  // the new file at the FAT default time, always older than settings.txt).
-  if(mtime_settings){
-    fat_set_mtime(f, mtime_settings);
+  String text = build_version_text();
+  bool ok = ota_storage_write_text(OTA_VERSIONS_ADDRESS, OTA_VERSIONS_SIZE, text.c_str());
+  if(ok){
+    log_i("Version file updated\r\n");
+  } else {
+    log_e("Version file write failed\r\n");
   }
-
-  if(!f.close()){
-    log_v("file close failed\n");
-    return false;
-  }
-
-  if(!sync_flash_fs()){
-    return false;
-  }
-
-  if(!fatfs.exists(path)){
-    log_v("Version file entry missing after write\r\n");
-    return false;
-  }
-
-  //log_v("Version file success\r\n");
-  return true;
+  return ok;
 }

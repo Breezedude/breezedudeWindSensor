@@ -1,4 +1,5 @@
 #include "fanet.h"
+#include "logging.h"
 
   void pack_weatherdata(weatherData *wData, uint8_t * buffer){
 
@@ -97,15 +98,20 @@ size_t pack_hwinfo(const hwInfoData *data, uint8_t *buffer) {
     buffer[pos++] = (uint8_t)(data->uptime_min >> 8u);
   }
 
-  // Debug data: decode type byte followed by the matching payload struct
+  // Debug data: decode type byte followed by the matching grouped payload struct
   buffer[pos++] = data->debug_type;
-  if (data->debug_type == 0x01u) {
-    memcpy(&buffer[pos], &data->debug, sizeof(hwinfo_debug_t1));
+  if (data->debug_type == HWINFO_DEBUG_DYNAMIC) {
+    memcpy(&buffer[pos], &data->debug_dynamic, sizeof(hwinfo_debug_t1));
     pos += sizeof(hwinfo_debug_t1);
-  } else if (data->debug_type == 0x02u) {
-    memcpy(&buffer[pos], &data->debug2, sizeof(hwinfo_debug_t2));
+  } else if (data->debug_type == HWINFO_DEBUG_OTA) {
+    memcpy(&buffer[pos], &data->debug_ota, sizeof(hwinfo_debug_t2));
     pos += sizeof(hwinfo_debug_t2);
+  } else if (data->debug_type == HWINFO_DEBUG_STATIC) {
+    memcpy(&buffer[pos], &data->debug_static, sizeof(hwinfo_debug_t3));
+    pos += sizeof(hwinfo_debug_t3);
   }
+
+  log_i("Sending HW Info type:", (uint8_t)data->debug_type);
 
   return pos;
 

@@ -1,4 +1,9 @@
 #include "sensors.h"
+#include "sleep.h"
+#include "wiring_private.h"
+
+extern int div_cpu;
+extern bool undervoltage;
 
 
 #if BREEZEDUDE_ENABLE_GPS
@@ -27,8 +32,121 @@ CHIP_IMU chip_imu = IMU_NONE;
 
 Sensors sensor;
 
+void switch_WS_power(bool state){
+  static bool current_power_state = false;
+  if(state && !current_power_state){ // turn on
+    current_power_state = true;
+    pinMode(PIN_PS_WS,OUTPUT);
+    digitalWrite(PIN_PS_WS, 0);
+    // Re-connect UART pins to SERCOM0 peripheral before the sensor can respond
+    pinPeripheral(PIN_RX, PIO_SERCOM);
+    pinPeripheral(PIN_TX, PIO_SERCOM);
+    SENSOR_UART.begin(115200 * div_cpu);
+    log_i("WS sensor power ON\r\n");
+  }
+  if(!state && current_power_state){ // turn off
+    current_power_state = false;
+    digitalWrite(PIN_PS_WS, 1);
+    // Disable UART pins so the idle-HIGH TX line cannot leak current into the
+    // sensor through its input protection diodes when its VCC is removed.
+    pinDisable(PIN_TX); // PA10 - UART idles HIGH, would source current into sensor
+    pinDisable(PIN_RX); // PA11 - symmetric isolation
+    log_i("WS sensor power OFF\r\n");
+  }
+}
+
+static uint8_t voltageToSOCNonLinear(float v) {
+  if(v < 0.8f) {led_error(1); log_i("V_Batt read error: ", v); return 0;} // bad reading
+  if(v < 3.15f) {switch_WS_power(0); settings.uv_triggered = true; undervoltage = true; return 0;} // undervoltage, turn off sensor to save power
+  if(v > 3.3f) {switch_WS_power(1); undervoltage = false;}
+  if(v > 4.15f){settings.uv_triggered = false; return 100;}
+
+  // Piecewise linear OCV->SOC for 3.7V Li-Ion at low discharge rate.
+  // Use compact integer tables to save flash; 1% SOC resolution is sufficient here.
+  static const uint16_t vt_mv[] = { 3150, 3400, 3600, 3750, 3900, 4000, 4100, 4150 };
+  static const uint8_t  st[]    = {    0,    5,   20,   50,   75,   88,   97,  100 };
+  constexpr int N = 8;
+
+  uint16_t v_mv = (uint16_t)(v * 1000.0f + 0.5f);
+  if (v_mv <= vt_mv[0]) return 0;
+  if (v_mv >= vt_mv[N-1]) return 100;
+
+  for (int i = 1; i < N; i++) {
+    if (v_mv <= vt_mv[i]) {
+      uint16_t v0 = vt_mv[i - 1];
+      uint16_t v1 = vt_mv[i];
+      uint8_t s0 = st[i - 1];
+      uint8_t s1 = st[i];
+      uint32_t num = (uint32_t)(v_mv - v0) * (uint32_t)(s1 - s0) + (uint32_t)(v1 - v0) / 2u;
+      return (uint8_t)(s0 + (num / (uint32_t)(v1 - v0)));
+    }
+  }
+  return 100;
+}
+
+// Trigger ADC and calc battery value in percent and volts
+void read_batt_perc(){
+  static uint32_t last_battery_reading=0;
+  // only sample if last reading is older than 100ms
+  if(time()- last_battery_reading > 100){
+    last_battery_reading = time();
+    analogReference(AR_INTERNAL1V0);
+    analogReadResolution(10);
+    pinMode(PIN_V_READ, INPUT);
+
+    // Extend ADC sampling phase via SAMPCTRL instead of software delays between reads.
+    // ADC clock = 48 MHz / 512 ~= 94 kHz  ->  half-cycle ~= 5.3 us.
+    // SAMPLEN=4 adds 5 half-cycles ~= 26 us extra sample time per conversion.
+    //ADC->SAMPCTRL.reg = ADC_SAMPCTRL_SAMPLEN(4);
+    //while (ADC->STATUS.bit.SYNCBUSY);
+
+    constexpr int N_SAMPLES = 15;
+    uint16_t samples[N_SAMPLES];
+    digitalWrite(PIN_V_READ_TRIGGER,0);
+    delayMicroseconds(50); // allow divider to settle
+    for (int i = 0; i < N_SAMPLES; i++) {
+      samples[i] = analogRead(PIN_V_READ);
+    }
+    digitalWrite(PIN_V_READ_TRIGGER,1);
+
+    //ADC->SAMPCTRL.reg = ADC_SAMPCTRL_SAMPLEN(0); // restore default for other ADC users
+    //while (ADC->STATUS.bit.SYNCBUSY);
+
+    // Trimmed mean: discard min + max, average remaining N_SAMPLES-2
+    uint16_t vmin = samples[0], vmax = samples[0];
+    uint32_t vsum = 0;
+    for (int i = 0; i < N_SAMPLES; i++) {
+      vsum += samples[i];
+      if (samples[i] < vmin) vmin = samples[i];
+      if (samples[i] > vmax) vmax = samples[i];
+    }
+    float val = (float)(vsum - vmin - vmax) / (float)(N_SAMPLES - 2);
+
+    pinDisable(PIN_V_READ);
+    val *= 0.0040925; // 100k/330k 1.0V Vref
+
+    // Moving average over last 5 readings to suppress short voltage dips
+    constexpr int V_AVG_LEN = 5;
+    static float v_history[V_AVG_LEN] = {0};
+    static int v_idx = 0;
+    static int v_count = 0;
+    v_history[v_idx] = val;
+    v_idx = (v_idx + 1) % V_AVG_LEN;
+    if (v_count < V_AVG_LEN) v_count++;
+    float v_sum = 0;
+    for (int i = 0; i < v_count; i++) v_sum += v_history[i];
+    sensor.batt_volt = v_sum / v_count;
+
+    sensor.batt_perc = voltageToSOCNonLinear(sensor.batt_volt);
+    log_i("V_Bat: ", sensor.batt_volt);
+    log_i("Bat_perc: ", sensor.batt_perc);
+  }
+}
+
 static float apply_altitude_correction(float pressure_hpa, float temp_c, float altitude_m) {
-  // Cache expensive powf() result for the last altitude + quantized temperature.
+  // Lightweight approximation of the barometric altitude correction. (−2664 Byte flash)
+  // For the typical Breezedude altitude range, a 2nd-order expansion avoids
+  // pulling in powf() while staying close to the original result.
   static float last_altitude = -100000.0f;
   static int16_t last_temp_tenths = INT16_MIN;
   static float last_factor = 1.0f;
@@ -42,9 +160,10 @@ static float apply_altitude_correction(float pressure_hpa, float temp_c, float a
     const float lapse_times_alt = 0.0065f * altitude_m;
     const float denom = temp_c + lapse_times_alt + 273.15f;
     if (denom > 0.0f) {
-      const float base = 1.0f - (lapse_times_alt / denom);
-      if (base > 0.0f) {
-        last_factor = powf(base, -5.257f);
+      const float x = lapse_times_alt / denom;
+      if (x > 0.0f && x < 0.25f) {
+        const float x2 = x * x;
+        last_factor = 1.0f + (5.257f * x) + (16.45f * x2);
       } else {
         last_factor = 1.0f;
       }
@@ -224,7 +343,7 @@ void read_baro(){
     log_v("Baro: ", sensor.baro_pressure);
     log_v("Baro Temp: ", sensor.baro_temp);
   } else {
-    log_v("Baro no data, retry\r\n");
+    //log_v("Baro no data, retry\r\n");
     //baro_start_reading();
   }
 }
@@ -314,16 +433,16 @@ bool set_value(char* key,  char* value){
   //printf("%s = %s\r\n",key, value);
 
   if(strcmp(key,"WindDir")==0) {sensor.wind_dir_raw = atoi(value); add_wind_history_dir(sensor.wind_dir_raw); return false;}
-  if(strcmp(key,"WindSpeed")==0) {sensor.wind_speed = atof(value)*3.6; add_wind_history_wind(sensor.wind_speed); log_v("WindSpeed: ", sensor.wind_speed); return false;}
-  if(strcmp(key,"WindGust")==0) {sensor.wind_gust = atof(value)*3.6; add_wind_history_gust(sensor.wind_gust); log_v("WindGust: ", sensor.wind_gust); return false;}
-  if(strcmp(key,"Temperature")==0) {sensor.temperature = atof(value); if(settings.sensor_type != s_WS80){settings.sensor_type = s_WS80; log_i("Detected WS80\n");} return false;} // WS80 only - autodetection
-  if(strcmp(key,"GXTS04Temp")==0) {sensor.temperature = atof(value);  if(settings.sensor_type != s_WS85){settings.sensor_type = s_WS85; log_i("Detected WS85\n");} return false;} // WS85 only
+  if(strcmp(key,"WindSpeed")==0) {sensor.wind_speed = parse_decimal_fast(value)*3.6f; add_wind_history_wind(sensor.wind_speed); log_v("WindSpeed: ", sensor.wind_speed); return false;}
+  if(strcmp(key,"WindGust")==0) {sensor.wind_gust = parse_decimal_fast(value)*3.6f; add_wind_history_gust(sensor.wind_gust); log_v("WindGust: ", sensor.wind_gust); return false;}
+  if(strcmp(key,"Temperature")==0) {sensor.temperature = parse_decimal_fast(value); if(settings.sensor_type != s_WS80){settings.sensor_type = s_WS80; log_i("Detected WS80\n");} return false;} // WS80 only - autodetection
+  if(strcmp(key,"GXTS04Temp")==0) {sensor.temperature = parse_decimal_fast(value);  if(settings.sensor_type != s_WS85){settings.sensor_type = s_WS85; log_i("Detected WS85\n");} return false;} // WS85 only
   if(strcmp(key,"Humi")==0) {sensor.humidity = atoi(value); return false;}
   if(strcmp(key,"Light")==0) {sensor.light_lux = atoi(value); return false;}
-  if(strcmp(key,"UV_Value")==0) {sensor.uv_level = atof(value); return false;}
-  if(strcmp(key,"CapVoltage")==0) {sensor.cap_voltage = atof(value); return false;} // WS85
+  if(strcmp(key,"UV_Value")==0) {sensor.uv_level = parse_decimal_fast(value); return false;}
+  if(strcmp(key,"CapVoltage")==0) {sensor.cap_voltage = parse_decimal_fast(value); return false;} // WS85
   if(strcmp(key,"BatVoltage")==0) {
-    sensor.wsxx_vcc = atof(value); 
+    sensor.wsxx_vcc = parse_decimal_fast(value); 
     sensor.last_data =time();
     
     log_i("WSXX data complete\r\n");
@@ -350,11 +469,11 @@ bool parse_wsdat(char* input, int len){
           }
         }
         else if(num == 1){
-          sensor.wind_speed = atof(token);
+          sensor.wind_speed = parse_decimal_fast(token);
           num =2;
         }
         else if(num == 2){
-          sensor.wind_gust = atof(token);
+          sensor.wind_gust = parse_decimal_fast(token);
           num =3;
         }
         else if(num == 3){
@@ -490,7 +609,8 @@ int read_ws85_uart(){
     }
   }
   errorcount++;
-  if(errorcount % 4 == 0){ // if we get too many bad reading, maybe the baud rate does not match
+  if(errorcount == 20){ // try a single baud resync after repeated failed reads
+    log_i("Trying WS85 baud sync\r\n");
     ws85uart.set_baud_115200();
   }
   if(errorcount > 1000){

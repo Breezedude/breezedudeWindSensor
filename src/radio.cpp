@@ -47,8 +47,8 @@ LLCC68 radio_llcc68 = new Module(PIN_LORA_CS, PIN_LORA_DIO1, PIN_LORA_RESET, PIN
 #endif
 
 PhysicalLayer* radio_phy = nullptr;
-bool transmittedFlag = false;
-bool loraReceivedFlag = false;
+volatile bool transmittedFlag = false;
+volatile bool loraReceivedFlag = false;
 
 
 void set_fanet_send_flag(void) {
@@ -64,9 +64,11 @@ void irq_lora_rec(){
 }
 
 void en_rx_sleep(){
+    loraReceivedFlag = false;
     if((lora_module == LORA_SX1262) || (lora_module == LORA_LLCC68)){
         // Use plain continuous receive – duty-cycle auto mode was unreliable
         // on LLCC68 with FANET's SF7/BW250 preamble timing.
+        static_cast<SX126x*>(radio_phy)->clearIrqFlags(0xFFFF);
         int err = radio_phy->startReceive();
         if (err != RADIOLIB_ERR_NONE){
             log_i("en_rx_sleep: startReceive failed, code=", err);

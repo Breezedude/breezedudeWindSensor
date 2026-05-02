@@ -58,7 +58,7 @@ typedef struct {
   uint32_t broadcast_interval_weather = BROADCAST_INTERVAL;
   uint32_t broadcast_interval_info = 60*60*1000; // 1h
   uint32_t broadcast_interval_name = 1000*60*5; // 5 min
-
+  bool ota_enable = true;                      // allow OTA updates (set OTA_ENABLE=0 to disable)
 
   // debug states
   bool uv_triggered = false; // flag to indicate if undervoltage has been triggered, resets when voltage is at 100% again
@@ -89,6 +89,16 @@ bool led_error(bool s);
 void i2c_scan();
 bool apply_setting(char* settingName,  char* settingValue);
 void print_settings();
+bool update_settings_in_flash(const char* key, const char* value);
+bool update_multiple_settings_in_flash(const char** keys, const char** values, size_t count);
 bool zone_not_eu();
+float parse_decimal_fast(const char *s);
+String get_bootloader_version();
 bool create_versionfile(const char *filename);
 void handle_usb_link_watchdog();
+bool parse_file(char * filename);
+void read_serial_cmd();
+void log_v_hex_dump(const uint8_t *data, size_t len);
+void log_reset_cause();
+bool format_flash();
+bool setup_flash();

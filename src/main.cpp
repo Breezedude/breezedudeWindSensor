@@ -1,9 +1,6 @@
 #include <Arduino.h>
 #include <Adafruit_TinyUSB.h>
 #include <array>
-
-#include <SdFat.h>
-#include <SAMD_InternalFlash.h>
 #include "wiring_private.h" // pinPeripheral() function
 
 
@@ -14,9 +11,14 @@
 #include "sleep.h"
 #include "fanet.h"
 #include "display.h"
-#include "msc.h"
 #include "tools.h"
 #include "radio.h"
+#include "ota_ab.h"
+#include "ota_lora.h"
+
+#ifndef BREEZEDUDE_DEVELOP_MODE
+#define BREEZEDUDE_DEVELOP_MODE 0
+#endif
 
 
 // Todo list:
@@ -25,15 +27,8 @@
 
 // https://github.com/adafruit/Adafruit_TinyUSB_Arduin
 // https://github.com/adafruit/ArduinoCore-samd
-// https://github.com/Mollayo/SAMD_InternalFlash
 // https://github.com/Microsoft/uf2
 // https://github.com/adafruit/uf2-samdx1
-
-//Modifications:
-// SAMD_InternalFlash.cpp:  
-// use last 40kb of flash as FAT12 disk for settings file
-//    _flash_address = (0x00040000 - 256 - 0 - INTERNAL_FLASH_FILESYSTEM_SIZE)
-
 
 // Serial2 for Degugging on HW > 1.3
 Uart Serial2(&sercom1, PIN_SERCOM1_RX, PIN_SERCOM1_TX, SERCOM_RX_PAD_1, UART_TX_PAD_0 ) ;
@@ -61,6 +56,7 @@ bool undervoltage = false;
 bool use_mcp4652 = true; // used on first version of PCB (<=1.3) to set MPPT and DCDC voltage
 
 bool settings_ok = false;
+static uint32_t no_settings_first_seen_ms = 0; // set on first !settings_ok wakeup
 
 
 // Message timing
@@ -76,119 +72,7 @@ uint32_t last_fnet_send = 0; // last package send
 uint32_t fanet_cooldown = 4000;
 uint32_t loopcounter = 0;
 
-int wakeup_source = WAKEUP_NONE;
-
-void switch_WS_power (bool state){
-  static bool current_power_state = false;
-  if(state && !current_power_state){ // turn on
-    current_power_state = true;
-    pinMode(PIN_PS_WS,OUTPUT);
-    digitalWrite(PIN_PS_WS, 0);
-    // Re-connect UART pins to SERCOM0 peripheral before the sensor can respond
-    pinPeripheral(PIN_RX, PIO_SERCOM);
-    pinPeripheral(PIN_TX, PIO_SERCOM);
-    SENSOR_UART.begin(115200 * div_cpu);
-    log_i("WS sensor power ON\r\n");
-  }
-  if(!state && current_power_state){ // turn off
-    current_power_state = false;
-    digitalWrite(PIN_PS_WS, 1);
-    // Disable UART pins so the idle-HIGH TX line cannot leak current into the
-    // sensor through its input protection diodes when its VCC is removed.
-    pinDisable(PIN_TX); // PA10 – UART idles HIGH, would source 8mA into sensor
-    pinDisable(PIN_RX); // PA11 – symmetric isolation
-    log_i("WS sensor power OFF\r\n");
-  }
-}
-
-uint8_t voltageToSOCNonLinear(float v) {
-    if(v < 0.8) {led_error(1); log_i("V_Batt read error: ", v); return 0;} // bad reading
-    if(v < 3.15) {switch_WS_power(0); settings.uv_triggered = true; undervoltage = true; return 0;} // undervoltage, turn off sensor to save power
-    if(v > 3.3) {switch_WS_power(1); undervoltage = false;}
-    if(v > 4.15){settings.uv_triggered = false; return 100;}
-
-    // Piecewise linear OCV->SOC for 3.7V Li-Ion at low discharge rate
-    static const float vt[] = { 3.15f, 3.40f, 3.60f, 3.75f, 3.90f, 4.00f, 4.10f, 4.15f };
-    static const float st[] = {  0.0f,  5.0f, 20.0f, 50.0f, 75.0f, 88.0f, 97.0f,100.0f };
-    constexpr int N = 8;
-    if (v <= vt[0]) return 0;
-    if (v >= vt[N-1]) return 100;
-    for (int i = 1; i < N; i++) {
-        if (v <= vt[i]) {
-            float soc = st[i-1] + (v - vt[i-1]) * (st[i] - st[i-1]) / (vt[i] - vt[i-1]);
-            return (uint8_t)(soc + 0.5f);
-        }
-    }
-    return 100;
-}
-
-// Trigger ADC and calc battery value in percent and volts
-void read_batt_perc(){
-  static uint32_t last_battery_reading=0;
-  // only sample if last reading is older than 100ms
-  if(time()- last_battery_reading > 100){
-    last_battery_reading = time();
-    analogReference(AR_INTERNAL1V0);
-    analogReadResolution(10);
-    pinMode(PIN_V_READ, INPUT);
-
-    // Extend ADC sampling phase via SAMPCTRL instead of software delays between reads.
-    // ADC clock = 48 MHz / 512 ≈ 94 kHz  →  half-cycle ≈ 5.3 µs.
-    // SAMPLEN=4 adds 5 half-cycles ≈ 26 µs extra sample time per conversion.
-    //ADC->SAMPCTRL.reg = ADC_SAMPCTRL_SAMPLEN(4);
-    //while (ADC->STATUS.bit.SYNCBUSY);
-
-    constexpr int N_SAMPLES = 15;
-    uint16_t samples[N_SAMPLES];
-    digitalWrite(PIN_V_READ_TRIGGER,0);
-    delayMicroseconds(50); // allow divider to settle
-    for (int i = 0; i < N_SAMPLES; i++) {
-      samples[i] = analogRead(PIN_V_READ);
-    }
-    digitalWrite(PIN_V_READ_TRIGGER,1);
-
-    //ADC->SAMPCTRL.reg = ADC_SAMPCTRL_SAMPLEN(0); // restore default for other ADC users
-    //while (ADC->STATUS.bit.SYNCBUSY);
-
-    // Temporary: dump all raw samples to check trigger window width
-    /*
-    log_v("ADC samples: ");
-    for (int i = 0; i < N_SAMPLES; i++) {
-      log_v(", ", samples[i]);
-    }
-    log_v("\r\n");
-    */
-
-    // Trimmed mean: discard min + max, average remaining N_SAMPLES-2
-    uint16_t vmin = samples[0], vmax = samples[0];
-    uint32_t vsum = 0;
-    for (int i = 0; i < N_SAMPLES; i++) {
-      vsum += samples[i];
-      if (samples[i] < vmin) vmin = samples[i];
-      if (samples[i] > vmax) vmax = samples[i];
-    }
-    float val = (float)(vsum - vmin - vmax) / (float)(N_SAMPLES - 2);
-
-    pinDisable(PIN_V_READ);
-    val *= 0.0040925; // 100k/330k 1.0V Vref
-
-    // Moving average over last 5 readings to suppress short voltage dips
-    constexpr int V_AVG_LEN = 5;
-    static float v_history[V_AVG_LEN] = {0};
-    static int v_idx = 0;
-    static int v_count = 0;
-    v_history[v_idx] = val;
-    v_idx = (v_idx + 1) % V_AVG_LEN;
-    if (v_count < V_AVG_LEN) v_count++;
-    float v_sum = 0;
-    for (int i = 0; i < v_count; i++) v_sum += v_history[i];
-    sensor.batt_volt = v_sum / v_count;
-
-  sensor.batt_perc = voltageToSOCNonLinear(sensor.batt_volt);
-  log_i("V_Bat: ", sensor.batt_volt);
-  log_i("Bat_perc: ", sensor.batt_perc);
-  }
-}
+volatile int wakeup_source = WAKEUP_NONE;
 
 // Sleep ----------------------------------------------------------------------------------------------------------------------
 
@@ -202,7 +86,13 @@ void mark_uart_wakeup(){
 }
 
 static bool keep_usb_active_during_sleep(){
-  return settings.test_with_usb && usb_connected;
+  if(settings.test_with_usb){
+    return true;
+  }
+  if(usb_connected || TinyUSBDevice.mounted()){
+    return true;
+  }
+  return millis() < 15000UL;
 }
 
 uint32_t sleep(bool enable_uart_interrupt){
@@ -277,6 +167,12 @@ void wakeup(){
   log_i("Wakeup: ", time()); 
   log_v("Wakeup source: "); log_v(wakeup_source_string[wakeup_source]);log_v("\r\n");
   wakeup_source = WAKEUP_NONE;
+
+  // In !settings_ok mode: after the first 5 minutes, flash the red LED only while awake.
+  if (!settings_ok && no_settings_first_seen_ms != 0 &&
+      (millis() - no_settings_first_seen_ms) >= 300000UL) {
+    led_error(1);
+  }
 
 
 
@@ -376,23 +272,26 @@ uint32_t calc_time_to_sleep(){
   tts_name    = timeToSend(last_msg_name, settings.broadcast_interval_name);
   tts_info    = timeToSend(last_msg_info, settings.broadcast_interval_info);
 
-  if(millis()-last_print > 2500){
-    last_print = millis();
-    log_v("tts_weather: ", tts_weather);
-    log_v("tts_name: ", tts_name);
-    //log_i("tts_info: ", tts_info);
-  }
+
   
   tts = min(min(tts_name, tts_info), tts_weather);
   if( fanet_cooldown && last_fnet_send  && (time() - last_fnet_send + tts < fanet_cooldown)){
     tts += fanet_cooldown - (time()-last_fnet_send);
   }
-  log_v("tts: ", tts);
+
+    if(millis()-last_print > 2500){
+    last_print = millis();
+    log_v("tts_weather: ", tts_weather);
+    log_v("tts_name: ", tts_name);
+    log_v("tts_info: ", tts_info);
+    log_v("tts: ", tts);
+  }
+
   if(tts == (uint32_t)-1){ tts=0;}
   
 
   if( !tts && loopcounter > 100){
-    log_e("just looping, will sleep\n");
+    log_e("just looping, will sleep\r\n");
     tts = 12000; // set to sleep to keep updating sensor data
   }
 
@@ -450,12 +349,22 @@ void go_sleep(){
   }
 
   // move to setup function
-  if(!settings_ok){ 
+  if(!settings_ok){
+    // No valid settings: sleep 12s per cycle so OTA config updates can still arrive.
+    // Keep the red LED on for the first 5 minutes, then only while awake.
+    if (no_settings_first_seen_ms == 0) {
+      no_settings_first_seen_ms = millis();
+    }
+    bool in_first_5min = (millis() - no_settings_first_seen_ms) < 300000UL;
+    if (in_first_5min) {
+      led_error(1);  // stay on continuously during first 5 minutes
+    } else {
+      led_error(0);  // turn off before sleep; wakeup() will re-enable it briefly
+    }
     log_e("No settings file\r\n");
-    log_e("Sleeping forever\r\n");
-    time_to_sleep = 0xFFFFFFF;
-  } // if settings not ok sleep forever
-  
+    time_to_sleep = 12000UL;
+  }
+
   //if(!time_to_sleep){ return;} // if time_to_sleep = 0, do not sleep at all
 
   log_i("will sleep for ", time_to_sleep > 200000UL?-1: time_to_sleep);
@@ -568,105 +477,7 @@ void print_data(){
   }
 }
 
-// parse settingsfile
-bool parse_file(char * filename){
-  #define LINEBUFFERSIZE 512
-  bool ret = false;
-  led_status(1);
-  File f;
-  char linebuffer [LINEBUFFERSIZE];
-  int c = 0;
-  int co = 0;
-  int filesize =0;
-  //log_i("Reading Settings from file\r\n");
-
-  if (fatfs.begin(&flash) ){
-    f = fatfs.open(filename, FILE_READ);
-    if (f) {
-        filesize = f.available();
-        //log_i("Filesize: ", filesize);
-        while (filesize - c > 0) {
-          linebuffer[co] = f.read();
-
-          if(linebuffer[co] == '\n'){
-            process_line(linebuffer, co, &apply_setting); // Line complete
-            co=-1; // gets +1 below
-          }
-          c++;
-          co++;
-          if(co >= LINEBUFFERSIZE){
-            log_e("File buffer error\r\n");
-            return false;
-          }
-        }
-        process_line(linebuffer, co, &apply_setting);
-        f.close();
-        //log_i("Settingsfile closed\n");
-        if(settings.pos_lat != 0 && settings.pos_lon != 0){
-          ret = true;
-        } else {
-          log_e("Coordinates invalid\n");
-        }
-        if(settings.sensor_type == s_invalid){
-          ret = false;
-          log_e("No sensor configured\n");
-        }
-        led_status(0); // if LED stay on, settings failed
-    }else {
-      log_i("File not exists\r\n");
-    }
-    my_internal_storage.flush_buffer(); // sync with flash
-  } else {
-    log_e("Failed to start FS\r\n");
-  }
-  if(!ret){
-    led_status(0);
-    led_error(1);
-    }
-  return ret;
-}
-
-// Serial reads ----------------------------------------------------------------------------------------------------------------------
-// read serial data from USB, for debugging
-void read_serial_cmd(){
-  #define CMDBUFFERSIZE 127
-  static char buffer [CMDBUFFERSIZE];
-  static int co = 0;
-  bool ok = false;
-
-  while (Serial.available()){
-    usb_connected = true;
-    buffer[co] = Serial.read();
-    //DEBUGSER.write(buffer[co]);
-    if(buffer[co] == '\n'){
-      ok = process_line(buffer, co, &apply_setting); // Line complete
-      co=-1; // against +1 below
-    }
-    co++;
-  }
-  if(ok){
-    // Apply new mppt voltage
-  }
-}
-
 // Send ----------------------------------------------------------------------------------------------------------------------
-
-static void log_v_hex_dump(const uint8_t *data, size_t len){
-  if(!settings.verbose_usb || !usb_connected){
-    return;
-  }
-
-  size_t i = 0;
-  while(i < len){
-    size_t chunk = min((size_t)24, len - i);
-    for(size_t j = 0; j < chunk; j++){
-      log_write_hex(data[i + j], 2);
-      log_i(" ");
-    }
-    log_i("\r\n");
-    i += chunk;
-  }
-}
 
 
 TxAttemptResult send_msg_weather(){
@@ -836,7 +647,7 @@ TxAttemptResult send_msg_info(){
   // Hardware Subtype + Build Date (byte0 bit 6)
   info.bSubtypeBuild = true;
   info.device_type   = FANET_BD_DEVICE_TRANSMITTER;
-  info.develop_mode  = true; // todo: change to false for production, true for development devices
+  info.develop_mode  = (BREEZEDUDE_DEVELOP_MODE != 0);
   // Parse __DATE__ string "Mon DD YYYY" into day/month/year
   const char *date_str = __DATE__;
   const char *months[] = {"Jan","Feb","Mar","Apr","May","Jun",
@@ -852,58 +663,15 @@ TxAttemptResult send_msg_info(){
   info.bUptime    = true;
   info.uptime_min = (uint16_t)(time() / 60000UL);
 
-  // Rotate debug type on each call: 0x01, 0x02, 0x03, 0x01, ...
-  // Add new types by incrementing DEBUG_TYPE_COUNT.
-  static uint8_t s_debug_type_idx = 0;
-  constexpr uint8_t DEBUG_TYPE_COUNT = 3;
-  const uint8_t debug_type = (s_debug_type_idx % DEBUG_TYPE_COUNT) + 1u;
-  s_debug_type_idx++;
-
-  info.debug_type = debug_type;
-
-  if (debug_type == 0x01u) {
-    // Debug type 1: power + sensor config + firmware version
-    info.debug.vbatt_mv       = (uint16_t)(sensor.batt_volt * 1000.0f);
-    info.debug.batt_perc      = sensor.batt_perc;
-    info.debug.pv_state       = (uint8_t)((sensor.pv_charging ? 0x01u : 0x00u) |
-                                           (sensor.pv_done     ? 0x02u : 0x00u));
-    info.debug.sensor_type    = (uint8_t)settings.sensor_type;
-    info.debug.use_baro       = settings.use_baro ? 1u : 0u;
-    info.debug.uv_triggered   = settings.uv_triggered ? 1u : 0u;
-
-    info.debug.lbt            = settings.lora_lbt ? 1u : 0u;
-    info.debug.lbt_counter    = settings.lbt_counter;
-    info.debug.lora_rssi_threshold = (uint8_t)(-settings.lora_rssi_threshold);
-
-    // Compact version encoding: major.minor.patch, each decimal digit 0..9.
-    uint8_t ver_digits[3] = {0, 0, 0};
-    uint8_t vd = 0;
-    for (const char *p = VERSION; *p && vd < 3; ++p) {
-      if (*p >= '0' && *p <= '9') {
-        ver_digits[vd++] = (uint8_t)(*p - '0');
-      }
-    }
-    info.debug.version_bcd = (uint16_t)(((ver_digits[0] % 10u) << 8) |
-                                        ((ver_digits[1] % 10u) << 4) |
-                                         (ver_digits[2] % 10u));
-
-  } else if (debug_type == 0x02u) {
-    // Debug type 2: configuration
-    info.debug2.wind_age      = (uint16_t)(settings.wind_age/1000);
-    info.debug2.gust_age      = (uint16_t)(settings.gust_age/1000);
-    info.debug2.sensor_integ_s = (uint8_t)(settings.sensor_integration_time / 1000u);
-    info.debug2.reduce_interval_voltage = (uint8_t)((settings.reduce_interval_voltage-2.0f) * 100.0f);
-
-  } else if (debug_type == 0x03u) {
-    // Debug type 3: RX / forwarding statistics
-    info.debug3.rx_count      = fanet_rx_counter;
-    info.debug3.forward_count = fanet_forward_counter;
-  }
+  ota_lora_prepare_hwinfo(info);
 
   size_t msg_size = pack_hwinfo(&info, buffer.data());
   log_v_hex_dump(buffer.data(), msg_size);
-  log_i("Sending HW Info\r\n");
-  return start_lbt_transmit(buffer.data(), msg_size);
+  TxAttemptResult tx = start_lbt_transmit(buffer.data(), msg_size);
+  if(tx == TX_ATTEMPT_STARTED) {
+    ota_lora_note_hwinfo_tx_started();
+  }
+  return tx;
 }
 
 
@@ -916,13 +684,16 @@ extern uint32_t __etext;
 void setup(){
 
   log_set_debug(true);
+  log_set_error(true);
   DEBUGSER.begin(115200); // on boot start with 48Mhz clock // log_ser_begin(); 
 
   pinPeripheral(PIN_SERCOM1_RX, PIO_SERCOM_ALT); 
   pinPeripheral(PIN_SERCOM1_TX, PIO_SERCOM_ALT); 
 
   log_i("\r\n--------------- RESET -------------------\r\n");
+  log_reset_cause();
   log_i("Version: ");  log_i(VERSION); log_i("\r\n");
+  log_i("Bootloader: "); log_i(get_bootloader_version().c_str()); log_i("\r\n");
   log_i("FW Build Time: ");  log_i(__DATE__); log_i(" "); log_i(__TIME__); log_i("\r\n");
   log_i("FANET ID: ");
   log_write_hex(FANET_VENDOR_ID, 2);
@@ -942,11 +713,9 @@ void setup(){
     log_i("I2C Display enabled\n");
   }
   
-  //printf("FANET ID: %02X%04X\r\n",fmac.myAddr.manufacturer,fmac.myAddr.id);
   if(setup_flash()){
     settings_ok = parse_file(SETTINGSFILE);
     if(!debug_enabled()){
-      DEBUGSER.println("Debug messages disabled");
       DEBUGSER.flush();
       DEBUGSER.end();
       pinDisable(PIN_SERCOM1_RX);
@@ -954,13 +723,16 @@ void setup(){
     }
   }
 
-  // Init radio after reading settings
-  if(radio_init()){
-    radio_phy->setPacketSentAction(set_fanet_send_flag);
-    radio_sleep(); // radio_phy->sleep();
-  } else { 
-    led_error(1);
-    display_delay(2000);
+  // Init radio only after validating mandatory settings.
+  if(settings_ok){
+    if(radio_init()){
+      radio_phy->setPacketSentAction(set_fanet_send_flag);
+      ota_lora_begin();
+      radio_sleep(); // radio_phy->sleep();
+    } else {
+      led_error(1);
+      display_delay(2000);
+    }
   }
 
 
@@ -975,10 +747,8 @@ void setup(){
     settings.use_rtc_counter = true; // use for all sensors
 
     setup_PM(settings.use_pulse_counter, settings.use_rtc_counter);
-    wdt_enable(WDT_PERIOD,false); // setup clocks
-    if(!settings.use_wdt) {
-      wdt_disable();
-    }
+    wdt_disable();
+    log_i(settings.use_wdt ? "WDT runtime: deferred until setup complete\r\n" : "WDT runtime: OFF\r\n");
 
     if(settings.use_baro){
       if(!init_baro()){
@@ -999,42 +769,46 @@ void setup(){
 
   if(!settings_ok) { // invalid settings, just lite the red LED and sleep
     // Needed for deepsleep
-    setup_PM(false, true);
+    log_i("Settings invalid\r\n");
+    setup_PM(true, true);
     wdt_enable(WDT_PERIOD,false); // setup clocks
     wdt_disable();
     //setup_rtc_time_counter();
   }
 
-  if(is_wsxx() || settings.sensor_type == s_WS85_UART || settings.sensor_type == s_WINDNERD){
-    switch_WS_power(1); // Turn on WS80 Power supply with P-MOSFET
-    setup_rtc_time_counter();
+  if(settings_ok){
+    if(is_wsxx() || settings.sensor_type == s_WS85_UART || settings.sensor_type == s_WINDNERD){
+      switch_WS_power(1); // Turn on WS80 Power supply with P-MOSFET
+      setup_rtc_time_counter();
 
-    if(is_wsxx() || settings.sensor_type == s_WINDNERD){
-      SENSOR_UART.begin(115200); // div_cpu not required, as its 1 at reset
-    }
-    if(settings.sensor_type == s_WS85_UART){
-      log_i("Setup WS85\r\n");
-      
-      //ws85uart.setAutoSendInterval(8500);
-      ws85uart.begin(div_cpu);
-      //ws85uart.requestAutoSendInterval();
-      ws85uart.set_baud_115200();
-    }
-  } else if(settings.sensor_type == s_DAVIS6410){
-    setup_rtc_time_counter();
-  } else {
-    // No sensor configured
-    led_error(1);
-  }
+      if(is_wsxx() || settings.sensor_type == s_WINDNERD){
+        SENSOR_UART.begin(115200); // div_cpu not required, as its 1 at reset
+      }
+      if(settings.sensor_type == s_WS85_UART){
+        log_i("Setup WS85\r\n");
 
-  #if BREEZEDUDE_ENABLE_GPS
-  if(settings.use_gps){
-    GPS_SERIAL.begin(settings.gps_baud);
-    log_i("Starting GPS with baud: ", settings.gps_baud);
+        ws85uart.begin(div_cpu);
+        // Keep the current sensor baud on boot; a forced switch here can stall
+        // startup on boards that already stream correctly or are still powering up.
+        ws85uart.set_baud_115200();
+        //ws85uart.setAutoSendInterval(8500);
+      }
+    } else if(settings.sensor_type == s_DAVIS6410){
+      setup_rtc_time_counter();
+    } else {
+      // No sensor configured
+      led_error(1);
+    }
+
+    #if BREEZEDUDE_ENABLE_GPS
+    if(settings.use_gps){
+      GPS_SERIAL.begin(settings.gps_baud);
+      log_i("Starting GPS with baud: ", settings.gps_baud);
+    }
+    #else
+    settings.use_gps = false;
+    #endif
   }
-  #else
-  settings.use_gps = false;
-  #endif
 
 // init history array
   for( int i = 0; i< HISTORY_LEN; i++){
@@ -1046,9 +820,17 @@ void setup(){
     wind_history[i].dir_raw = 0;
     wind_history[i].wind = 0;
   }
-  create_versionfile(VERSIONFILE);
+  if(settings_ok){
+    create_versionfile(VERSIONFILE);
+  }
+  log_i("Startup init complete\r\n");
   log_flush();
   wakeup();
+  if(settings_ok && settings.use_wdt){
+    wdt_enable(WDT_PERIOD,false);
+    log_i("WDT runtime: ON\r\n");
+    log_flush();
+  }
 }
 
 // loop ----------------------------------------------------------------------------------------------------------------------
@@ -1064,6 +846,9 @@ static bool s = false;
 
 loopcounter++;
 
+  if(settings.use_wdt){
+    wdt_reset();
+  }
 
   if(last_call && (time()-last_call > 15)){
     if(!s){led_status(0);}
@@ -1074,23 +859,25 @@ loopcounter++;
   read_serial_cmd();
   handle_usb_link_watchdog();
 
-  // In MSC mode (USB mounted and test mode disabled), keep the MCU in USB service
-  // only and skip the normal sensor/radio workflow.
-  if(!settings.test_with_usb && TinyUSBDevice.mounted()){
-    usb_connected = true;
-    forward_sensor_serial();
+  // Hard-stop normal operation until a valid user configuration is present.
+  if(!settings_ok){
+    if(!sleep_allowed){
+      sleep_allowed = time() + 180000UL; // sleep after 3 minutes
+    }
+    if(time() - last_settings_check > 15000){
+      last_settings_check = time();
+      log_e("\r\nFailed to obtain valid settings. Waiting for user config\r\n");
+      settings_ok = parse_file(SETTINGSFILE);
+      if(settings_ok){
+        NVIC_SystemReset();
+      }
+    }
+    if((time() > 5UL*60UL*1000UL)){
+      led_error(0);
+    }
     if(settings.use_wdt){
       wdt_reset();
     }
-    if(time()-last_call > 500){
-      log_i("Time: ", time());
-      //Serial.println(time());
-      // Store led states and restore after blink
-      s = led_status(1);
-      last_call=time();
-    }
-    forward_analog_test_serial();
-
     return;
   }
 
@@ -1099,7 +886,7 @@ loopcounter++;
   if(settings.use_gps){read_gps();}
   #endif
 
-  if(fanet_cooldown_ok() && settings.broadcast_interval_name && ( (time()- last_msg_name) > (settings.broadcast_interval_name* broadcast_scale_factor)) ){ // once a hour
+  if(!ota_lora_busy() && fanet_cooldown_ok() && settings.broadcast_interval_name && ( (time()- last_msg_name) > (settings.broadcast_interval_name* broadcast_scale_factor)) ){ // once a hour
     if(settings.station_name.length() > 1){
       led_status(1);
       TxAttemptResult tx_result = send_msg_name(settings.station_name.c_str(),settings.station_name.length());
@@ -1115,7 +902,7 @@ loopcounter++;
     }
   }
 
-  if(fanet_cooldown_ok() && settings.broadcast_interval_weather && ( (time()- last_msg_weather) > (settings.broadcast_interval_weather * broadcast_scale_factor)) ){
+  if(!ota_lora_busy() && fanet_cooldown_ok() && settings.broadcast_interval_weather && ( (time()- last_msg_weather) > (settings.broadcast_interval_weather * broadcast_scale_factor)) ){
     if( allowed_to_send_weather() ){
       TxAttemptResult tx_result = send_msg_weather();
       if(tx_result == TX_ATTEMPT_STARTED) {
@@ -1140,7 +927,8 @@ loopcounter++;
       
     }
   }
-  if(settings.broadcast_interval_info && fanet_cooldown_ok() && ( (time()- last_msg_info) > (settings.broadcast_interval_info * broadcast_scale_factor)) ){
+  const uint32_t info_interval_ms = settings.broadcast_interval_info;
+  if(!ota_lora_busy() && info_interval_ms && fanet_cooldown_ok() && ( (time()- last_msg_info) > info_interval_ms) ){
       led_status(1);
       TxAttemptResult tx_result = send_msg_info();
       if(tx_result == TX_ATTEMPT_STARTED) {
@@ -1148,7 +936,7 @@ loopcounter++;
         last_msg_info = time();
         send_active = time();
       } else if(tx_result == TX_ATTEMPT_DEFERRED_LBT) {
-        defer_next_send(last_msg_info, settings.broadcast_interval_info, "info");
+        defer_next_send(last_msg_info, info_interval_ms / max((uint32_t)broadcast_scale_factor, 1UL), "info");
       }
       led_status(0);
   }
@@ -1167,15 +955,18 @@ loopcounter++;
 
     if(transmittedFlag){
       transmittedFlag = false;
-      //log_i("Send complete\r\n");
       send_active = 0;
       sleep_allowed = time() + (1);
       radio_phy->finishTransmit();
-      radio_sleep(); // radio_phy->sleep();
+      if(!ota_lora_on_tx_complete()) {
+        radio_sleep(); // radio_phy->sleep();
+      }
     }
   }
 
-  if(settings.lora_smart_rcv){
+  if(!send_active && ota_lora_poll()) {
+    sleep_allowed = time() + 1;
+  } else if(settings.lora_smart_rcv){
     if(fanet_rx() && !send_active) {
       // readData() in fanet_rx() left radio in standby; re-arm RX now that we
       // know no TX is in progress (avoids clearing the TX-done DIO1 handler).
@@ -1183,31 +974,19 @@ loopcounter++;
     }
   }
 
-  if(!send_active && settings.lora_smart_rcv) {
+  if(!send_active && !ota_lora_busy() && settings.lora_smart_rcv) {
     if(fanet_forward_check()) {
       send_active = time();
     }
   }
 
 // Check if everything is done --> sleep
-  if(!send_active && sleep_allowed && (time() > sleep_allowed) && (!usb_connected || keep_usb_active_during_sleep()) && (time() > 2500)){ // allow sleep after 2500 ms to get a chance to detect USB / CDC commands
+  if(!send_active && !ota_lora_busy() && sleep_allowed && (time() > sleep_allowed) && (!usb_connected || keep_usb_active_during_sleep()) && (time() > 2500)){ // allow sleep after 2500 ms to get a chance to detect USB / CDC commands
     go_sleep();
   }
 
-  if(!settings_ok){ // Settings not ok. Try few times, then sleep
-    if(!sleep_allowed){ 
-      sleep_allowed = time() + 180000UL; // Sleep after 3 minutes
-    }
-    if(time()- last_settings_check > 15000){
-      last_settings_check = time();
-      log_e("\r\nFailed to obtain settings from file. Trying again\r\n");
-      settings_ok = parse_file(SETTINGSFILE);
-      if(settings_ok){ 
-        NVIC_SystemReset();      // processor software reset
-        }
-    }
-  }
-
+  /*
+  
   if(usb_connected){
     // keep usb alive for 15 min. Its not easyly possible to detect if still connected, so just restart after 15min
     if(!settings.test_with_usb && (time() > 15UL*60UL*1000UL)){
@@ -1218,6 +997,7 @@ loopcounter++;
       NVIC_SystemReset();
     }
   }
+*/
 
   if((time() > 5UL*60UL*1000UL)){ // trun off error LED after 5minutes to save energy if an error occures with no one around
     led_error(0);

@@ -39,12 +39,12 @@ public:
 
   void set_baud_115200(){
     log_i("Setting baud to 115200\r\n");
-    serial->flush();
+    // Avoid blocking startup on targets where UART flush can stall indefinitely.
     serial->end();
     serial->begin(9600);
-    delay(100);
+    delay(20);
     set_baud(115200);
-    delay(60);
+    delay(30);
     serial->end();
     serial->begin(115200);
     baud = 115200;
@@ -218,10 +218,7 @@ uint16_t crc16(const uint8_t* data, size_t len) {
 
     if (ccrc != rcrc) {
       if (debug_enabled()) {
-        DEBUGSER.print("CRC error: received=0x");
-        DEBUGSER.print(rcrc, HEX);
-        DEBUGSER.print(", calculated=0x");
-        DEBUGSER.println(ccrc, HEX);
+        log_i("WS85 CRC error\r\n");
       }
       return false;
     } else {

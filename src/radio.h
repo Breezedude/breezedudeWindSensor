@@ -20,12 +20,12 @@
 extern LORA_MODULE lora_module;
 #define LORA_SYNCWORD 0xF1 //SX1262: 0xF4 0x14 https://blog.classycode.com/lora-sync-word-compatibility-between-sx127x-and-sx126x-460324d1787a is handled by RadioLib
 
-extern int wakeup_source;
+extern volatile int wakeup_source;
 
 
 extern PhysicalLayer* radio_phy;
-extern bool transmittedFlag;
-extern bool loraReceivedFlag;
+extern volatile bool transmittedFlag;
+extern volatile bool loraReceivedFlag;
 
 // Runtime counters reset on boot, exposed via HW Info debug type 3
 extern uint16_t fanet_forward_counter;

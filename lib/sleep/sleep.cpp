@@ -614,7 +614,9 @@ void stop_pulse_counter()
 
 
 void setup_rtc_time_counter(){
-  //configGCLK6(true);
+  // Ensure GCLK6 is initialized before routing it to TC4/TC5. Without this,
+  // startup can stall here on cold boot when WDT setup has been skipped.
+  configGCLK6(false);
   // https://forum.arduino.cc/t/arduino-zero-sam-d21-hardware-counter-as-simple-input-counter-intialization/630306/2
   // Generic Clock /////////////////////////////////////////////////////////////////////////
  

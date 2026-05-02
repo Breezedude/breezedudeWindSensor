@@ -1,4 +1,5 @@
 #include "display.h"
+#include "tools.h"
 
 #if BREEZEDUDE_ENABLE_DISPLAY
 #include <Adafruit_SSD1306.h>
@@ -81,6 +82,7 @@ void setup_display(){
     display.setCursor(0, 0);     // Start at top-left corner
 
     display_add_line("Version: " + (String)VERSION);
+    display_add_line("BL: " + get_bootloader_version());
     display_add_line("FW Build: " + (String)__DATE__ + " " + (String)__TIME__);
   }
 }
