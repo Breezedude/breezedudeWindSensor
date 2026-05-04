@@ -18,6 +18,10 @@
 #define OTA_AB_VERSION 1UL
 #define OTA_AB_NUM_SLOTS 2U
 
+#ifndef OTA_BOOT_DIAG_LOGS
+#define OTA_BOOT_DIAG_LOGS 0
+#endif
+
 typedef struct {
   uint32_t magic;
   uint32_t version;
@@ -25,6 +29,19 @@ typedef struct {
   uint32_t pending_slot;
   uint32_t checksum;
 } ota_ab_flags_t;
+
+typedef struct {
+  uint32_t sequence;
+  uint8_t requested_slot;
+  uint8_t requester_current_slot;
+  uint8_t reset_vector_in_slot;
+  uint8_t reserved;
+  uint32_t slot_base;
+  uint32_t slot_size;
+  uint32_t stack_ptr;
+  uint32_t reset_vec;
+  uint32_t rcause_before_reset;
+} ota_trace_snapshot_t;
 
 uint32_t ota_ab_checksum_words(uint32_t active_slot, uint32_t pending_slot);
 bool ota_ab_read(ota_ab_flags_t &cfg);
@@ -34,5 +51,11 @@ uint32_t ota_ab_slot_address(uint8_t slot);
 uint32_t ota_ab_slot_size(uint8_t slot);
 bool ota_ab_request_slot(uint8_t slot);
 bool ota_ab_confirm_current();
+void log_ota_boot_diagnostics();
+void log_ota_reboot_trace();
+void ota_ab_log_state(const char *tag);
+void ota_trace_mark_pending_reboot(uint8_t requested_slot, uint32_t slot_base, uint32_t slot_size,
+                                   uint32_t stack_ptr, uint32_t reset_vec, bool reset_vector_in_slot);
+bool ota_trace_consume(ota_trace_snapshot_t &snapshot);
 bool ota_storage_read_text(uint32_t address, char *dst, size_t dst_len);
 bool ota_storage_write_text(uint32_t address, size_t capacity, const char *text);

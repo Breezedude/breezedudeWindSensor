@@ -1,6 +1,19 @@
 #include "ota_ab.h"
 #include "logging.h"
 
+enum {
+  OTA_TRACE_MAGIC = 0x4F544152UL, // 'OTAR'
+  OTA_TRACE_VERSION = 1UL,
+};
+
+typedef struct {
+  uint32_t magic;
+  uint32_t version;
+  ota_trace_snapshot_t snapshot;
+} ota_trace_store_t;
+
+static ota_trace_store_t g_ota_trace __attribute__((section(".noinit")));
+
 static bool ota_wait_ready() {
   // Guard against rare NVM controller stalls so startup cannot hang forever.
   const uint32_t max_spins = 1000000UL;
@@ -188,4 +201,150 @@ bool ota_ab_confirm_current() {
   cfg.active_slot = ota_ab_current_slot();
   cfg.pending_slot = cfg.active_slot;
   return ota_ab_write(cfg);
+}
+
+void ota_trace_mark_pending_reboot(uint8_t requested_slot, uint32_t slot_base, uint32_t slot_size,
+                                   uint32_t stack_ptr, uint32_t reset_vec, bool reset_vector_in_slot) {
+  if (g_ota_trace.magic != OTA_TRACE_MAGIC || g_ota_trace.version != OTA_TRACE_VERSION) {
+    memset(&g_ota_trace, 0, sizeof(g_ota_trace));
+    g_ota_trace.magic = OTA_TRACE_MAGIC;
+    g_ota_trace.version = OTA_TRACE_VERSION;
+  }
+
+  g_ota_trace.snapshot.sequence++;
+  g_ota_trace.snapshot.requested_slot = requested_slot;
+  g_ota_trace.snapshot.requester_current_slot = ota_ab_current_slot();
+  g_ota_trace.snapshot.reset_vector_in_slot = reset_vector_in_slot ? 1u : 0u;
+  g_ota_trace.snapshot.reserved = 0u;
+  g_ota_trace.snapshot.slot_base = slot_base;
+  g_ota_trace.snapshot.slot_size = slot_size;
+  g_ota_trace.snapshot.stack_ptr = stack_ptr;
+  g_ota_trace.snapshot.reset_vec = reset_vec;
+  g_ota_trace.snapshot.rcause_before_reset = PM->RCAUSE.reg;
+}
+
+bool ota_trace_consume(ota_trace_snapshot_t &snapshot) {
+  if (g_ota_trace.magic != OTA_TRACE_MAGIC || g_ota_trace.version != OTA_TRACE_VERSION) {
+    return false;
+  }
+  if (g_ota_trace.snapshot.sequence == 0u) {
+    return false;
+  }
+
+  snapshot = g_ota_trace.snapshot;
+  memset(&g_ota_trace.snapshot, 0, sizeof(g_ota_trace.snapshot));
+  return true;
+}
+
+void log_ota_boot_diagnostics() {
+#if OTA_BOOT_DIAG_LOGS
+  log_write("OTA boot diag VTOR=0x");
+  log_write_hex((uint32_t)SCB->VTOR, 8);
+  log_write(" current=");
+  log_write((uint32_t)ota_ab_current_slot());
+  log_write(" inactive=");
+  log_write((uint32_t)ota_ab_inactive_slot());
+  log_write("\r\n");
+
+  for(uint8_t slot = 0; slot < OTA_AB_NUM_SLOTS; ++slot) {
+    uint32_t base = ota_ab_slot_address(slot);
+    uint32_t size = ota_ab_slot_size(slot);
+    uint32_t stack_ptr = *(uint32_t *)base;
+    uint32_t reset_vec = *(uint32_t *)(base + 4u);
+    bool reset_in_slot = (reset_vec & 1u) && (reset_vec >= base) && (reset_vec < (base + size));
+    log_write("OTA slot ");
+    log_write((uint32_t)slot);
+    log_write(" base=0x");
+    log_write_hex(base, 8);
+    log_write(" sp=0x");
+    log_write_hex(stack_ptr, 8);
+    log_write(" rv=0x");
+    log_write_hex(reset_vec, 8);
+    log_write(" rv_in_slot=");
+    log_write(reset_in_slot ? "1" : "0");
+    log_write(" end=0x");
+    log_write_hex(base + size, 8);
+    log_write("\r\n");
+  }
+
+  ota_ab_log_state("boot");
+#endif
+}
+
+void log_ota_reboot_trace() {
+  ota_trace_snapshot_t trace = {};
+  if(!ota_trace_consume(trace)) {
+    return;
+  }
+
+#if OTA_BOOT_DIAG_LOGS
+  const uint8_t current_slot = ota_ab_current_slot();
+  const bool switched = (current_slot == trace.requested_slot);
+
+  log_write("OTA trace seq=");
+  log_write(trace.sequence);
+  log_write(" req_slot=");
+  log_write((uint32_t)trace.requested_slot);
+  log_write(" from_slot=");
+  log_write((uint32_t)trace.requester_current_slot);
+  log_write(" boot_slot=");
+  log_write((uint32_t)current_slot);
+  log_write(" switched=");
+  log_write(switched ? "1" : "0");
+  log_write(" rv_in_slot=");
+  log_write(trace.reset_vector_in_slot ? "1" : "0");
+  log_write("\r\n");
+
+  log_write("OTA trace base=0x");
+  log_write_hex(trace.slot_base, 8);
+  log_write(" size=0x");
+  log_write_hex(trace.slot_size, 8);
+  log_write(" sp=0x");
+  log_write_hex(trace.stack_ptr, 8);
+  log_write(" rv=0x");
+  log_write_hex(trace.reset_vec, 8);
+  log_write(" rcause_before=0x");
+  log_write_hex(trace.rcause_before_reset, 2);
+  log_write(" rcause_now=0x");
+  log_write_hex(PM->RCAUSE.reg, 2);
+  log_write("\r\n");
+#endif
+}
+
+void ota_ab_log_state(const char *tag) {
+#if OTA_BOOT_DIAG_LOGS
+  ota_ab_flags_t cfg = {};
+  bool valid = ota_ab_read(cfg);
+  uint32_t expected_checksum = ota_ab_checksum_words(cfg.active_slot, cfg.pending_slot);
+
+  log_write("OTA AB");
+  if(tag && *tag) {
+    log_write(" [");
+    log_write(tag);
+    log_write("]");
+  }
+  log_write(" cur=");
+  log_write((uint32_t)ota_ab_current_slot());
+  log_write(" inactive=");
+  log_write((uint32_t)ota_ab_inactive_slot());
+  log_write(" valid=");
+  log_write(valid ? "1" : "0");
+  log_write("\r\n");
+
+  log_write("OTA AB flags magic=0x");
+  log_write_hex(cfg.magic, 8);
+  log_write(" ver=");
+  log_write(cfg.version);
+  log_write(" active=");
+  log_write(cfg.active_slot);
+  log_write(" pending=");
+  log_write(cfg.pending_slot);
+  log_write(" chk=0x");
+  log_write_hex(cfg.checksum, 8);
+  log_write(" exp=0x");
+  log_write_hex(expected_checksum, 8);
+  log_write("\r\n");
+#else
+  (void)tag;
+#endif
 }

@@ -46,6 +46,7 @@ int div_cpu = 1; // current div
 bool first_sleep = true; // first sleep after reset, USB perephial could still be on
 bool usb_connected = false;
 uint32_t next_tx_time = 0;
+uint32_t boot_usb_hold_until_ms = 0;
 
 uint32_t sleep_allowed = 0; // time() when is is ok so enter deepsleep
 bool reduced_interval = false; // reduced interval active
@@ -85,12 +86,17 @@ void mark_uart_wakeup(){
   wakeup_source = WAKEUP_UART;
 }
 
+static bool usb_host_connected(){
+  // Use USB enumeration as primary signal. DTR remains a fallback for hosts
+  // that do not expose mount state reliably.
+  return TinyUSBDevice.mounted() || usb_connected || Serial.dtr();
+}
+
 static bool keep_usb_active_during_sleep(){
   if(settings.test_with_usb){
     return true;
   }
-  // Keep USB only while a host has an open CDC session.
-  return Serial.dtr();
+  return usb_host_connected();
 }
 
 uint32_t sleep(bool enable_uart_interrupt){
@@ -697,6 +703,8 @@ void setup(){
   log_write_hex(FANET_VENDOR_ID, 2);
   log_write_hex(get_fanet_id(), 4);
   log_i("\r\n");
+  log_ota_boot_diagnostics();
+  log_ota_reboot_trace();
 
   
   //printf("code end: %p\n", (void *)(&__etext));
@@ -821,6 +829,14 @@ void setup(){
   if(settings_ok){
     create_versionfile(VERSIONFILE);
   }
+
+  // When USB is connected on boot, keep the MCU awake for a short
+  // window so host-side serial/USB commands are handled before first sleep.
+  if(usb_host_connected()) {
+    boot_usb_hold_until_ms = millis() + 10000UL;
+    log_i("USB connected on boot, keep awake for 10s\r\n");
+  }
+
   log_i("Startup init complete\r\n");
   log_flush();
   wakeup();
@@ -847,6 +863,14 @@ loopcounter++;
   if(settings.use_wdt){
     wdt_reset();
   }
+
+  // If enumeration completes shortly after startup, still arm the boot hold.
+  if(!boot_usb_hold_until_ms && usb_host_connected()) {
+    boot_usb_hold_until_ms = millis() + 10000UL;
+    log_i("USB connected after boot, keep awake for 10s\r\n");
+  }
+
+  bool boot_usb_hold_active = (boot_usb_hold_until_ms != 0) && ((int32_t)(millis() - boot_usb_hold_until_ms) < 0);
 
   if(last_call && (time()-last_call > 15)){
     if(!s){led_status(0);}
@@ -979,7 +1003,7 @@ loopcounter++;
   }
 
 // Check if everything is done --> sleep
-  if(!send_active && !ota_lora_busy() && sleep_allowed && (time() > sleep_allowed) && (time() > 2500)){ // allow sleep after 2500 ms to get a chance to detect USB / CDC commands
+  if(!send_active && !ota_lora_busy() && !boot_usb_hold_active && sleep_allowed && (time() > sleep_allowed) && (time() > 2500)){ // allow sleep after 2500 ms to get a chance to detect USB / CDC commands
     go_sleep();
   }
 

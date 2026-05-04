@@ -919,6 +919,14 @@ static bool ota_process_abort(const uint8_t *data, size_t len) {
     return true;
   }
 
+  // In multi-GS deployments a station that does not serve the update may still
+  // emit an "idle/no-update" abort for the same nonce. Ignore this while we are
+  // only waiting for START, otherwise a valid updater can be preempted.
+  if(pkt->status == OTA_STATE_IDLE && s_ota.status == OTA_STATE_WAIT && s_ota.next_seq == 0u && s_ota.bytes_written == 0u) {
+    log_i("OTA abort idle ignored while waiting for start\r\n");
+    return true;
+  }
+
   log_write("OTA abort packet received status=0x");
   log_write_hex(pkt->status, 2);
   log_write("\r\n");
@@ -972,6 +980,7 @@ static bool ota_process_finish(const uint8_t *data, size_t len) {
   if(!ota_candidate_valid(s_ota.slot_base)) {
     const uint32_t stack_ptr = *(uint32_t *)s_ota.slot_base;
     const uint32_t reset_vec = *(uint32_t *)(s_ota.slot_base + 4u);
+#if OTA_BOOT_DIAG_LOGS
     log_write("OTA image invalid base=0x");
     log_write_hex(s_ota.slot_base, 8);
     log_write(" sp=0x");
@@ -979,21 +988,57 @@ static bool ota_process_finish(const uint8_t *data, size_t len) {
     log_write(" rv=0x");
     log_write_hex(reset_vec, 8);
     log_write("\r\n");
+#endif
     ota_send_ack(OTA_ERR_IMAGE);
     ota_abort_session(OTA_ERR_IMAGE);
     return true;
   }
 
+  const uint32_t stack_ptr = *(uint32_t *)s_ota.slot_base;
+  const uint32_t reset_vec = *(uint32_t *)(s_ota.slot_base + 4u);
+  const bool reset_in_slot = (reset_vec & 1u) && (reset_vec >= s_ota.slot_base) && (reset_vec < (s_ota.slot_base + s_ota.slot_size));
+#if OTA_BOOT_DIAG_LOGS
+  log_write("OTA candidate OK slot=");
+  log_write((uint32_t)s_ota.inactive_slot);
+  log_write(" base=0x");
+  log_write_hex(s_ota.slot_base, 8);
+  log_write(" sp=0x");
+  log_write_hex(stack_ptr, 8);
+  log_write(" rv=0x");
+  log_write_hex(reset_vec, 8);
+  log_write(" rv_in_slot=");
+  log_write(reset_in_slot ? "1" : "0");
+  log_write(" slot_end=0x");
+  log_write_hex(s_ota.slot_base + s_ota.slot_size, 8);
+  log_write("\r\n");
+
+  if(!reset_in_slot) {
+    log_i("OTA warning: reset vector is outside target slot; bootloader may reject pending slot\r\n");
+  }
+#endif
+
+  ota_ab_log_state("finish-pre-request");
+
   if(!ota_ab_request_slot(s_ota.inactive_slot)) {
+    log_write("OTA request slot failed target=");
+    log_write((uint32_t)s_ota.inactive_slot);
+    log_write("\r\n");
+    ota_ab_log_state("finish-request-failed");
     ota_send_ack(OTA_ERR_FLASH);
     ota_abort_session(OTA_ERR_FLASH);
     return true;
   }
 
+  ota_ab_log_state("finish-post-request");
+
+  ota_trace_mark_pending_reboot(s_ota.inactive_slot, s_ota.slot_base, s_ota.slot_size,
+                                stack_ptr, reset_vec, reset_in_slot);
+
   ota_send_ack(OTA_STATE_READY);
   log_i("OTA ready, rebooting\r\n");
   ota_signal_success_sequence();
-  delay(20);
+  log_flush();
+  delay(40);
   NVIC_SystemReset();
   return true;
 }
