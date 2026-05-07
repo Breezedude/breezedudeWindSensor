@@ -9,6 +9,7 @@
 
 extern LORA_MODULE lora_module;
 extern CHIP_BARO chip_baro;
+extern volatile int wakeup_source;
 
 uint32_t sleeptime_cum = 0; // cumulative time spend in sleepmode, used for time() calculation
 Settings settings;
@@ -30,7 +31,7 @@ bool format_flash(){
 bool setup_flash(){
   char probe[8] = {0};
   if(ota_storage_read_text(OTA_SETTINGS_ADDRESS, probe, sizeof(probe))){
-    log_i("Bootloader settings storage ready\r\n");
+    log_v("Bootloader settings storage ready\r\n");
   } else {
     log_i("Bootloader settings storage empty, waiting for user config\r\n");
   }
@@ -81,7 +82,7 @@ bool parse_file(char * filename){
     };
 
     if(ota_storage_read_text(OTA_SETTINGS_ADDRESS, rawbuf, sizeof(rawbuf))){
-      log_i("Reading settings from bootloader storage\r\n");
+      log_v("Reading settings from bootloader storage\r\n");
       text = rawbuf;
     } else {
       log_e("Bootloader settings empty, waiting for user config\r\n");
@@ -179,6 +180,12 @@ extern "C" void tud_mount_cb(void) {
   usb_last_activity_ms = millis();
   usb_detach_event = false;
   usb_ignore_detach_event = false;
+  wakeup_source = WAKEUP_USB;
+}
+
+extern "C" void tud_cdc_rx_cb(uint8_t itf) {
+  (void)itf;
+  wakeup_source = WAKEUP_USB;
 }
 
 extern "C" void tud_umount_cb(void) {
@@ -255,7 +262,7 @@ void attachInterruptWakeup(uint32_t pin, voidFuncPtr callback, uint32_t mode, bo
 
 // Helper ----------------------------------------------------------------------------------------------------------------------
 
-const char* wakeup_source_string[] = {"NONE", "RTC", "EIC", "WDT", "UART", "LORA"};
+const char* wakeup_source_string[] = {"NONE", "RTC", "EIC", "WDT", "UART", "LORA", "USB"};
 
 String get_bootloader_version(){
   static bool cached = false;
@@ -445,14 +452,10 @@ bool apply_setting(char* settingName,  char* settingValue){
 
   if(strcmp(settingName,"DEBUG")==0) {log_set_debug(atoi(settingValue)); return 1;}
   if(strcmp(settingName,"ERRORS")==0) {log_set_error(atoi(settingValue)); return 1;}
-  if(strcmp(settingName,"TEST_USB")==0) {
-    settings.test_with_usb = atoi(settingValue);
-    return 1;
-  }
   if(strcmp(settingName,"TESTMODE")==0) {settings.testmode = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"OTA_FAST")==0) {settings.ota_fast = atoi(settingValue); return 1;}
   if(strcmp(settingName,"WDT")==0) {settings.use_wdt = atoi(settingValue); return 1;}
   if(strcmp(settingName,"DIV_CPU_SLOW")==0) {settings.div_cpu_slow = atoi(settingValue); return 1;}
-  if(strcmp(settingName,"FORWARD_UART")==0) {settings.forward_serial_while_usb = atoi(settingValue); return 1;}
   if(strcmp(settingName,"USB_VERBOSE")==0) {settings.verbose_usb = atoi(settingValue); return 1;}
 
 

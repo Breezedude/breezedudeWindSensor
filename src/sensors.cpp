@@ -380,54 +380,6 @@ void forward_analog_test_serial(){
   }
 }
 
-// while USB is connected, forward ws80 data to usb serial port
-void forward_sensor_serial(){
-  if(settings.forward_serial_while_usb){
-    static uint8_t buffer[512];
-    static int bufferpos = 0;
-
-    if(is_wsxx()){
-      while (SENSOR_UART.available()){
-        if (bufferpos >= (int)sizeof(buffer)) {
-          bufferpos = 0;
-        }
-        buffer[bufferpos] = SENSOR_UART.read();
-        if (buffer[bufferpos] == '\n') {
-          bufferpos++;
-          if(usb_connected){Serial.write(buffer, bufferpos);}
-          Serial1.write(buffer, bufferpos);
-          bufferpos = 0;
-        } else {
-          bufferpos++;
-        }
-      }
-    } else if(settings.sensor_type == s_WS85_UART || settings.sensor_type == s_WINDNERD){
-      // Read data block first
-      while((bufferpos < (int)sizeof(buffer)) && ws85uart.get_char(&(buffer[bufferpos]))){
-        bufferpos++;
-        delay(1); // waste some time to wait for the serial data to complete receiving
-      }
-      // Output the data
-      if(bufferpos){
-        if(usb_connected){
-          int i = 0;
-          while (i < bufferpos) {
-            int chunk = min(64, bufferpos - i);
-            for (int j = 0; j < chunk; j++) {
-              log_write_hex(buffer[i + j], 2);
-              log_i(" ");
-            }
-            log_i("\r\n");
-            i += chunk;
-          }
-        }
-        bufferpos = 0;
-      }
-    }
-  }
-}
-
-
 // Set measurement value read from WS80 UART
 bool set_value(char* key,  char* value){
   //printf("%s = %s\r\n",key, value);
@@ -558,7 +510,7 @@ if(found_data){
   int pos = 0;
   while (i < co){
     if(buffer[i] == '\n'){
-          if(settings.test_with_usb && usb_connected){
+          if(usb_connected){
             Serial.write(&buffer[pos], i-pos);
           }
           if(process_line(&buffer[pos], i-pos-1, &set_value)){
@@ -717,7 +669,7 @@ void calc_pulse_sensor(uint32_t pulses, uint32_t dmillis){
   add_wind_history_gust(sensor.wind_speed);
   save_history(sensor.wind_speed, sensor.temperature, sensor.humidity, sensor.light_lux, sensor.batt_volt, sensor.pv_charging, sensor.pv_done);
   log_i("wind speed: ", sensor.wind_speed); 
-  log_i("wind dir raw: ", sensor.wind_dir_raw); 
+  log_i("wind dir (raw): ", sensor.wind_dir_raw); 
 }
 
 

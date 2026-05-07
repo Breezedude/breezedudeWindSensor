@@ -107,7 +107,6 @@ void get_imu();
 void switch_WS_power(bool state);
 void read_batt_perc();
 void baro_start_reading();
-void forward_sensor_serial();
 void forward_analog_test_serial();
 bool set_value(char* key,  char* value);
 bool parse_wsdat(char* input, int len);

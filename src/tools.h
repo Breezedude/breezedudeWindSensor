@@ -59,13 +59,12 @@ typedef struct {
   uint32_t broadcast_interval_info = 60*60*1000; // 1h
   uint32_t broadcast_interval_name = 1000*60*5; // 5 min
   bool ota_enable = true;                      // allow OTA updates (set OTA_ENABLE=0 to disable)
+  bool ota_fast = false;                        // send OTA hwinfo after 20s instead of 10min (debug)
 
   // debug states
   bool uv_triggered = false; // flag to indicate if undervoltage has been triggered, resets when voltage is at 100% again
 
   // debugging
-  bool test_with_usb = false;
-  bool forward_serial_while_usb = false;
   bool verbose_usb = false;
   bool skip_lora = false; // skip lora module init
   bool analog_test_mode = false; // for davis sensor testing, set to 1 to power on sensor and output adc values, 0 to power off

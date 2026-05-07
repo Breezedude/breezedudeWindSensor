@@ -93,9 +93,6 @@ static bool usb_host_connected(){
 }
 
 static bool keep_usb_active_during_sleep(){
-  if(settings.test_with_usb){
-    return true;
-  }
   return usb_host_connected();
 }
 
@@ -119,7 +116,7 @@ uint32_t sleep(bool enable_uart_interrupt){
       //log_i("Enable UART Interrupt\r\n");
     }
   }
-  if(settings.test_with_usb){
+  if(usb_host_connected()){
     log_flush();
   }
   reset_time_counter(); // start counting sleeptime from zero
@@ -274,7 +271,7 @@ uint32_t calc_time_to_sleep(){
 
   tts_weather = timeToSend(last_msg_weather, settings.broadcast_interval_weather);
   tts_name    = timeToSend(last_msg_name, settings.broadcast_interval_name);
-  tts_info    = timeToSend(last_msg_info, settings.broadcast_interval_info);
+  tts_info    = settings.broadcast_interval_info ? ota_lora_next_hwinfo_due_ms() : (uint32_t)-1;
 
 
   
@@ -384,7 +381,7 @@ void go_sleep(){
     uint32_t t = 0;
     setup_pulse_counter(); // need to setup GCLK6 before
 
-    while(wakeup_source != WAKEUP_RTC){ // ignore other wakeups (external pin Interrupt, if configured)
+    while(wakeup_source != WAKEUP_RTC && wakeup_source != WAKEUP_USB && !Serial.available()){ // ignore other wakeups (external pin Interrupt, if configured)
       t += sleep(false);
       if(loraReceivedFlag && settings.lora_smart_rcv) {
         // Process immediately: readData() clears the LLCC68 IRQ flag so DIO1 goes LOW.
@@ -405,7 +402,7 @@ void go_sleep(){
   else if(is_wsxx() || settings.sensor_type == s_WS85_UART || settings.sensor_type == s_WINDNERD){ // UART based sensor
     int res = -1;
 
-    while(wakeup_source != WAKEUP_RTC){
+    while(wakeup_source != WAKEUP_RTC && wakeup_source != WAKEUP_USB && !Serial.available()){
       sleep(true); // sleep til UART interrupt
 
       // Process any received LoRa packet immediately so readData() clears the LLCC68
@@ -754,7 +751,7 @@ void setup(){
 
     setup_PM(settings.use_pulse_counter, settings.use_rtc_counter);
     wdt_disable();
-    log_i(settings.use_wdt ? "WDT runtime: deferred until setup complete\r\n" : "WDT runtime: OFF\r\n");
+    //log_i(settings.use_wdt ? "WDT runtime: deferred until setup complete\r\n" : "WDT runtime: OFF\r\n");
 
     if(settings.use_baro){
       if(!init_baro()){
@@ -791,7 +788,7 @@ void setup(){
         SENSOR_UART.begin(115200); // div_cpu not required, as its 1 at reset
       }
       if(settings.sensor_type == s_WS85_UART){
-        log_i("Setup WS85\r\n");
+        //log_i("Setup WS85\r\n");
 
         ws85uart.begin(div_cpu);
         // Keep the current sensor baud on boot; a forced switch here can stall
@@ -834,10 +831,10 @@ void setup(){
   // window so host-side serial/USB commands are handled before first sleep.
   if(usb_host_connected()) {
     boot_usb_hold_until_ms = millis() + 10000UL;
-    log_i("USB connected on boot, keep awake for 10s\r\n");
+    log_v("USB connected on boot, keep awake for 10s\r\n");
   }
 
-  log_i("Startup init complete\r\n");
+  //log_i("Startup init complete\r\n");
   log_flush();
   wakeup();
   if(settings_ok && settings.use_wdt){
@@ -949,8 +946,8 @@ loopcounter++;
       
     }
   }
-  const uint32_t info_interval_ms = settings.broadcast_interval_info;
-  if(!ota_lora_busy() && info_interval_ms && fanet_cooldown_ok() && ( (time()- last_msg_info) > info_interval_ms) ){
+  const uint32_t info_due_ms = settings.broadcast_interval_info ? ota_lora_next_hwinfo_due_ms() : (uint32_t)-1;
+  if(!ota_lora_busy() && settings.broadcast_interval_info && fanet_cooldown_ok() && info_due_ms == 0u ){
       led_status(1);
       TxAttemptResult tx_result = send_msg_info();
       if(tx_result == TX_ATTEMPT_STARTED) {
@@ -958,7 +955,12 @@ loopcounter++;
         last_msg_info = time();
         send_active = time();
       } else if(tx_result == TX_ATTEMPT_DEFERRED_LBT) {
-        defer_next_send(last_msg_info, info_interval_ms / max((uint32_t)broadcast_scale_factor, 1UL), "info");
+        uint32_t retry_delay = next_lbt_retry_delay();
+        ota_lora_defer_hwinfo_retry(retry_delay);
+        next_tx_time = time() + retry_delay;
+        sleep_allowed = time() + 1;
+        log_i("LBT: defer info TX by ms: ", retry_delay);
+        log_i("\r\n");
       }
       led_status(0);
   }
@@ -1002,8 +1004,12 @@ loopcounter++;
     }
   }
 
+  if(settings.analog_test_mode){
+    forward_analog_test_serial();
+  }
+
 // Check if everything is done --> sleep
-  if(!send_active && !ota_lora_busy() && !boot_usb_hold_active && sleep_allowed && (time() > sleep_allowed) && (time() > 2500)){ // allow sleep after 2500 ms to get a chance to detect USB / CDC commands
+  if(!settings.analog_test_mode && !send_active && !ota_lora_busy() && !boot_usb_hold_active && sleep_allowed && (time() > sleep_allowed) && (time() > 2500)){ // allow sleep after 2500 ms to get a chance to detect USB / CDC commands
     go_sleep();
   }
 

@@ -323,7 +323,7 @@ bool radio_init(){
   #if BREEZEDUDE_RADIO_SX1276
   if(radio_sx1276.begin(settings.lora_freq, settings.lora_bw, settings.lora_sf, settings.lora_cr, LORA_SYNCWORD, 10, 12, 0) == RADIOLIB_ERR_NONE){
     radio_phy = (PhysicalLayer*)&radio_sx1276;
-    log_i("Found LoRa SX1276\r\n");
+    log_i("Radio: LoRa SX1276\r\n");
     lora_module = LORA_SX1276;
     return true;
   }
@@ -332,7 +332,7 @@ bool radio_init(){
   #if BREEZEDUDE_RADIO_LLCC68
   if(radio_llcc68.begin(settings.lora_freq, settings.lora_bw, settings.lora_sf, settings.lora_cr, LORA_SYNCWORD, 10, 12) == RADIOLIB_ERR_NONE){
     radio_phy = (PhysicalLayer*)&radio_llcc68;
-    log_i("Found LoRa LLCC68\r\n");
+    log_i("Radio: LoRa LLCC68\r\n");
     lora_module = LORA_LLCC68;
     radio_phy->setOutputPower(22);
     return true;
@@ -343,13 +343,13 @@ bool radio_init(){
   if(radio_sx1262.begin(settings.lora_freq, settings.lora_bw, settings.lora_sf, settings.lora_cr, LORA_SYNCWORD, 10, 12) == RADIOLIB_ERR_NONE){
     // NiceRF SX1262 issue https://github.com/jgromes/RadioLib/issues/689
     radio_phy = (PhysicalLayer*)&radio_sx1262;
-    log_i("Found LoRa SX1262\r\n");
+    log_i("Radio: LoRa SX1262\r\n");
     lora_module = LORA_SX1262;
     radio_phy->setOutputPower(22);
     return true;
   }
   #endif
 
-  log_i("No LoRa found\r\n");
+  log_i("Radio: No LoRa found\r\n");
   return false;
 }

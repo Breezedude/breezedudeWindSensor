@@ -43,6 +43,8 @@
 void ota_lora_begin();
 void ota_lora_prepare_hwinfo(hwInfoData &info);
 void ota_lora_note_hwinfo_tx_started();
+uint32_t ota_lora_next_hwinfo_due_ms();
+void ota_lora_defer_hwinfo_retry(uint32_t delay_ms);
 bool ota_lora_on_tx_complete();
 bool ota_lora_poll();
 bool ota_lora_busy();

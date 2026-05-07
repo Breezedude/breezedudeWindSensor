@@ -111,7 +111,7 @@ size_t pack_hwinfo(const hwInfoData *data, uint8_t *buffer) {
     pos += sizeof(hwinfo_debug_t3);
   }
 
-  log_i("Sending HW Info type:", (uint8_t)data->debug_type);
+  log_i("Sending HW Info type: ", (uint8_t)data->debug_type);
 
   return pos;
 

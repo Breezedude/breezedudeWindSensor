@@ -123,8 +123,22 @@ static bool s_ota_wdt_paused = false;
 static uint32_t s_ota_chunk_led_until_ms = 0;
 static uint32_t s_ota_loss_led_until_ms = 0;
 static uint32_t s_ota_no_update_cooldown_until = 0;
-static uint8_t s_hwinfo_cycle = 1;
 static bool s_last_hwinfo_was_ota = false;
+static uint32_t s_hwinfo_last_dynamic_ts = 0;
+static uint32_t s_hwinfo_last_ota_ts = 0;
+static uint32_t s_hwinfo_last_static_ts = 0;
+static uint32_t s_hwinfo_retry_not_before_ms = 0;
+
+static constexpr uint32_t OTA_HWINFO_DYNAMIC_INTERVAL_S = 10u * 60u;
+static constexpr uint32_t OTA_HWINFO_DYNAMIC_LOW_BATT_INTERVAL_S = 30u * 60u;
+static constexpr uint32_t OTA_HWINFO_OTA_INTERVAL_S = 60u * 60u; // 1h
+static constexpr uint32_t OTA_HWINFO_STATIC_INTERVAL_S = 60u * 60u;
+
+// Boot delays: first hwinfo sends are staggered after reset
+static constexpr uint32_t OTA_HWINFO_BOOT_DELAY_DYNAMIC_MS = 1u * 60u * 1000u;   // 1 min
+static constexpr uint32_t OTA_HWINFO_BOOT_DELAY_OTA_MS     = 10u * 60u * 1000u;  // 10 min
+static constexpr uint32_t OTA_HWINFO_BOOT_DELAY_OTA_FAST_MS = 20u * 1000u;       // 20 sec (OTA_FAST)
+static constexpr uint32_t OTA_HWINFO_BOOT_DELAY_STATIC_MS  = 10u * 60u * 1000u;  // 10 min
 
 static uint16_t ota_version_bcd() {
   uint8_t digits[3] = {0, 0, 0};
@@ -139,6 +153,30 @@ static uint16_t ota_version_bcd() {
 
 static bool ota_no_update_cooldown_active() {
   return s_ota_no_update_cooldown_until && ((int32_t)(time() - s_ota_no_update_cooldown_until) < 0);
+}
+
+static bool ota_hwinfo_due(uint32_t now_ms, uint32_t last_ms, uint32_t interval_ms) {
+  if(last_ms == 0u) {
+    return true;
+  }
+  return (uint32_t)(now_ms - last_ms) >= interval_ms;
+}
+
+static uint32_t ota_hwinfo_due_in_ms(uint32_t now_ms, uint32_t last_ms, uint32_t interval_ms) {
+  if(last_ms == 0u) {
+    return 0u;
+  }
+  const uint32_t elapsed = (uint32_t)(now_ms - last_ms);
+  if(elapsed >= interval_ms) {
+    return 0u;
+  }
+  return interval_ms - elapsed;
+}
+
+static bool ota_hwinfo_low_battery() {
+  return settings.reduce_interval_voltage > 0.1f &&
+         sensor.batt_volt > 0.5f &&
+         sensor.batt_volt <= settings.reduce_interval_voltage;
 }
 
 static void ota_start_no_update_cooldown() {
@@ -650,7 +688,10 @@ static bool ota_enter_update_mode() {
   s_ota.offer_pending = false;
   s_ota.active = true;
   s_ota.status = OTA_STATE_WAIT;
-  s_ota.deadline = time() + OTA_LORA_SESSION_TIMEOUT_MS;
+  // Use a short deadline while waiting for the first START packet.
+  // ota_begin_session() will extend this to OTA_LORA_SESSION_TIMEOUT_MS once
+  // the offer is accepted and the session is actually running.
+  s_ota.deadline = time() + OTA_LORA_RX_WINDOW_MS;
   s_ota.next_seq = 0;
   s_ota.bytes_written = 0;
   s_ota.page_fill = 0;
@@ -910,7 +951,7 @@ static bool ota_process_chunk(const uint8_t *data, size_t len) {
 }
 
 static bool ota_process_abort(const uint8_t *data, size_t len) {
-  if(!s_ota.active || len < sizeof(ota_abort_pkt_t) || !ota_check_prefix(data, len, OTA_OP_ABORT)) {
+  if((!s_ota.active && !s_ota.offer_pending) || len < sizeof(ota_abort_pkt_t) || !ota_check_prefix(data, len, OTA_OP_ABORT)) {
     return false;
   }
 
@@ -920,9 +961,11 @@ static bool ota_process_abort(const uint8_t *data, size_t len) {
   }
 
   // In multi-GS deployments a station that does not serve the update may still
-  // emit an "idle/no-update" abort for the same nonce. Ignore this while we are
-  // only waiting for START, otherwise a valid updater can be preempted.
-  if(pkt->status == OTA_STATE_IDLE && s_ota.status == OTA_STATE_WAIT && s_ota.next_seq == 0u && s_ota.bytes_written == 0u) {
+  // emit an "idle/no-update" abort for the same nonce. Ignore this only while we
+  // have already entered active update mode (after FANET ACK) and are still
+  // waiting for the first START packet. During offer_pending (before FANET ACK)
+  // an IDLE abort means "no update available" and must be honoured.
+  if(s_ota.active && pkt->status == OTA_STATE_IDLE && s_ota.status == OTA_STATE_WAIT && s_ota.next_seq == 0u && s_ota.bytes_written == 0u) {
     log_i("OTA abort idle ignored while waiting for start\r\n");
     return true;
   }
@@ -1046,6 +1089,19 @@ static bool ota_process_finish(const uint8_t *data, size_t len) {
 void ota_lora_begin() {
   s_ota.current_version_bcd = ota_version_bcd();
   s_ota_wdt_paused = false;
+
+  // Stagger first hwinfo packets after boot using fake past timestamps.
+  // Setting last = now - interval + delay makes the first TX fire after 'delay' ms.
+  const uint32_t now = (uint32_t)time();
+  const uint32_t ota_boot_delay = settings.ota_fast ? OTA_HWINFO_BOOT_DELAY_OTA_FAST_MS : OTA_HWINFO_BOOT_DELAY_OTA_MS;
+  s_hwinfo_last_dynamic_ts = now - (OTA_HWINFO_DYNAMIC_INTERVAL_S * 1000u) + OTA_HWINFO_BOOT_DELAY_DYNAMIC_MS;
+  if(!s_hwinfo_last_dynamic_ts) s_hwinfo_last_dynamic_ts = 1u;
+  s_hwinfo_last_ota_ts     = now - (OTA_HWINFO_OTA_INTERVAL_S     * 1000u) + ota_boot_delay;
+  if(!s_hwinfo_last_ota_ts) s_hwinfo_last_ota_ts = 1u;
+  s_hwinfo_last_static_ts  = now - (OTA_HWINFO_STATIC_INTERVAL_S  * 1000u) + OTA_HWINFO_BOOT_DELAY_STATIC_MS;
+  if(!s_hwinfo_last_static_ts) s_hwinfo_last_static_ts = 1u;
+
+  s_hwinfo_retry_not_before_ms = 0;
   ota_reset_state(OTA_STATE_IDLE);
 }
 
@@ -1054,11 +1110,19 @@ void ota_lora_prepare_hwinfo(hwInfoData &info) {
   memset(&info.debug_dynamic, 0, sizeof(info.debug_dynamic));
   memset(&info.debug_ota, 0, sizeof(info.debug_ota));
   memset(&info.debug_static, 0, sizeof(info.debug_static));
-
-  uint8_t group = s_hwinfo_cycle++ % 3u;
   s_last_hwinfo_was_ota = false;
+  info.debug_type = 0u;
 
-  if(group == 0u) {
+  const uint32_t now_ms = (uint32_t)time();
+  const uint32_t dynamic_interval_ms = (ota_hwinfo_low_battery() ? OTA_HWINFO_DYNAMIC_LOW_BATT_INTERVAL_S
+                                                                  : OTA_HWINFO_DYNAMIC_INTERVAL_S) * 1000u;
+  const bool dynamic_due = ota_hwinfo_due(now_ms, s_hwinfo_last_dynamic_ts, dynamic_interval_ms);
+  const bool ota_due = settings.ota_enable &&
+                       !ota_no_update_cooldown_active() &&
+                       ota_hwinfo_due(now_ms, s_hwinfo_last_ota_ts, OTA_HWINFO_OTA_INTERVAL_S * 1000u);
+  const bool static_due = ota_hwinfo_due(now_ms, s_hwinfo_last_static_ts, OTA_HWINFO_STATIC_INTERVAL_S * 1000u);
+
+  if(dynamic_due) {
     info.debug_type = HWINFO_DEBUG_DYNAMIC;
     info.debug_dynamic.vbatt_mv = (uint16_t)constrain(lroundf(sensor.batt_volt * 1000.0f), 0L, 65535L);
     info.debug_dynamic.batt_perc = (uint8_t)constrain(sensor.batt_perc, 0, 100);
@@ -1067,7 +1131,8 @@ void ota_lora_prepare_hwinfo(hwInfoData &info) {
     info.debug_dynamic.forward_count = fanet_forward_counter;
     info.debug_dynamic.lbt_counter = settings.lbt_counter;
     info.debug_dynamic.reserved = 0u;
-  } else if(group == 1u && !ota_no_update_cooldown_active() && settings.ota_enable) {
+    s_hwinfo_last_dynamic_ts = now_ms;
+  } else if(ota_due) {
     info.debug_type = HWINFO_DEBUG_OTA;
     info.debug_ota.version_bcd = s_ota.current_version_bcd;
     info.debug_ota.nonce = ota_next_nonce();
@@ -1075,7 +1140,8 @@ void ota_lora_prepare_hwinfo(hwInfoData &info) {
     info.debug_ota.ota_proto = OTA_LORA_PROTOCOL_VERSION;
     info.debug_ota.ota_state = ota_ab_current_slot() & 0x01u;
     s_last_hwinfo_was_ota = true;
-  } else {
+    s_hwinfo_last_ota_ts = now_ms;
+  } else if(static_due) {
     info.debug_type = HWINFO_DEBUG_STATIC;
     info.debug_static.sensor_type = settings.sensor_type;
     info.debug_static.use_baro = settings.use_baro ? 1u : 0u;
@@ -1084,10 +1150,37 @@ void ota_lora_prepare_hwinfo(hwInfoData &info) {
     info.debug_static.lora_rssi_threshold = (uint8_t)constrain(-settings.lora_rssi_threshold, 0, 255);
     info.debug_static.sensor_integ_s = (uint8_t)constrain((int)(settings.sensor_integration_time / 1000u), 0, 255);
     info.debug_static.reduce_interval_voltage = (uint8_t)constrain((int)lroundf((settings.reduce_interval_voltage * 100.0f) - 200.0f), 0, 255);
+    s_hwinfo_last_static_ts = now_ms;
   }
 }
 
+uint32_t ota_lora_next_hwinfo_due_ms() {
+  const uint32_t now_ms = (uint32_t)time();
+
+  const uint32_t dynamic_interval_ms = (ota_hwinfo_low_battery() ? OTA_HWINFO_DYNAMIC_LOW_BATT_INTERVAL_S
+                                                                  : OTA_HWINFO_DYNAMIC_INTERVAL_S) * 1000u;
+  uint32_t due_ms = ota_hwinfo_due_in_ms(now_ms, s_hwinfo_last_dynamic_ts, dynamic_interval_ms);
+
+  if(settings.ota_enable && !ota_no_update_cooldown_active()) {
+    due_ms = min(due_ms, ota_hwinfo_due_in_ms(now_ms, s_hwinfo_last_ota_ts, OTA_HWINFO_OTA_INTERVAL_S * 1000u));
+  }
+
+  due_ms = min(due_ms, ota_hwinfo_due_in_ms(now_ms, s_hwinfo_last_static_ts, OTA_HWINFO_STATIC_INTERVAL_S * 1000u));
+
+  if(s_hwinfo_retry_not_before_ms && (int32_t)(now_ms - s_hwinfo_retry_not_before_ms) < 0) {
+    const uint32_t retry_wait_ms = (uint32_t)(s_hwinfo_retry_not_before_ms - now_ms);
+    due_ms = max(due_ms, retry_wait_ms);
+  }
+
+  return due_ms;
+}
+
+void ota_lora_defer_hwinfo_retry(uint32_t delay_ms) {
+  s_hwinfo_retry_not_before_ms = (uint32_t)time() + delay_ms;
+}
+
 void ota_lora_note_hwinfo_tx_started() {
+  s_hwinfo_retry_not_before_ms = 0;
   if(!radio_phy || s_ota.active || !s_last_hwinfo_was_ota || ota_no_update_cooldown_active() || !settings.ota_enable) {
     return;
   }

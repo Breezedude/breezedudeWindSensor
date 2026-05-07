@@ -113,5 +113,6 @@ enum Wakeup_Source{
   WAKEUP_EIC,
   WAKEUP_WDT,
   WAKEUP_UART,
-  WAKEUP_LORA
+  WAKEUP_LORA,
+  WAKEUP_USB
 };

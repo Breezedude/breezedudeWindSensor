@@ -38,7 +38,7 @@ public:
   }
 
   void set_baud_115200(){
-    log_i("Setting baud to 115200\r\n");
+    log_v("Setting baud to 115200\r\n");
     // Avoid blocking startup on targets where UART flush can stall indefinitely.
     serial->end();
     serial->begin(9600);
