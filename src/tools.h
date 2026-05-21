@@ -54,9 +54,10 @@ typedef struct {
   uint8_t lbt_counter=0; // 8bit counter for LBT retries, resets on boot
   int  lora_rssi_threshold = -104;  // RSSI threshold in dBm for LBT (lower = more sensitive)
   bool lora_smart_rcv = false;
+  bool forward_data = false;    // set forward bit on all outgoing FANET packets (relay-friendly station)
+  bool repeater = false;        // dedicated repeater mode: always-on RX, forward all packets with fwd bit
 
   uint32_t broadcast_interval_weather = BROADCAST_INTERVAL;
-  uint32_t broadcast_interval_info = 60*60*1000; // 1h
   uint32_t broadcast_interval_name = 1000*60*5; // 5 min
   bool ota_enable = true;                      // allow OTA updates (set OTA_ENABLE=0 to disable)
   bool ota_fast = false;                        // send OTA hwinfo after 20s instead of 10min (debug)

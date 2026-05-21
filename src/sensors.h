@@ -104,7 +104,7 @@ extern Sensors sensor;
 
 bool init_imu();
 void get_imu();
-void switch_WS_power(bool state);
+void switch_sensor_power(bool state);
 void read_batt_perc();
 void baro_start_reading();
 void forward_analog_test_serial();

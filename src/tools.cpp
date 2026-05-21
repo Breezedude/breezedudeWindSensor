@@ -122,7 +122,7 @@ bool parse_file(char * filename){
       log_e("Missing or invalid mandatory location (LAT/LON)\r\n");
     }
 
-    if(settings.sensor_type == s_invalid){
+    if(settings.sensor_type == s_invalid && !settings.repeater){
       ret = false;
       log_e("Missing mandatory setting: sensor type\r\n");
     }
@@ -432,7 +432,6 @@ bool apply_setting(char* settingName,  char* settingValue){
 // Broadcast intervals in seconds, 0 = disable
   if(strcmp(settingName,"BROADCAST_INTERVAL_WEATHER")==0) {settings.broadcast_interval_weather = (uint32_t)atoi(settingValue)*1000; return 1;}
   if(strcmp(settingName,"BROADCAST_INTERVAL_NAME")==0)    {settings.broadcast_interval_name = (uint32_t)atoi(settingValue)*1000; return 1;}
-  if(strcmp(settingName,"BROADCAST_INTERVAL_INFO")==0)    {settings.broadcast_interval_info = (uint32_t)atoi(settingValue)*1000; return 1;}
 
   if(strcmp(settingName,"SENSOR_BARO")==0) {settings.use_baro = atoi(settingValue); return 1;}
   if(strcmp(settingName,"SENSOR_DAVIS6410")==0) { if(atoi(settingValue)){settings.sensor_type = s_DAVIS6410;} return 1;}
@@ -463,6 +462,8 @@ bool apply_setting(char* settingName,  char* settingValue){
   if(strcmp(settingName,"LBT")==0) {settings.lora_lbt = atoi(settingValue); return 1;}
   if(strcmp(settingName,"LBT_RSSI_THRESHOLD")==0) {settings.lora_rssi_threshold = atoi(settingValue); return 1;}
   if(strcmp(settingName,"FANET_SMART_FORWARD")==0) {settings.lora_smart_rcv = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"FORWARD_DATA")==0) {settings.forward_data = atoi(settingValue); return 1;}
+  if(strcmp(settingName,"REPEATER")==0) {settings.repeater = atoi(settingValue); return 1;}
 
   if(strcmp(settingName,"OTA_ENABLE")==0) {settings.ota_enable = atoi(settingValue) != 0; return 1;}
   if(strcmp(settingName,"OTA_CONFIRM")==0) {return ota_ab_confirm_current() ? 1 : 0;}
@@ -498,8 +499,9 @@ void print_settings(){
     log_i("Heading offset: ", settings.heading_offset); 
     log_i("Broadcast interval weather [s]: ", settings.broadcast_interval_weather/1000);
     log_i("Broadcast interval name [s]: ", settings.broadcast_interval_name/1000);
-    log_i("Broadcast interval info [s]: ", settings.broadcast_interval_info/1000);
     log_i("LBT: "); log_i(settings.lora_lbt ? "ON\r\n" : "OFF\r\n");
+    if(settings.repeater) { log_i("Repeater mode: ON\r\n"); }
+    if(settings.forward_data) { log_i("Forward data: ON\r\n"); }
     if(is_wsxx()){log_i("Sensor: WSXX Auto detect\r\n");}
     if(settings.sensor_type == s_DAVIS6410){log_i("Sensor: DAVIS 6410\r\n");}
     if(settings.sensor_type == s_WS85_UART){log_i("Sensor: WS85 UART\r\n");}

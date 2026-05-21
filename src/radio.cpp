@@ -173,9 +173,12 @@ bool lbt_channel_free(int max_attempts) {
 }
 
 void radio_sleep(){
-  // Only enable RX listening when battery is sufficiently charged AND solar is actively charging or charge complete.
-  // RX & forward mode draws ~12mA; skip it on battery power to conserve energy.
-  if(settings.lora_smart_rcv && sensor.batt_perc >= 90 && (sensor.pv_charging || sensor.pv_done)){
+  // Repeater: always-on RX except during undervoltage.
+  // Smart-rcv: only when battery is sufficiently charged and solar is active.
+  extern bool undervoltage;
+  const bool en_rx = (settings.repeater && !undervoltage) ||
+                     (settings.lora_smart_rcv && sensor.batt_perc >= 90 && (sensor.pv_charging || sensor.pv_done));
+  if(en_rx){
     en_rx_sleep();
   } else {
     // dis_rx_sleep() detaches the EIC interrupt and puts radio in standby first,
@@ -232,11 +235,13 @@ bool fanet_rx(){
     log_i(" SNR=");
     log_write(snr);
     log_i("\r\n");
+    log_v_hex_dump(byteArr, numBytes); // raw packet bytes when USB_VERBOSE=1
 
     // Forward any packet with the forward bit set (spec: clear forward bit on re-TX
     // to prevent cascaded forwarding). Skip if a forward is already queued or
     // we recently forwarded from this sender (dedup).
-    if (header->forward && !forward_pending && rssi < FANET_FORWARD_RSSI_THRESHOLD) { // only forward if signal is weak, i.e. sender is far away, to extend range of distant nodes
+    const bool rssi_ok = settings.repeater || (rssi < FANET_FORWARD_RSSI_THRESHOLD);
+    if (header->forward && !forward_pending && rssi_ok) { // repeater: forward all; smart_rcv: only weak signals
       uint32_t sender_id = ((uint32_t)header->vendor << 16) | header->address;
       if (fwd_dedup_check_and_add(sender_id)) {
         byteArr[0] &= ~(1u << 6); // clear forward bit
@@ -335,6 +340,7 @@ bool radio_init(){
     log_i("Radio: LoRa LLCC68\r\n");
     lora_module = LORA_LLCC68;
     radio_phy->setOutputPower(22);
+    static_cast<SX126x*>(radio_phy)->setRegulatorDCDC(); // DC-DC saves ~1-2mA in RX vs LDO default
     return true;
   }
   #endif
@@ -346,6 +352,7 @@ bool radio_init(){
     log_i("Radio: LoRa SX1262\r\n");
     lora_module = LORA_SX1262;
     radio_phy->setOutputPower(22);
+    static_cast<SX126x*>(radio_phy)->setRegulatorDCDC(); // DC-DC saves ~1-2mA in RX vs LDO default
     return true;
   }
   #endif

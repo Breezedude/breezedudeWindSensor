@@ -45,7 +45,7 @@
 
 #define PIN_DAVIS_SPEED 17 // A3 17 PA04
 #define PIN_DAVIS_DIR 18 // A4 18 PA05
-#define PIN_DAVIS_POWER 9 // 9 PA07 - power for direction potentiometer. Turn off if not used to save power
+#define PIN_DAVIS_POWER 9 // 9 PA07 - power for direction potentiometer. Turn off if not used to save power. Old Pin, Hardware 2.4 uses PS_SENSOR
 
 // SERCOM 3 - I²C Barometer / Digipot
 #define PIN_SDA 26 // PA22

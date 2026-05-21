@@ -19,6 +19,8 @@ void wdt_disable();
 void wdt_reset();
 bool set_cpu_div(int divisor);
 
+void setup_BOD33_interrupt();
+
 void attachInterruptWakeup(uint32_t pin, voidFuncPtr callback, uint32_t mode, bool en_rtc);
 void setup_PM(bool en_pulse_counter, bool en_rtc_counter);
 void PM_sleep();

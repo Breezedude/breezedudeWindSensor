@@ -51,6 +51,7 @@ uint32_t boot_usb_hold_until_ms = 0;
 uint32_t sleep_allowed = 0; // time() when is is ok so enter deepsleep
 bool reduced_interval = false; // reduced interval active
 bool undervoltage = false;
+bool deep_undervoltage = false; // set after 3 consecutive voltage readings < 2.9V; triggers extended sleep for solar charging
 
 // ### Variables for storing settings from file, may be overewritten #####
 
@@ -261,7 +262,7 @@ uint32_t calc_time_to_sleep(){
     } else if(sensor.batt_volt < settings.reduce_interval_voltage){
       reduced_interval = true;
       broadcast_scale_factor = 3;
-      log_i("Low voltage\n");
+      log_i("Low voltage\r\n");
     } else {
       // battery voltage is normal
       reduced_interval = false;
@@ -269,9 +270,23 @@ uint32_t calc_time_to_sleep(){
     }
   }
 
+// Undervoltage Voltage behavior (WS85 connected):
+// * 2439mV: sleeps @ 5.90µA
+// * 2560mV: deepsleeps @9.20µA
+// * 2650mV: deepsleep 11.70µA
+// * 2754mV. when in depsleep stays there @ 15µA, on reset goes to brownout drawwing 1,47mA
+// ** when us-uart power mosfeet weakens, current draw rises until ws85 starts working, drawing 7.55mA oveer UART
+
+// * <2800mV: Brownout, draws 4mA, boots to bootloader on wake, never comes back
+// * > 2800mV. resets normally, goes to deepsleep 17µA for 30min
+// * 2800-3100mV: Undervoltage, draws 20µA in sleep, stays in sleep for 1800000ms (=30min) before waking up to check voltage again
+
+
+
+
   tts_weather = timeToSend(last_msg_weather, settings.broadcast_interval_weather);
   tts_name    = timeToSend(last_msg_name, settings.broadcast_interval_name);
-  tts_info    = settings.broadcast_interval_info ? ota_lora_next_hwinfo_due_ms() : (uint32_t)-1;
+  tts_info    = ota_lora_next_hwinfo_due_ms();
 
 
   
@@ -291,7 +306,7 @@ uint32_t calc_time_to_sleep(){
   if(tts == (uint32_t)-1){ tts=0;}
   
 
-  if( !tts && loopcounter > 100){
+  if( !tts && loopcounter > 25){
     log_e("just looping, will sleep\r\n");
     tts = 12000; // set to sleep to keep updating sensor data
   }
@@ -335,6 +350,28 @@ void go_sleep(){
   if(time_to_sleep == 0){ return;} // if time_to_sleep = 0, do not sleep at all
   rtc_sleep_cfg(time_to_sleep);
 
+  if(deep_undervoltage){
+    radio_sleep();
+    log_i("Deep UV (<2.9V). Sleeping until solar charges or voltage recovers\r\n");
+    log_flush();
+    // PV_CHARGE (PB23) is active-LOW: falls LOW when the solar charger draws ~3mA.
+    // INPUT_PULLUP ensures pin is HIGH (defined state); EIC only fires on genuine FALLING edge.
+    // Without this, the floating pin (left hi-Z by get_solar_charger_state) triggers EIC immediately.
+    pinMode(PIN_PV_CHARGE, INPUT_PULLUP);
+    attachInterruptWakeup(PIN_PV_CHARGE, wakeup_EIC, FALLING, false);
+    do {
+      rtc_sleep_cfg(524000UL); // max RTC period ~8.7 min per cycle
+      sleep(false);
+      read_batt_perc(); // updates deep_undervoltage and undervoltage via voltageToSOCNonLinear
+      log_i("Deep UV wake: V=", sensor.batt_volt);
+      log_flush();
+    } while (deep_undervoltage && wakeup_source != WAKEUP_EIC);
+    detachInterrupt(digitalPinToInterrupt(PIN_PV_CHARGE));
+    pinDisable(PIN_PV_CHARGE);
+    wakeup();
+    return;
+  }
+
   if(undervoltage){
     radio_sleep(); // ensure radio is in PHY sleep and DIO1 interrupt is detached
     log_i("Undervoltage. will sleep for ", time_to_sleep);
@@ -368,7 +405,11 @@ void go_sleep(){
 
   //if(!time_to_sleep){ return;} // if time_to_sleep = 0, do not sleep at all
 
-  log_i("will sleep for ", time_to_sleep > 200000UL?-1: time_to_sleep);
+  if(time_to_sleep > 200000UL) {
+    log_i("will sleep for s: ", time_to_sleep / 1000);
+  } else {
+    log_i("will sleep for ms: ", time_to_sleep);
+  }
   log_flush();
 
   // Ensure radio is in the correct state for the sleep window (RX if conditions
@@ -383,7 +424,7 @@ void go_sleep(){
 
     while(wakeup_source != WAKEUP_RTC && wakeup_source != WAKEUP_USB && !Serial.available()){ // ignore other wakeups (external pin Interrupt, if configured)
       t += sleep(false);
-      if(loraReceivedFlag && settings.lora_smart_rcv) {
+      if(loraReceivedFlag && (settings.lora_smart_rcv || settings.repeater)) {
         // Process immediately: readData() clears the LLCC68 IRQ flag so DIO1 goes LOW.
         // Without this, DIO1 stays HIGH and subsequent packets cannot trigger a rising edge.
         if(fanet_rx()) {
@@ -407,7 +448,7 @@ void go_sleep(){
 
       // Process any received LoRa packet immediately so readData() clears the LLCC68
       // IRQ / DIO1 line. If DIO1 stays HIGH, no rising edge fires for subsequent packets.
-      if(loraReceivedFlag && settings.lora_smart_rcv) {
+      if(loraReceivedFlag && (settings.lora_smart_rcv || settings.repeater)) {
         if(fanet_rx()) {
           radio_sleep();
           // If a forward was queued, reschedule RTC to wake at the forward time
@@ -435,12 +476,26 @@ void go_sleep(){
           //log_i("will sleep1: ", actual_sleep); 
           //log_flush();
           sleep(false); // sleep without UART interrupt
+          wakeup_source = WAKEUP_NONE;
         }
       }
 
     }
   }
-  
+  // Repeater without sensor: sleep in RX, forward incoming packets, wake on RTC for name/info TX
+  else if(settings.repeater) {
+    while(wakeup_source != WAKEUP_RTC && wakeup_source != WAKEUP_USB && !Serial.available()) {
+      sleep(false);
+      if(loraReceivedFlag) {
+        if(fanet_rx()) {
+          radio_sleep(); // re-arm RX
+          uint32_t fwd_delay = fanet_forward_delay_ms();
+          if(fwd_delay) rtc_sleep_cfg(fwd_delay);
+        }
+      }
+    }
+  }
+
   /*
   if(set_cpu_div(settings.div_cpu_fast)){
     div_cpu = settings.div_cpu_fast;
@@ -552,6 +607,7 @@ TxAttemptResult send_msg_weather(){
   constexpr size_t msgSize = sizeof(fanet_packet_t4);
   std::array<uint8_t, sizeof(fanet_packet_t4)> buffer = {0};
   pack_weatherdata(&wd, buffer.data());
+  if(settings.forward_data || settings.repeater) buffer[0] |= (1u << 6); // set FANET forward bit
 
   log_v_hex_dump(buffer.data(), msgSize);
 
@@ -625,7 +681,7 @@ TxAttemptResult send_msg_name(const char* name, int len){
   fanet_header header;
   header.type = 2;
   header.vendor = FANET_VENDOR_ID;
-  header.forward = false;
+  header.forward = (settings.forward_data || settings.repeater);
   header.ext_header = false;
   header.address = get_fanet_id();
 
@@ -667,6 +723,7 @@ TxAttemptResult send_msg_info(){
   ota_lora_prepare_hwinfo(info);
 
   size_t msg_size = pack_hwinfo(&info, buffer.data());
+  if(settings.forward_data || settings.repeater) buffer[0] |= (1u << 6); // set FANET forward bit
   log_v_hex_dump(buffer.data(), msg_size);
   TxAttemptResult tx = start_lbt_transmit(buffer.data(), msg_size);
   if(tx == TX_ATTEMPT_STARTED) {
@@ -683,6 +740,13 @@ TxAttemptResult send_msg_info(){
 extern uint32_t __etext;
 
 void setup(){
+
+  // Change BOD33 action from RESET to INTERRUPT as early as possible.
+  // This prevents a brownout (< ~2.8 V) from resetting the MCU into the
+  // DFU bootloader where it would hang drawing 1.5-4 mA.  The ISR instead
+  // disables the UART TX leakage path and cuts sensor power before the
+  // normal UV-sleep loop takes over.
+  setup_BOD33_interrupt();
 
   log_set_debug(true);
   log_set_error(true);
@@ -718,6 +782,10 @@ void setup(){
   
   if(setup_flash()){
     settings_ok = parse_file(SETTINGSFILE);
+    // Repeater without sensor: disable weather TX (no sensor data to send)
+    if(settings.repeater && settings.sensor_type == s_invalid) {
+      settings.broadcast_interval_weather = 0;
+    }
     if(!debug_enabled()){
       DEBUGSER.flush();
       DEBUGSER.end();
@@ -781,7 +849,7 @@ void setup(){
 
   if(settings_ok){
     if(is_wsxx() || settings.sensor_type == s_WS85_UART || settings.sensor_type == s_WINDNERD){
-      switch_WS_power(1); // Turn on WS80 Power supply with P-MOSFET
+      switch_sensor_power(1); // Turn on WS80 Power supply with P-MOSFET
       setup_rtc_time_counter();
 
       if(is_wsxx() || settings.sensor_type == s_WINDNERD){
@@ -800,7 +868,11 @@ void setup(){
       setup_rtc_time_counter();
     } else {
       // No sensor configured
-      led_error(1);
+      if(settings.repeater) {
+        setup_rtc_time_counter(); // repeater without sensor still needs RTC for sleep
+      } else {
+        led_error(1);
+      }
     }
 
     #if BREEZEDUDE_ENABLE_GPS
@@ -946,8 +1018,8 @@ loopcounter++;
       
     }
   }
-  const uint32_t info_due_ms = settings.broadcast_interval_info ? ota_lora_next_hwinfo_due_ms() : (uint32_t)-1;
-  if(!ota_lora_busy() && settings.broadcast_interval_info && fanet_cooldown_ok() && info_due_ms == 0u ){
+  const uint32_t info_due_ms = ota_lora_next_hwinfo_due_ms();
+  if(!ota_lora_busy() && fanet_cooldown_ok() && info_due_ms == 0u ){
       led_status(1);
       TxAttemptResult tx_result = send_msg_info();
       if(tx_result == TX_ATTEMPT_STARTED) {
@@ -990,7 +1062,7 @@ loopcounter++;
 
   if(!send_active && ota_lora_poll()) {
     sleep_allowed = time() + 1;
-  } else if(settings.lora_smart_rcv){
+  } else if(settings.lora_smart_rcv || settings.repeater){
     if(fanet_rx() && !send_active) {
       // readData() in fanet_rx() left radio in standby; re-arm RX now that we
       // know no TX is in progress (avoids clearing the TX-done DIO1 handler).
@@ -998,7 +1070,7 @@ loopcounter++;
     }
   }
 
-  if(!send_active && !ota_lora_busy() && settings.lora_smart_rcv) {
+  if(!send_active && !ota_lora_busy() && (settings.lora_smart_rcv || settings.repeater)) {
     if(fanet_forward_check()) {
       send_active = time();
     }

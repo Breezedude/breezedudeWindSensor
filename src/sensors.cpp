@@ -4,6 +4,7 @@
 
 extern int div_cpu;
 extern bool undervoltage;
+extern bool deep_undervoltage;
 
 
 #if BREEZEDUDE_ENABLE_GPS
@@ -32,33 +33,52 @@ CHIP_IMU chip_imu = IMU_NONE;
 
 Sensors sensor;
 
-void switch_WS_power(bool state){
+void switch_sensor_power(bool state){
   static bool current_power_state = false;
+  const bool uses_uart = (is_wsxx() || settings.sensor_type == s_WS85_UART || settings.sensor_type == s_WINDNERD);
   if(state && !current_power_state){ // turn on
     current_power_state = true;
     pinMode(PIN_PS_WS,OUTPUT);
     digitalWrite(PIN_PS_WS, 0);
-    // Re-connect UART pins to SERCOM0 peripheral before the sensor can respond
-    pinPeripheral(PIN_RX, PIO_SERCOM);
-    pinPeripheral(PIN_TX, PIO_SERCOM);
-    SENSOR_UART.begin(115200 * div_cpu);
-    log_i("WS sensor power ON\r\n");
+    if(uses_uart){
+      // Re-connect UART pins to SERCOM0 peripheral before the sensor can respond
+      pinPeripheral(PIN_RX, PIO_SERCOM);
+      pinPeripheral(PIN_TX, PIO_SERCOM);
+      SENSOR_UART.begin(115200 * div_cpu);
+      log_i("WS sensor power ON\r\n");
+    }
   }
   if(!state && current_power_state){ // turn off
     current_power_state = false;
     digitalWrite(PIN_PS_WS, 1);
-    // Disable UART pins so the idle-HIGH TX line cannot leak current into the
-    // sensor through its input protection diodes when its VCC is removed.
-    pinDisable(PIN_TX); // PA10 - UART idles HIGH, would source current into sensor
-    pinDisable(PIN_RX); // PA11 - symmetric isolation
-    log_i("WS sensor power OFF\r\n");
+    if(uses_uart){
+      // Disable UART pins so the idle-HIGH TX line cannot leak current into the
+      // sensor through its input protection diodes when its VCC is removed.
+      pinDisable(PIN_TX); // PA10 - UART idles HIGH, would source current into sensor
+      pinDisable(PIN_RX); // PA11 - symmetric isolation
+      log_i("WS sensor power OFF\r\n");
+    }
   }
 }
 
 static uint8_t voltageToSOCNonLinear(float v) {
   if(v < 0.8f) {led_error(1); log_i("V_Batt read error: ", v); return 0;} // bad reading
-  if(v < 3.15f) {switch_WS_power(0); settings.uv_triggered = true; undervoltage = true; return 0;} // undervoltage, turn off sensor to save power
-  if(v > 3.3f) {switch_WS_power(1); undervoltage = false;}
+  // Deep UV: 3 consecutive readings < 2.9V trigger extended sleep for solar charging recovery.
+  // Hysteresis: clears when voltage rises above 3.0V.
+  {
+    static uint8_t deep_uv_count = 0;
+    if (v < 2.9f) {
+      if (deep_uv_count < 3) ++deep_uv_count;
+      if (deep_uv_count >= 3) deep_undervoltage = true;
+    } else if (v > 3.0f) {
+      deep_uv_count = 0;
+      deep_undervoltage = false;
+    }
+  }
+  if(v < 3.15f) {switch_sensor_power(0); settings.uv_triggered = true; undervoltage = true; return 0;} // undervoltage, turn off sensor to save power
+  if(v > 3.3f) {if(is_wsxx() || settings.sensor_type == s_WS85_UART || settings.sensor_type == s_WINDNERD){
+                  switch_sensor_power(1);
+                } undervoltage = false;}
   if(v > 4.15f){settings.uv_triggered = false; return 100;}
 
   // Piecewise linear OCV->SOC for 3.7V Li-Ion at low discharge rate.
@@ -348,31 +368,49 @@ void read_baro(){
   }
 }
 
+static volatile bool davis_speed_pulse = false;
+static void davis_speed_isr() { davis_speed_pulse = true; }
+
 void forward_analog_test_serial(){
+  static bool isr_attached = false;
+
   if(settings.analog_test_mode){
     static uint32_t last_print = 0;
 
     analogReference(AR_DEFAULT); //3.3V refernece
     pinMode(PIN_DAVIS_DIR, INPUT);  
-    pinMode(PIN_DAVIS_SPEED, INPUT); 
     pinMode(PIN_DAVIS_POWER,OUTPUT);
     digitalWrite(PIN_DAVIS_POWER,1);
+    switch_sensor_power(1);
+
+    if (!isr_attached) {
+      davis_speed_pulse = false;
+      pinMode(PIN_DAVIS_SPEED, INPUT_PULLUP);
+      attachInterrupt(digitalPinToInterrupt(PIN_DAVIS_SPEED), davis_speed_isr, FALLING);
+      isr_attached = true;
+    }
 
     int d = analogRead(PIN_DAVIS_DIR);
-    int s = digitalRead(PIN_DAVIS_SPEED);
 
-    if(settings.analog_test_mode && (time() - last_print > 25)){
+    if(time() - last_print > 25){
       last_print = time();
-      log_i("Speed/Dir state: ");
+      bool pulse = davis_speed_pulse;
+      davis_speed_pulse = false; // clear after reading
       log_write((uint32_t)time());
+      log_i(" Speed/Dir state: ");
       log_i(" ");
-      log_i(s ? "o" : "-");
+      log_i(pulse ? "-" : "o");
       log_i("\t");
       log_write(d);
       log_i("\r\n");
     }
     
   } else {
+    if (isr_attached) {
+      detachInterrupt(digitalPinToInterrupt(PIN_DAVIS_SPEED));
+      isr_attached = false;
+    }
+    switch_sensor_power(0);
     digitalWrite(PIN_DAVIS_POWER,0);
     pinDisable(PIN_DAVIS_DIR);
     pinDisable(PIN_DAVIS_POWER);
@@ -510,7 +548,7 @@ if(found_data){
   int pos = 0;
   while (i < co){
     if(buffer[i] == '\n'){
-          if(usb_connected){
+          if(usb_connected && settings.verbose_usb){
             Serial.write(&buffer[pos], i-pos);
           }
           if(process_line(&buffer[pos], i-pos-1, &set_value)){
@@ -639,17 +677,37 @@ int read_wind_dir(){
   pinMode(PIN_DAVIS_DIR, INPUT);
   pinMode(PIN_DAVIS_POWER,OUTPUT);
   digitalWrite(PIN_DAVIS_POWER,1);
+  switch_sensor_power(1);
 
-int d = analogRead(PIN_DAVIS_DIR);
+  //delayMicroseconds(1); // settlement time
+
+  constexpr int N_DIR = 4;
+  int samples[N_DIR];
+  int32_t sum = 0;
+  for (int i = 0; i < N_DIR; i++) {
+    samples[i] = analogRead(PIN_DAVIS_DIR);
+    sum += samples[i];
+  }
+  int d = (int)(sum / N_DIR);
+
+ // ... other analog sensors
+digitalWrite(PIN_DAVIS_POWER,0);
+pinDisable(PIN_DAVIS_POWER);
+switch_sensor_power(0);
+pinDisable(PIN_DAVIS_DIR);
 
 if(settings.sensor_type == s_DAVIS6410){
   // Variable resistance 0 - 20KΩ; 10KΩ = south, 180°)
   val = (int)(360.0/1023.0 * (float)d);
 }
- // ... other analog sensors
-digitalWrite(PIN_DAVIS_POWER,0);
-pinDisable(PIN_DAVIS_POWER);
-pinDisable(PIN_DAVIS_DIR);
+
+#if 0
+  log_i("DIR samples:");
+  for (int i = 0; i < N_DIR; i++) { log_i(" ", samples[i]); }
+  log_i("\r\n");
+#endif
+
+
 return val;
 }
 

@@ -12,6 +12,52 @@ void WDT_Handler(void) {
   WDT->INTFLAG.bit.EW = 1; // Clear interrupt flag
 }
 
+// Change BOD33 action from RESET to INTERRUPT so that a brownout below ~2.8 V
+// triggers our ISR instead of resetting the MCU into the DFU bootloader.
+// Must be called early in setup() – ideally before any other initialisation.
+void setup_BOD33_interrupt() {
+  SYSCTRL->BOD33.bit.ENABLE   = 0;            // Disable while reconfiguring
+  SYSCTRL->BOD33.bit.ACTION   = 2;            // 0=None, 1=Reset (default), 2=Interrupt
+  SYSCTRL->BOD33.bit.RUNSTDBY = 0;            // Off during standby – saves ~30µA; bootloader timeout handles stuck-in-DFU
+  SYSCTRL->BOD33.bit.HYST     = 1;            // Hysteresis – prevents rapid re-trigger
+  SYSCTRL->BOD33.bit.ENABLE   = 1;
+  while (!SYSCTRL->PCLKSR.bit.BOD33RDY);      // Wait until BOD33 has settled
+
+  SYSCTRL->INTENSET.bit.BOD33DET = 1;         // Enable BOD33 detect interrupt
+  NVIC_ClearPendingIRQ(SYSCTRL_IRQn);
+  NVIC_SetPriority(SYSCTRL_IRQn, 0);          // Highest priority
+  NVIC_EnableIRQ(SYSCTRL_IRQn);
+}
+
+// Emergency brownout ISR.
+// Fires instead of a CPU reset when VDD falls below the BOD33 threshold.
+// Immediately isolates the UART TX pin (idles HIGH → leaks ~10 mA into the
+// WS85 sensor via ESD diodes) and cuts sensor VCC, then returns so the
+// normal sleep/UV logic can put the MCU back to standby.
+extern "C" void SYSCTRL_Handler(void) {
+  if (SYSCTRL->INTFLAG.bit.BOD33DET) {
+    SYSCTRL->INTFLAG.bit.BOD33DET = 1;        // Clear interrupt flag
+
+    // Disable UART TX – PA10 (Arduino pin 1 = PIN_TX).
+    // Clearing PMUXEN disconnects the pin from SERCOM; setting as hi-Z input
+    // removes the idle-HIGH drive that leaks current into the sensor.
+    PORT->Group[0].PINCFG[10].reg = 0;        // clear PMUXEN + INEN
+    PORT->Group[0].DIRCLR.reg     = (1u << 10);
+
+    // Disable UART RX – PA11 (Arduino pin 0 = PIN_RX), symmetric isolation.
+    PORT->Group[0].PINCFG[11].reg = 0;
+    PORT->Group[0].DIRCLR.reg     = (1u << 11);
+
+    // Assert sensor power-off gate: PB03 = PIN_PS_WS (active-high → VCC off).
+    PORT->Group[1].DIRSET.reg = (1u << 3);
+    PORT->Group[1].OUTSET.reg = (1u << 3);
+
+    // ISR returns normally. The CPU resumes after __WFI() in deepsleep() and
+    // the main loop's UV path will enter 30-minute standby sleep cycles until
+    // the battery has recovered enough for normal operation.
+  }
+}
+
 
 bool set_cpu_div(int divisor){
 static int div = 0;
