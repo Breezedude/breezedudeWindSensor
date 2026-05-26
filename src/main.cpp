@@ -73,6 +73,7 @@ uint32_t broadcast_scale_factor = 1; // multiplier for broadcast values. is set 
 uint32_t last_fnet_send = 0; // last package send
 uint32_t fanet_cooldown = 4000;
 uint32_t loopcounter = 0;
+bool force_wait_for_wdata = false;
 
 volatile int wakeup_source = WAKEUP_NONE;
 
@@ -347,6 +348,11 @@ void go_sleep(){
   }
 
   uint32_t time_to_sleep = calc_time_to_sleep();
+  // One-shot wait window when weather TX is due but wind data is stale.
+  if (force_wait_for_wdata) {
+    time_to_sleep = 12000UL;
+    force_wait_for_wdata = false;
+  }
   if(time_to_sleep == 0){ return;} // if time_to_sleep = 0, do not sleep at all
   rtc_sleep_cfg(time_to_sleep);
 
@@ -459,7 +465,9 @@ void go_sleep(){
       }
 
       if(is_wsxx()){
+        //led_error(1);
         res = read_wsxx();
+        //led_error(0);
       }
       else if(settings.sensor_type == s_WS85_UART){
         res = read_ws85_uart();
@@ -1010,9 +1018,16 @@ loopcounter++;
       }
     } else {
       if((is_wsxx() || settings.sensor_type == s_WS85_UART) && sensor.last_data && !sensor.next_baro_reading && (time()- sensor.last_data > 10000)){
+        const uint32_t wdata_age = time() - sensor.last_data;
         log_i("Wdata not ready. Wdata age: ", (time()- sensor.last_data) );
         log_i("Last Baro reading age: ", (time()- sensor.last_baro_reading) );
-        sleep_allowed = time() + 1;
+        if(wdata_age > 3600000UL){
+          log_e("Wind data stale > 1h, restarting to recover\r\n");
+          log_flush();
+          NVIC_SystemReset();
+        }
+        force_wait_for_wdata = true;
+        sleep_allowed = time();
         //sensor.last_data = 0;
       }
       

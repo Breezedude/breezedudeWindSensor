@@ -482,13 +482,20 @@ bool parse_wsdat(char* input, int len){
 // RESP_ERROR 1: error
 // RESP_OK 0: data ok, continue
 int read_wsxx(){
-  constexpr int WSXX_BUFFER_SIZE = 1024; // size of linebuffer
-  static char buffer[WSXX_BUFFER_SIZE];
-  int co = 0;
+  constexpr int WSXX_LINE_BUFFER_SIZE = 128; // size of one parsed line
+  static char line_buffer[WSXX_LINE_BUFFER_SIZE];
+  int line_len = 0;
   bool found_data = false;
   int eq_count = 0;
   uint32_t last_data = micros();
-  static uint32_t serial_wait = 3800;
+  static uint32_t serial_wait = 1200;
+  uint32_t wait_budget = serial_wait;
+  bool parsed_complete_block = false;
+
+  // Keep WS80 polling windows short to avoid long active CPU time.
+  if(settings.sensor_type == s_WS80 && wait_budget > 500){
+    wait_budget = 500;
+  }
 
 // Compare String 1
   const char comp1_arr[] = "FreqSel";
@@ -503,64 +510,73 @@ int read_wsxx(){
   //uint32_t micros_start = micros();
 
 
-  while(micros()- last_data < serial_wait){
+  while(micros()- last_data < wait_budget){
     while (SENSOR_UART.available()){
       //led_error(1); // blink LED, for debugging
-      buffer[co] = SENSOR_UART.read();
-      //DEBUGSER.write(buffer[co]);
-      if(buffer[co] < 127){ // skip garbage
-        if(buffer[co] == '=') {eq_count++;} else {eq_count =0;}
+      const char c = (char)SENSOR_UART.read();
+      //DEBUGSER.write(c);
+      if(c >= 127){
+        continue; // skip garbage
+      }
 
-        if(buffer[co] == comp1_arr[comp1_pos]) {comp1_pos++;}
-        else {comp1_pos=0;}
+      if(c == '=') {eq_count++;} else {eq_count =0;}
 
-        if(buffer[co] == comp2_arr[comp2_pos]) {comp2_pos++;}
-        else {comp2_pos=0;}
+      if(c == comp1_arr[comp1_pos]) {comp1_pos++;}
+      else {comp1_pos = (c == comp1_arr[0]) ? 1 : 0;}
 
-        if((comp1_pos == comp1_len) ||(comp2_pos == comp2_len)){ // if we found or pattern, increase wait time to get full block
-          found_data = true;
-          if(settings.sensor_type == s_WS80){ serial_wait = 500;}
-          else if(settings.sensor_type == s_WS85){ serial_wait = 3800;}
+      if(c == comp2_arr[comp2_pos]) {comp2_pos++;}
+      else {comp2_pos = (c == comp2_arr[0]) ? 1 : 0;}
+
+      if((comp1_pos == comp1_len) || (comp2_pos == comp2_len)){ // if we found pattern, increase wait time to get full block
+        found_data = true;
+        if(settings.sensor_type == s_WS80){ wait_budget = 500;}
+        else if(settings.sensor_type == s_WS85){ wait_budget = 3800;}
+      }
+
+      last_data = micros();
+
+      if(found_data && eq_count > 35) { // block ends with 37x =, if detected, lower wait time
+        wait_budget = 1;
+      }
+
+      if(!found_data){
+        continue;
+      }
+
+      if(c == '\r'){
+        continue;
+      }
+
+      if(c == '\n'){
+        if(line_len > 0){
+          if(usb_connected && settings.verbose_usb){
+            Serial.write(line_buffer, line_len);
+          }
+          if(process_line(line_buffer, line_len, &set_value)){
+            serial_wait = 120; // decrease value if one valid measuremnt was fount to dertimne if it is ws80 or ws85
+            parsed_complete_block = true;
+            return RESP_COMPLETE;
+          }
+          line_len = 0;
         }
+        continue;
+      }
 
-        last_data = micros();
-        co++;
-
-
-        if(found_data && eq_count > 35) { // block ends with 37x =, if detected, lower wait time
-          serial_wait = 1;
-        }
-        
-        if(co >= WSXX_BUFFER_SIZE){
-          log_e("Buffer size exeeded\r\n");
-          co = 0;
-          //led_error(0);
-          return RESP_ERROR;
-        }
+      if(line_len < (WSXX_LINE_BUFFER_SIZE - 1)){
+        line_buffer[line_len++] = c;
+      } else {
+        // Drop overlong line to avoid carrying stale partial data.
+        line_len = 0;
       }
     }
     //led_error(0);
   }
 
-// now parse buffer content
-if(found_data){
-  int i =0;
-  int pos = 0;
-  while (i < co){
-    if(buffer[i] == '\n'){
-          if(usb_connected && settings.verbose_usb){
-            Serial.write(&buffer[pos], i-pos);
-          }
-          if(process_line(&buffer[pos], i-pos-1, &set_value)){
-            serial_wait = 120; // decrease value if one valid measuremnt was fount to dertimne if it is ws80 or ws85
-            return RESP_COMPLETE;
-          }
-      pos = i+1;
-    }
-    i++;
-
+  // Do not carry a very short timeout into the next wake cycle.
+  // If we did not complete a block, fall back to a safe default window.
+  if(!parsed_complete_block){
+    serial_wait = 1200;
   }
-}
   return RESP_OK;
 }
 
