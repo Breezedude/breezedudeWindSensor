@@ -8,6 +8,8 @@ Map of almost all wind stations: [breezedude.de](https://breezedude.de/)
 
 For more info and documentation see the [Wiki](https://github.com/Breezedude/breezedudeWindSensor/wiki) and also [Discussion](https://github.com/Breezedude/breezedudeWindSensor/discussions)
 
+PCB files have been moved to [this repo](https://github.com/Breezedude/breezedudeWindSensor-pcb)
+
 ----
 <p align="center">
   <
