@@ -71,13 +71,13 @@
 
     unsigned int humidity      :8;
 
-    int baro          :16;
+    unsigned int baro :16;
 
     unsigned int charge        :8;
   } __attribute__((packed)) fanet_packet_t4;
 
 
-  void pack_weatherdata(weatherData *wData, uint8_t * buffer);
+  size_t pack_weatherdata(const weatherData *wData, uint8_t *buffer);
 
   // ---- HW Info (Type 0x0A) ------------------------------------------------
 

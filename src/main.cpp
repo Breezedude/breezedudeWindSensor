@@ -612,9 +612,8 @@ TxAttemptResult send_msg_weather(){
 
   log_i("\r\nSending Weather\r\n");
 
-  constexpr size_t msgSize = sizeof(fanet_packet_t4);
   std::array<uint8_t, sizeof(fanet_packet_t4)> buffer = {0};
-  pack_weatherdata(&wd, buffer.data());
+  size_t msgSize = pack_weatherdata(&wd, buffer.data());
   if(settings.forward_data || settings.repeater) buffer[0] |= (1u << 6); // set FANET forward bit
 
   log_v_hex_dump(buffer.data(), msgSize);
