@@ -1,14 +1,21 @@
 #pragma once
 #include <Arduino.h>
 
+// Layout v2 (since bootloader v4.2.0 / firmware v1.1.0): OTA_SLOT1_START and
+// OTA_FLASH_END moved from the original 50/50 split (0x20000/0x3E000) to make
+// OTA_SLOT0 (the effective max image size, see OTA_MAX_IMAGE_SIZE) as large as
+// possible while keeping OTA_SLOT1 >= OTA_SLOT0 and every region 256B
+// (FLASH_ROW_SIZE)-aligned. The freed-up space comes from shrinking the
+// CONFIG tail from 8KiB (mostly unused padding) down to its real minimum of
+// 1280B (OTA_SETTINGS+OTA_VERSIONS+OTA_FLAG).
 #define OTA_SLOT0_START      0x00004000UL
-#define OTA_SLOT1_START      0x00020000UL
-#define OTA_FLASH_END        0x0003E000UL
-#define OTA_SETTINGS_ADDRESS 0x0003E000UL
-#define OTA_SETTINGS_SIZE    0x00000200UL
-#define OTA_VERSIONS_ADDRESS 0x0003E200UL
-#define OTA_VERSIONS_SIZE    0x00000200UL
-#define OTA_FLAG_ADDRESS     0x0003EF00UL
+#define OTA_SLOT1_START      0x00021D00UL
+#define OTA_FLASH_END        0x0003FB00UL
+#define OTA_SETTINGS_ADDRESS 0x0003FB00UL
+#define OTA_SETTINGS_SIZE    0x00000300UL
+#define OTA_VERSIONS_ADDRESS 0x0003FE00UL
+#define OTA_VERSIONS_SIZE    0x00000100UL
+#define OTA_FLAG_ADDRESS     0x0003FF00UL
 #define OTA_SLOT0_SIZE       (OTA_SLOT1_START - OTA_SLOT0_START)
 #define OTA_SLOT1_SIZE       (OTA_FLASH_END - OTA_SLOT1_START)
 
