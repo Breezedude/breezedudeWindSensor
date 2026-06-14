@@ -713,6 +713,16 @@ static bool ota_begin_session(const ota_offer_pkt_t &pkt) {
   s_ota.inactive_slot = ota_ab_inactive_slot();
   s_ota.slot_base = ota_ab_slot_address(s_ota.inactive_slot);
   s_ota.slot_size = ota_ab_slot_size(s_ota.inactive_slot);
+
+  // The bootloader can only copy a staged SLOT1 image into SLOT0, and SLOT0
+  // is smaller than SLOT1 (OTA_SLOT0_SIZE < OTA_SLOT1_SIZE). Without this,
+  // images between OTA_SLOT0_SIZE and OTA_SLOT1_SIZE would be accepted and
+  // staged here but the bootloader could never copy them, silently leaving
+  // the device on its old firmware. Cap the effective slot size to what the
+  // bootloader can actually apply.
+  if(s_ota.inactive_slot == 1u && s_ota.slot_size > OTA_MAX_IMAGE_SIZE) {
+    s_ota.slot_size = OTA_MAX_IMAGE_SIZE;
+  }
   s_ota.chunk_size = pkt.chunk_size ? min((uint16_t)OTA_LORA_MAX_CHUNK, pkt.chunk_size) : (uint16_t)OTA_LORA_MAX_CHUNK;
   s_ota.target_version_bcd = pkt.target_version_bcd;
   s_ota.image_size = pkt.image_size;
@@ -1062,7 +1072,7 @@ static bool ota_process_finish(const uint8_t *data, size_t len) {
 
   ota_ab_log_state("finish-pre-request");
 
-  if(!ota_ab_request_slot(s_ota.inactive_slot)) {
+  if(!ota_ab_request_slot(s_ota.inactive_slot, s_ota.image_size)) {
     log_write("OTA request slot failed target=");
     log_write((uint32_t)s_ota.inactive_slot);
     log_write("\r\n");
@@ -1136,7 +1146,11 @@ void ota_lora_prepare_hwinfo(hwInfoData &info) {
     info.debug_type = HWINFO_DEBUG_OTA;
     info.debug_ota.version_bcd = s_ota.current_version_bcd;
     info.debug_ota.nonce = ota_next_nonce();
-    info.debug_ota.slot_capacity_kb = (uint16_t)(ota_ab_slot_size(ota_ab_inactive_slot()) / 1024u);
+    // Report the same effective cap that ota_begin_session() enforces
+    // (OTA_MAX_IMAGE_SIZE), not the raw inactive-slot size, so a device
+    // currently staging into the larger OTA_SLOT1 doesn't advertise more
+    // capacity than an OTA image will actually be accepted with.
+    info.debug_ota.slot_capacity_kb = (uint16_t)(OTA_MAX_IMAGE_SIZE / 1024u);
     info.debug_ota.ota_proto = OTA_LORA_PROTOCOL_VERSION;
     info.debug_ota.ota_state = ota_ab_current_slot() & 0x01u;
     s_last_hwinfo_was_ota = true;

@@ -470,7 +470,10 @@ bool apply_setting(char* settingName,  char* settingValue){
   if(strcmp(settingName,"GET_UUID")==0) {cmd_print_uuid(); return 1;}
   if(strcmp(settingName,"OTA_BOOT_SLOT")==0) {
     uint8_t slot = (uint8_t)atoi(settingValue);
-    if(ota_ab_request_slot(slot)) {
+    // Manual debug trigger, not a real OTA transfer: no verified image size
+    // is known here, so pass 0 (unknown) and let the bootloader fall back
+    // to its scan-based size detection.
+    if(ota_ab_request_slot(slot, 0u)) {
       NVIC_SystemReset();
     }
     return 1;

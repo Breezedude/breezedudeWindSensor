@@ -11,6 +11,11 @@
 #define OTA_FLAG_ADDRESS     0x0003EF00UL
 #define OTA_SLOT0_SIZE       (OTA_SLOT1_START - OTA_SLOT0_START)
 #define OTA_SLOT1_SIZE       (OTA_FLASH_END - OTA_SLOT1_START)
+
+// Effective maximum OTA image size, regardless of which slot is staged into.
+// The bootloader can only copy a staged image from OTA_SLOT1 into OTA_SLOT0,
+// so OTA_SLOT0_SIZE (the smaller of the two) is the real upper bound.
+#define OTA_MAX_IMAGE_SIZE   OTA_SLOT0_SIZE
 #define OTA_FLASH_PAGE_SIZE 64U
 #define OTA_FLASH_ROW_SIZE  256U
 
@@ -28,6 +33,10 @@ typedef struct {
   uint32_t active_slot;
   uint32_t pending_slot;
   uint32_t checksum;
+  // Size in bytes of the staged image in OTA_SLOT1. Appended after
+  // `checksum` so the checksum formula and OTA_AB_VERSION stay unchanged;
+  // must match the bootloader's OTA_AB_Flags layout (inc/uf2.h).
+  uint32_t staged_size;
 } ota_ab_flags_t;
 
 typedef struct {
@@ -49,7 +58,7 @@ uint8_t ota_ab_current_slot();
 uint8_t ota_ab_inactive_slot();
 uint32_t ota_ab_slot_address(uint8_t slot);
 uint32_t ota_ab_slot_size(uint8_t slot);
-bool ota_ab_request_slot(uint8_t slot);
+bool ota_ab_request_slot(uint8_t slot, uint32_t staged_size);
 bool ota_ab_confirm_current();
 void log_ota_boot_diagnostics();
 void log_ota_reboot_trace();

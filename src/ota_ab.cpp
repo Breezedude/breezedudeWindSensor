@@ -185,7 +185,7 @@ bool ota_storage_write_text(uint32_t address, size_t capacity, const char *text)
   return true;
 }
 
-bool ota_ab_request_slot(uint8_t slot) {
+bool ota_ab_request_slot(uint8_t slot, uint32_t staged_size) {
   if (slot >= OTA_AB_NUM_SLOTS) {
     return false;
   }
@@ -193,6 +193,7 @@ bool ota_ab_request_slot(uint8_t slot) {
   ota_ab_flags_t cfg = {};
   cfg.active_slot = ota_ab_current_slot();
   cfg.pending_slot = slot;
+  cfg.staged_size = staged_size;
   return ota_ab_write(cfg);
 }
 
