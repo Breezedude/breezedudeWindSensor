@@ -171,6 +171,80 @@ void log_write_hex(uint32_t num, uint8_t width){
   log_info_write_hex(num, width);
 }
 
+static void log_write_verbose_msg(const char * msg){
+  if(debug_en){
+    DEBUGSER.print(msg);
+    DEBUGSER.flush();
+  }
+  if(settings.verbose_usb && usb_connected){
+    Serial.print(msg);
+    usb_flush();
+  }
+}
+
+template <typename T>
+static void log_write_verbose_value(T num){
+  if(debug_en){
+    DEBUGSER.print(num);
+    DEBUGSER.flush();
+  }
+  if(settings.verbose_usb && usb_connected){
+    Serial.print(num);
+    usb_flush();
+  }
+}
+
+static void log_write_verbose_hex(uint32_t num, uint8_t width){
+  if(debug_en){
+    write_hex_to_stream(DEBUGSER, num, width);
+    DEBUGSER.flush();
+  }
+  if(settings.verbose_usb && usb_connected){
+    write_hex_to_stream(Serial, num, width);
+    usb_flush();
+  }
+}
+
+void log_write_v(const char * msg){
+  log_write_verbose_msg(msg);
+}
+
+void log_write_v(uint32_t num){
+  log_write_verbose_value(num);
+}
+
+void log_write_v(int32_t num){
+  log_write_verbose_value(num);
+}
+
+void log_write_v(int num){
+  log_write_verbose_value(num);
+}
+
+void log_write_v(float num){
+  log_write_verbose_value(num);
+}
+
+void log_write_hex_v(uint32_t num, uint8_t width){
+  log_write_verbose_hex(num, width);
+}
+
+void log_s(const char * msg){
+  if(!settings.verbose_usb && usb_connected){
+    Serial.print(msg);
+    usb_flush();
+  }
+}
+
+void log_s(const char * msg, uint32_t num, const char * suffix){
+  if(!settings.verbose_usb && usb_connected){
+    Serial.print(msg);
+    Serial.print(num);
+    Serial.println(suffix);
+    usb_flush();
+  }
+}
+
 void log_e(const char * msg){
   if(errors_en){
     DEBUGSER.print(msg);

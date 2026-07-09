@@ -444,6 +444,7 @@ bool apply_setting(char* settingName,  char* settingValue){
 
 // Davis 6410 specific
   if(strcmp(settingName,"SENSOR_INTEGRATION_TIME")==0) {settings.sensor_integration_time = atoi(settingValue)*1000; return 1;}
+  if(strcmp(settingName,"SENSOR_PROTECTION_BOARD")==0) {settings.use_protection_board = atoi(settingValue); return 1;}
 
   if(strcmp(settingName,"SENSOR_GPS")==0) {settings.use_gps = atoi(settingValue); return 1;}
   if(strcmp(settingName,"GPS_BAUD")==0) {settings.gps_baud = atoi(settingValue); return 1;}

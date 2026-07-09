@@ -7,7 +7,7 @@
 #endif
 
 #ifndef OTA_LORA_PROTOCOL_VERSION
-  #define OTA_LORA_PROTOCOL_VERSION 3U
+  #define OTA_LORA_PROTOCOL_VERSION 4U
 #endif
 #ifndef OTA_LORA_MAX_CHUNK
   #define OTA_LORA_MAX_CHUNK 192U
@@ -20,6 +20,23 @@
 #endif
 #ifndef OTA_LORA_IDLE_DEBUG_MS
   #define OTA_LORA_IDLE_DEBUG_MS 350UL
+#endif
+// Simplified non-verbose USB progress summary: re-print the current
+// percentage at least this often, so a stalled transfer still gives
+// periodic feedback even without new chunks arriving.
+#ifndef OTA_LORA_SUMMARY_INTERVAL_MS
+  #define OTA_LORA_SUMMARY_INTERVAL_MS 5000UL
+#endif
+// Proactive ack-resend: if the next chunk hasn't arrived within this many ms
+// since the last accepted chunk, re-send the ack for next_seq (in case our
+// previous ack got lost), up to OTA_LORA_PROACTIVE_ACK_MAX times. Spaced so
+// all resends happen well within the GS's ack-timeout window, avoiding a
+// full chunk retransmit.
+#ifndef OTA_LORA_PROACTIVE_ACK_INTERVAL_MS
+  #define OTA_LORA_PROACTIVE_ACK_INTERVAL_MS 1000UL
+#endif
+#ifndef OTA_LORA_PROACTIVE_ACK_MAX
+  #define OTA_LORA_PROACTIVE_ACK_MAX 3U
 #endif
 #ifndef OTA_LORA_NO_UPDATE_COOLDOWN_MS
   #define OTA_LORA_NO_UPDATE_COOLDOWN_MS 1000*3600UL

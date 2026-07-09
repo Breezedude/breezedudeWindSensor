@@ -86,6 +86,10 @@ typedef struct {
   uint16_t next_seq;
   uint8_t status;
   uint8_t accepted_chunk;
+  uint8_t ack_resend_count; // how many times this ack has been (re)sent for the current next_seq, saturates at 255
+  int8_t chunk_snr; // SNR (dB) of the most recently received chunk packet
+  int8_t chunk_rssi; // RSSI (dBm) of the most recently received chunk packet
+  uint8_t proactive_ack_resend_count; // subset of ack_resend_count sent proactively (no dup chunk seen yet)
 } __attribute__((packed)) ota_ack_pkt_t;
 
 struct ota_session_t {
@@ -115,7 +119,12 @@ struct ota_session_t {
   uint32_t session_start_ms = 0;
   uint32_t last_chunk_ms = 0;
   uint32_t last_wait_log_ms = 0;
+  uint32_t last_summary_ms = 0;
   uint8_t last_progress_pct = 0;
+  uint8_t ack_resend_count = 0; // # of times the ack for next_seq was (re)sent due to duplicate chunks
+  uint8_t proactive_ack_resends = 0; // # of proactive ack resends already sent while waiting for next_seq
+  float last_rx_snr = 0.0f; // SNR (dB) of the most recently received radio packet
+  float last_rx_rssi = 0.0f; // RSSI (dBm) of the most recently received radio packet
 };
 
 static ota_session_t s_ota = {};
@@ -285,24 +294,28 @@ static inline void ota_feed_watchdog() {
   }
 }
 
+// Blue/status LED: pulses for each chunk that was useful, i.e. accepted in
+// sequence and advanced the transfer.
 static void ota_chunk_led_pulse() {
   s_ota_chunk_led_until_ms = millis() + 12u;
-  led_error(1);
+  led_status(1);
 }
 
+// Red/error LED: pulses for anything that is not the normal happy path -
+// duplicate chunks (lost ack resends), unexpected seq, and idle/timeout waits.
 static void ota_loss_led_pulse() {
   s_ota_loss_led_until_ms = millis() + 18u;
-  led_status(1);
+  led_error(1);
 }
 
 static void ota_chunk_led_update() {
   if(s_ota_chunk_led_until_ms && (int32_t)(millis() - s_ota_chunk_led_until_ms) >= 0) {
     s_ota_chunk_led_until_ms = 0;
-    led_error(0);
+    led_status(0);
   }
   if(s_ota_loss_led_until_ms && (int32_t)(millis() - s_ota_loss_led_until_ms) >= 0) {
     s_ota_loss_led_until_ms = 0;
-    led_status(0);
+    led_error(0);
   }
 }
 
@@ -546,6 +559,7 @@ static void ota_reset_state(uint8_t status) {
   s_ota.session_start_ms = 0;
   s_ota.last_chunk_ms = 0;
   s_ota.last_wait_log_ms = 0;
+  s_ota.last_summary_ms = 0;
   s_ota.last_progress_pct = 0;
   s_ota_chunk_led_until_ms = 0;
   s_ota_loss_led_until_ms = 0;
@@ -612,24 +626,24 @@ static uint32_t ota_elapsed_ms() {
 
 static void ota_log_progress(const char *prefix, uint32_t idle_ms = 0u) {
   const uint32_t progress = s_ota.image_size ? ((s_ota.bytes_written * 100u) / s_ota.image_size) : 100u;
-  log_write(prefix);
-  log_write(" seq=");
-  log_write((uint32_t)(s_ota.next_seq ? (s_ota.next_seq - 1u) : 0u));
-  log_write(" bytes=");
-  log_write((uint32_t)s_ota.bytes_written);
-  log_write("/");
-  log_write((uint32_t)s_ota.image_size);
-  log_write(" ");
-  log_write(progress);
-  log_write("% t=");
-  log_write(ota_elapsed_ms());
-  log_write("ms");
+  log_write_v(prefix);
+  log_write_v(" seq=");
+  log_write_v((uint32_t)(s_ota.next_seq ? (s_ota.next_seq - 1u) : 0u));
+  log_write_v(" bytes=");
+  log_write_v((uint32_t)s_ota.bytes_written);
+  log_write_v("/");
+  log_write_v((uint32_t)s_ota.image_size);
+  log_write_v(" ");
+  log_write_v(progress);
+  log_write_v("% t=");
+  log_write_v(ota_elapsed_ms());
+  log_write_v("ms");
   if(idle_ms) {
-    log_write(" idle=");
-    log_write(idle_ms);
-    log_write("ms");
+    log_write_v(" idle=");
+    log_write_v(idle_ms);
+    log_write_v("ms");
   }
-  log_write("\r\n");
+  log_write_v("\r\n");
 }
 
 static void ota_abort_session(uint8_t status) {
@@ -658,15 +672,21 @@ static bool ota_send_ack(uint8_t status) {
   ack.next_seq = s_ota.next_seq;
   ack.status = status;
   ack.accepted_chunk = (uint8_t)s_ota.chunk_size;
+  ack.ack_resend_count = s_ota.ack_resend_count;
+  ack.chunk_snr = (int8_t)constrain((long)lroundf(s_ota.last_rx_snr), -128L, 127L);
+  ack.chunk_rssi = (int8_t)constrain((long)lroundf(s_ota.last_rx_rssi), -128L, 127L);
+  ack.proactive_ack_resend_count = s_ota.proactive_ack_resends;
 
-  if(status != OTA_STATE_RX || s_ota.next_seq < 3u) {
-    log_write("OTA ACK tx status=0x");
-    log_write_hex(status, 2);
-    log_write(" next_seq=");
-    log_write((uint32_t)ack.next_seq);
-    log_write(" bytes=");
-    log_write((uint32_t)s_ota.bytes_written);
-    log_write("\r\n");
+  if(status != OTA_STATE_RX || s_ota.next_seq < 3u || s_ota.ack_resend_count > 0u) {
+    log_write_v("OTA ACK tx status=0x");
+    log_write_hex_v(status, 2);
+    log_write_v(" next_seq=");
+    log_write_v((uint32_t)ack.next_seq);
+    log_write_v(" bytes=");
+    log_write_v((uint32_t)s_ota.bytes_written);
+    log_write_v(" ack_resend_count=");
+    log_write_v((uint32_t)ack.ack_resend_count);
+    log_write_v("\r\n");
   }
 
   ota_feed_watchdog();
@@ -693,6 +713,7 @@ static bool ota_enter_update_mode() {
   // the offer is accepted and the session is actually running.
   s_ota.deadline = time() + OTA_LORA_RX_WINDOW_MS;
   s_ota.next_seq = 0;
+  s_ota.ack_resend_count = 0;
   s_ota.bytes_written = 0;
   s_ota.page_fill = 0;
   memset(s_ota.page_buf, 0xFF, sizeof(s_ota.page_buf));
@@ -883,19 +904,29 @@ static bool ota_process_chunk(const uint8_t *data, size_t len) {
     return true;
   }
 
-  ota_chunk_led_pulse();
-
   if(pkt->seq != s_ota.next_seq) {
     ota_loss_led_pulse();
-    log_write("OTA unexpected chunk seq=");
-    log_write((uint32_t)pkt->seq);
-    log_write(" expected=");
-    log_write((uint32_t)s_ota.next_seq);
-    log_write("\r\n");
     if(s_ota.next_seq > 0u && pkt->seq == (uint16_t)(s_ota.next_seq - 1u)) {
+      if(s_ota.ack_resend_count < 255u) {
+        s_ota.ack_resend_count++;
+      }
+      s_ota.proactive_ack_resends = 0;
+      s_ota.last_chunk_ms = millis();
+      log_write_v("OTA dup chunk seq=");
+      log_write_v((uint32_t)pkt->seq);
+      log_write_v(" expected=");
+      log_write_v((uint32_t)s_ota.next_seq);
+      log_write_v(" ack_resend_count=");
+      log_write_v((uint32_t)s_ota.ack_resend_count);
+      log_write_v("\r\n");
       ota_send_ack(OTA_STATE_RX);
       return true;
     }
+    log_write_v("OTA unexpected chunk seq=");
+    log_write_v((uint32_t)pkt->seq);
+    log_write_v(" expected=");
+    log_write_v((uint32_t)s_ota.next_seq);
+    log_write_v("\r\n");
     ota_send_ack(OTA_ERR_SEQ);
     return true;
   }
@@ -907,13 +938,13 @@ static bool ota_process_chunk(const uint8_t *data, size_t len) {
   }
 
   if(pkt->seq < 3u) {
-    log_write("OTA chunk rx seq=");
-    log_write((uint32_t)pkt->seq);
-    log_write(" len=");
-    log_write((uint32_t)data_len);
-    log_write(" bytes_before=");
-    log_write((uint32_t)s_ota.bytes_written);
-    log_write("\r\n");
+    log_write_v("OTA chunk rx seq=");
+    log_write_v((uint32_t)pkt->seq);
+    log_write_v(" len=");
+    log_write_v((uint32_t)data_len);
+    log_write_v(" bytes_before=");
+    log_write_v((uint32_t)s_ota.bytes_written);
+    log_write_v("\r\n");
   }
 
   if(!ota_append_image_data(pkt->payload, data_len)) {
@@ -922,11 +953,15 @@ static bool ota_process_chunk(const uint8_t *data, size_t len) {
     return true;
   }
 
+  ota_chunk_led_pulse();
+
   ota_feed_watchdog();
   s_ota.crc32 = ota_crc32_update(s_ota.crc32, pkt->payload, data_len);
   ota_sha256_update(&s_ota.sha256, pkt->payload, data_len);
   s_ota.bytes_written += data_len;
   s_ota.next_seq++;
+  s_ota.ack_resend_count = 0;
+  s_ota.proactive_ack_resends = 0;
   s_ota.deadline = time() + OTA_LORA_SESSION_TIMEOUT_MS;
   if(s_ota.session_start_ms == 0u) {
     s_ota.session_start_ms = millis();
@@ -949,11 +984,11 @@ static bool ota_process_chunk(const uint8_t *data, size_t len) {
   }
   const uint32_t flushMs = millis() - flushStartMs;
   if(flushMs >= 4u) {
-    log_write("OTA flash flush ms=");
-    log_write(flushMs);
-    log_write(" after_seq=");
-    log_write((uint32_t)pkt->seq);
-    log_write("\r\n");
+    log_write_v("OTA flash flush ms=");
+    log_write_v(flushMs);
+    log_write_v(" after_seq=");
+    log_write_v((uint32_t)pkt->seq);
+    log_write_v("\r\n");
   }
 
   ota_send_ack(OTA_STATE_RX);
@@ -1223,6 +1258,18 @@ bool ota_lora_poll() {
     return false;
   }
 
+  // Simplified non-verbose USB progress summary: print the currently
+  // completed percentage every OTA_LORA_SUMMARY_INTERVAL_MS, regardless of
+  // chunk activity, so a stalled transfer still gives periodic feedback.
+  if(s_ota.active && s_ota.status == OTA_STATE_RX && s_ota.session_start_ms != 0u) {
+    const uint32_t nowMs = millis();
+    if(s_ota.last_summary_ms == 0u || (nowMs - s_ota.last_summary_ms) >= OTA_LORA_SUMMARY_INTERVAL_MS) {
+      s_ota.last_summary_ms = nowMs;
+      const uint32_t progress = s_ota.image_size ? ((s_ota.bytes_written * 100u) / s_ota.image_size) : 100u;
+      log_s("OTA: ", progress, "%");
+    }
+  }
+
   if(time() > s_ota.deadline) {
     const bool nonce_wait_timeout = s_ota.offer_pending && !s_ota.active;
     uint8_t status = s_ota.active ? OTA_ERR_TIMEOUT : OTA_STATE_IDLE;
@@ -1247,6 +1294,22 @@ bool ota_lora_poll() {
         ota_loss_led_pulse();
         ota_log_progress("OTA wait", idleMs);
       }
+      // The expected next chunk hasn't arrived yet - our ack for next_seq may
+      // have been lost. Proactively re-send it (up to a few times) so the GS
+      // can pick it up within its own ack-timeout window instead of having to
+      // re-transmit the whole chunk.
+      if(s_ota.proactive_ack_resends < OTA_LORA_PROACTIVE_ACK_MAX &&
+         idleMs >= (uint32_t)(s_ota.proactive_ack_resends + 1u) * OTA_LORA_PROACTIVE_ACK_INTERVAL_MS) {
+        s_ota.proactive_ack_resends++;
+        if(s_ota.ack_resend_count < 255u) {
+          s_ota.ack_resend_count++;
+        }
+        log_write_v("OTA proactive ack resend ack_resend_count=");
+        log_write_v((uint32_t)s_ota.ack_resend_count);
+        log_write_v("\r\n");
+        ota_loss_led_pulse();
+        ota_send_ack(OTA_STATE_RX);
+      }
     }
     return false;
   }
@@ -1264,6 +1327,9 @@ bool ota_lora_poll() {
     en_rx_sleep();
     return true;
   }
+
+  s_ota.last_rx_snr = radio_phy->getSNR();
+  s_ota.last_rx_rssi = radio_phy->getRSSI();
 
   if(ota_process_fanet_ack(packet, (size_t)numBytes)) {
     return true;

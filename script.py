@@ -47,7 +47,8 @@ def make_uf2(target, source, env):
         outbuf = uf2.convert_to_uf2(inpbuf)
         out = env['PROJECT_DIR'] + '\\build\\'
         Path(out).mkdir(parents=True, exist_ok=True)
-        uf2.write_file(out + str(env["UNIX_TIME"]) + ".uf2", outbuf)
+        version = _sanitize_fragment(_get_define("VERSION", "dev"), "dev")
+        uf2.write_file(out + f"v{version}_" + str(env["UNIX_TIME"]) + ".uf2", outbuf)
         print(f"Created app UF2 with base address 0x{uf2.appstartaddr:08X}")
 
 env.AddPostAction("$BUILD_DIR/${PROGNAME}.bin", export_ota_bin)

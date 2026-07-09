@@ -695,6 +695,10 @@ int read_wind_dir(){
   digitalWrite(PIN_DAVIS_POWER,1);
   switch_sensor_power(1);
 
+  if(settings.use_protection_board){
+    delayMicroseconds(420); // allow protection board to switch on powerswitch SY6280AAC. takes 160us + timeconstant of 4.7k + 10nF RC filter (220us)
+  }
+
   //delayMicroseconds(1); // settlement time
 
   constexpr int N_DIR = 4;
