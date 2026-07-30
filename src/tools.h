@@ -69,7 +69,7 @@ typedef struct {
   bool verbose_usb = false;
   bool skip_lora = false; // skip lora module init
   bool analog_test_mode = false; // for davis sensor testing, set to 1 to power on sensor and output adc values, 0 to power off
-  bool use_protection_board = false; // if true, wait 160us after powering on sensor to allow protection board to switch on power
+  bool use_protection_board = true; // if true, wait 160us after powering on sensor to allow protection board to switch on power
 } Settings;
 
 extern Settings settings;
