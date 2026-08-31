@@ -5,6 +5,7 @@
 #include "ota_ab.h"
 #include "ota_lora.h"
 #include "config_update.h"
+#include "settings_edit.h"
 #include <Adafruit_TinyUSB.h>
 
 extern LORA_MODULE lora_module;
@@ -155,7 +156,12 @@ void read_serial_cmd(){
     }
     buffer[co] = Serial.read();
     if(buffer[co] == '\n'){
-      ok = process_line(buffer, co, &apply_setting); // Line complete
+      // Settings-editor commands (SET/SAVE/DUMP/...) get the raw line first:
+      // process_line() would swallow a second '=' and strip the spaces out of
+      // a value like "SET NAME=Wendelstein Nord".
+      if(!settings_edit_handle_line(buffer, co)){
+        ok = process_line(buffer, co, &apply_setting); // Line complete
+      }
       co=-1; // against +1 below
     }
     co++;
@@ -431,9 +437,18 @@ static void cmd_print_uuid() {
 // in by startup code.
 typedef bool (*SettingApplyFn)(const char *value);
 
+// Whether a key may be written into settings.txt. Console commands must never
+// be persisted: a stored "REBOOT=1" would be replayed by parse_file() on every
+// boot and reset the station in a loop, with no way in over USB to undo it.
+typedef enum : uint8_t {
+  SETTING_CFG,   // configuration value, safe to store
+  SETTING_CMD,   // console command, runtime only
+} SettingKind;
+
 typedef struct {
   const char    *key;
   SettingApplyFn apply;
+  SettingKind    kind;
 } SettingEntry;
 
 // Seconds in the config file, milliseconds internally.
@@ -556,71 +571,82 @@ static bool cmd_format(const char *v){
 }
 
 static const SettingEntry setting_table[] = {
-  {"NAME",                       set_name},
-  {"LON",                        set_lon},
-  {"LAT",                        set_lat},
-  {"ALT",                        set_alt},
+  {"NAME",                       set_name,        SETTING_CFG},
+  {"LON",                        set_lon,         SETTING_CFG},
+  {"LAT",                        set_lat,         SETTING_CFG},
+  {"ALT",                        set_alt,         SETTING_CFG},
 
-  {"LORA_FREQ",                  set_lora_freq},
-  {"LORA_BW",                    set_lora_bw},
-  {"LBT",                        set_lbt},
-  {"LBT_RSSI_THRESHOLD",         set_lbt_rssi},
-  {"FANET_SMART_FORWARD",        set_smart_fwd},
-  {"FORWARD_DATA",               set_fwd_data},
-  {"REPEATER",                   set_repeater},
+  {"LORA_FREQ",                  set_lora_freq,   SETTING_CFG},
+  {"LORA_BW",                    set_lora_bw,     SETTING_CFG},
+  {"LBT",                        set_lbt,         SETTING_CFG},
+  {"LBT_RSSI_THRESHOLD",         set_lbt_rssi,    SETTING_CFG},
+  {"FANET_SMART_FORWARD",        set_smart_fwd,   SETTING_CFG},
+  {"FORWARD_DATA",               set_fwd_data,    SETTING_CFG},
+  {"REPEATER",                   set_repeater,    SETTING_CFG},
 
-  {"HEADING_OFFSET",             set_heading_offset},
-  {"GUST_AGE",                   set_gust_age},
-  {"WIND_AGE",                   set_wind_age},
-  {"REDU_INTERV_VOLT",           set_redu_volt},
+  {"HEADING_OFFSET",             set_heading_offset, SETTING_CFG},
+  {"GUST_AGE",                   set_gust_age,    SETTING_CFG},
+  {"WIND_AGE",                   set_wind_age,    SETTING_CFG},
+  {"REDU_INTERV_VOLT",           set_redu_volt,   SETTING_CFG},
 
-  {"BROADCAST_INTERVAL_WEATHER", set_bc_weather},
-  {"BROADCAST_INTERVAL_NAME",    set_bc_name},
+  {"BROADCAST_INTERVAL_WEATHER", set_bc_weather,  SETTING_CFG},
+  {"BROADCAST_INTERVAL_NAME",    set_bc_name,     SETTING_CFG},
 
-  {"SENSOR_BARO",                set_baro},
-  {"SENSOR_DAVIS6410",           set_davis6410},
-  {"SENSOR_WSXX",                set_ws80},   // auto detection
-  {"SENSOR_WS80",                set_ws80},   // kept for old settings files
-  {"SENSOR_WS85",                set_ws85},
-  {"SENSOR_WS85_UART",           set_ws85_uart},
-  {"SENSOR_WINDNERD",            set_windnerd},
-  {"SENSOR_GPS",                 set_gps},
-  {"GPS_BAUD",                   set_gps_baud},
-  {"SENSOR_IMU",                 set_imu},
+  {"SENSOR_BARO",                set_baro,        SETTING_CFG},
+  {"SENSOR_DAVIS6410",           set_davis6410,   SETTING_CFG},
+  {"SENSOR_WSXX",                set_ws80,        SETTING_CFG},   // auto detection
+  {"SENSOR_WS80",                set_ws80,        SETTING_CFG},   // kept for old settings files
+  {"SENSOR_WS85",                set_ws85,        SETTING_CFG},
+  {"SENSOR_WS85_UART",           set_ws85_uart,   SETTING_CFG},
+  {"SENSOR_WINDNERD",            set_windnerd,    SETTING_CFG},
+  {"SENSOR_GPS",                 set_gps,         SETTING_CFG},
+  {"GPS_BAUD",                   set_gps_baud,    SETTING_CFG},
+  {"SENSOR_IMU",                 set_imu,         SETTING_CFG},
 
-  {"SENSOR_INTEGRATION_TIME",    set_integration_time},
-  {"SENSOR_PROTECTION_BOARD",    set_protection_board},
+  {"SENSOR_INTEGRATION_TIME",    set_integration_time, SETTING_CFG},
+  {"SENSOR_PROTECTION_BOARD",    set_protection_board, SETTING_CFG},
 
-  {"DEBUG",                      set_debug},
-  {"ERRORS",                     set_errors},
-  {"USB_VERBOSE",                set_usb_verbose},
-  {"TESTMODE",                   set_testmode},
-  {"WDT",                        set_wdt},
-  {"DIV_CPU_SLOW",               set_div_cpu_slow},
+  {"DEBUG",                      set_debug,       SETTING_CFG},
+  {"ERRORS",                     set_errors,      SETTING_CFG},
+  {"USB_VERBOSE",                set_usb_verbose, SETTING_CFG},
+  {"TESTMODE",                   set_testmode,    SETTING_CFG},
+  {"WDT",                        set_wdt,         SETTING_CFG},
+  {"DIV_CPU_SLOW",               set_div_cpu_slow, SETTING_CFG},
 
-  {"OTA_ENABLE",                 set_ota_enable},
-  {"OTA_FAST",                   set_ota_fast},
-  {"OTA_CONFIRM",                cmd_ota_confirm},
-  {"OTA_BOOT_SLOT",              cmd_ota_boot_slot},
+  {"OTA_ENABLE",                 set_ota_enable,  SETTING_CFG},
+  {"OTA_FAST",                   set_ota_fast,    SETTING_CFG},
+  {"OTA_CONFIRM",                cmd_ota_confirm, SETTING_CMD},
+  {"OTA_BOOT_SLOT",              cmd_ota_boot_slot, SETTING_CMD},
 
-  {"GET_UUID",                   cmd_get_uuid},
-  {"SLEEP",                      cmd_sleep},
-  {"FORMAT",                     cmd_format},
-  {"RESET",                      cmd_soft_reset}, // re-run setup(), keeps USB up
-  {"REBOOT",                     cmd_reboot},     // real MCU reset
-  {"SKIP_LORA",                  cmd_skip_lora},
-  {"DELAY",                      cmd_delay},
-  {"ANALOG_TEST",                cmd_analog_test},
+  {"GET_UUID",                   cmd_get_uuid,    SETTING_CMD},
+  {"SLEEP",                      cmd_sleep,       SETTING_CMD},
+  {"FORMAT",                     cmd_format,      SETTING_CMD},
+  {"RESET",                      cmd_soft_reset,  SETTING_CMD}, // re-run setup(), keeps USB up
+  {"REBOOT",                     cmd_reboot,      SETTING_CMD},     // real MCU reset
+  {"SKIP_LORA",                  cmd_skip_lora,   SETTING_CMD},
+  {"DELAY",                      cmd_delay,       SETTING_CMD},
+  {"ANALOG_TEST",                cmd_analog_test, SETTING_CMD},
 };
+
+static const SettingEntry* setting_lookup(const char *key){
+  for(const SettingEntry &e : setting_table){
+    if(strcmp(key, e.key) == 0){
+      return &e;
+    }
+  }
+  return nullptr;
+}
 
 bool apply_setting(char* settingName,  char* settingValue){
   //if(debug_enabled()){printf("Setting: %s = %s\r\n",settingName, settingValue); log_flush();}
-  for(const SettingEntry &e : setting_table){
-    if(strcmp(settingName, e.key) == 0){
-      return e.apply(settingValue);
-    }
-  }
-  return false;
+  const SettingEntry *entry = setting_lookup(settingName);
+  return entry ? entry->apply(settingValue) : false;
+}
+
+// Known key that is safe to store in settings.txt (i.e. not a console command).
+bool setting_key_persistable(const char *key){
+  const SettingEntry *entry = setting_lookup(key);
+  return entry != nullptr && entry->kind == SETTING_CFG;
 }
 
 void print_settings(){

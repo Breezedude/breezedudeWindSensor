@@ -134,6 +134,10 @@ bool led_status(bool s);
 bool led_error(bool s);
 void i2c_scan();
 bool apply_setting(char* settingName,  char* settingValue);
+// True for a known setting that may be written to settings.txt. Console
+// commands (REBOOT, FORMAT, ...) return false: persisting one would make
+// parse_file() replay it on every boot.
+bool setting_key_persistable(const char *key);
 void print_settings();
 bool update_settings_in_flash(const char* key, const char* value);
 bool update_multiple_settings_in_flash(const char** keys, const char** values, size_t count);
