@@ -279,6 +279,7 @@ loopcounter++;
       log_e("\r\nFailed to obtain valid settings. Waiting for user config\r\n");
       settings_ok = parse_file(SETTINGSFILE);
       if(settings_ok){
+        log_flush();
         NVIC_SystemReset();
       }
     }

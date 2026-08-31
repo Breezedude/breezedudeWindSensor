@@ -69,9 +69,9 @@ uint32_t sleep(bool enable_uart_interrupt){
       //log_i("Enable UART Interrupt\r\n");
     }
   }
-  if(usb_host_connected()){
-    log_flush();
-  }
+  // Drain both outputs before sleeping: the SERCOM clocks stop in standby, so
+  // anything still sitting in the UART TX buffer would be lost or corrupted.
+  log_flush();
   reset_time_counter(); // start counting sleeptime from zero
   bool keep_usb = keep_usb_active_during_sleep();
 

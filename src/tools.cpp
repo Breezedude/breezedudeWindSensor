@@ -510,7 +510,7 @@ SETTING_FN(cmd_delay,       delay(atoi(v)))                    // for WDT testin
 SETTING_FN(cmd_analog_test, state.analog_test_mode = atoi(v))
 // RESET is a full reset: re-entering setup() appended the altitude to the
 // station name a second time and re-initialised the radio underneath us.
-SETTING_FN(cmd_reboot,      NVIC_SystemReset())
+SETTING_FN(cmd_reboot,      log_flush(); NVIC_SystemReset())
 
 #undef SETTING_FN
 
@@ -524,6 +524,7 @@ static bool cmd_ota_boot_slot(const char *v){
   // known here, so pass 0 (unknown) and let the bootloader fall back to its
   // scan-based size detection.
   if(ota_ab_request_slot((uint8_t)atoi(v), 0u)) {
+    log_flush();
     NVIC_SystemReset();
   }
   return true;
@@ -532,6 +533,7 @@ static bool cmd_ota_boot_slot(const char *v){
 static bool cmd_format(const char *v){
   (void)v;
   if(format_flash()){
+    log_flush();
     NVIC_SystemReset();
   } else {
     log_i("Error resetting bootloader settings\r\n");

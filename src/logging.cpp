@@ -1,6 +1,18 @@
 #include "logging.h"
 #include "tools.h"
 
+// Note on flushing: the per-call DEBUGSER.flush() that used to sit in every
+// helper below has been removed. Uart::flush() busy-waits until the TX ring
+// buffer has been shifted out (~87 us per character at 115200), so a single
+// log line blocked the CPU for over a millisecond and log_v_hex_dump() did it
+// once per byte. The UART only has to be drained before the MCU sleeps (SERCOM
+// clocks stop in standby) and before a reset - log_flush() still does that, and
+// the sleep and reset paths call it.
+//
+// usb_flush() stays where it is: Serial.flush() + yield() is what runs
+// tud_task() and actually pushes CDC data out, and without it the 256 byte CDC
+// FIFO can overflow inside a single loop() iteration.
+
 bool debug_en = false;
 bool errors_en = false;
 
@@ -15,7 +27,6 @@ static void usb_flush(){
 static void log_info_msg(const char * msg){
   if(debug_en){
     DEBUGSER.print(msg);
-    DEBUGSER.flush();
     if(display_present()) {display_add_line(String(msg));}
   }
   if(usb_connected){
@@ -29,7 +40,6 @@ static void log_info_msg_value(const char * msg, T num){
   if(debug_en){
     DEBUGSER.print(msg);
     DEBUGSER.println(num);
-    DEBUGSER.flush();
     if(display_present()) {display_add_line(String(msg) + String(num));}
   }
   if(usb_connected){
@@ -43,7 +53,6 @@ template <typename T>
 static void log_info_write_value(T num){
   if(debug_en){
     DEBUGSER.print(num);
-    DEBUGSER.flush();
   }
   if(usb_connected){
     Serial.print(num);
@@ -72,7 +81,6 @@ static void write_hex_to_stream(Stream &stream, uint32_t num, uint8_t width){
 static void log_info_write_hex(uint32_t num, uint8_t width){
   if(debug_en){
     write_hex_to_stream(DEBUGSER, num, width);
-    DEBUGSER.flush();
   }
   if(usb_connected){
     write_hex_to_stream(Serial, num, width);
@@ -83,7 +91,6 @@ static void log_info_write_hex(uint32_t num, uint8_t width){
 static void log_verbose_msg(const char * msg){
   if(debug_en){
     DEBUGSER.print(msg);
-    DEBUGSER.flush();
     if(display_present()) {display_add_line(String(msg));}
   }
   if(settings.verbose_usb && usb_connected){
@@ -97,7 +104,6 @@ static void log_verbose_msg_value(const char * msg, T num){
   if(debug_en){
     DEBUGSER.print(msg);
     DEBUGSER.println(num);
-    DEBUGSER.flush();
     if(display_present()) {display_add_line(String(msg));}
   }
   if(settings.verbose_usb && usb_connected){
@@ -174,7 +180,6 @@ void log_write_hex(uint32_t num, uint8_t width){
 static void log_write_verbose_msg(const char * msg){
   if(debug_en){
     DEBUGSER.print(msg);
-    DEBUGSER.flush();
   }
   if(settings.verbose_usb && usb_connected){
     Serial.print(msg);
@@ -186,7 +191,6 @@ template <typename T>
 static void log_write_verbose_value(T num){
   if(debug_en){
     DEBUGSER.print(num);
-    DEBUGSER.flush();
   }
   if(settings.verbose_usb && usb_connected){
     Serial.print(num);
@@ -197,7 +201,6 @@ static void log_write_verbose_value(T num){
 static void log_write_verbose_hex(uint32_t num, uint8_t width){
   if(debug_en){
     write_hex_to_stream(DEBUGSER, num, width);
-    DEBUGSER.flush();
   }
   if(settings.verbose_usb && usb_connected){
     write_hex_to_stream(Serial, num, width);
