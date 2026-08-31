@@ -508,8 +508,22 @@ SETTING_FN(cmd_sleep,       usb_connected = false)
 SETTING_FN(cmd_skip_lora,   state.skip_lora = true)
 SETTING_FN(cmd_delay,       delay(atoi(v)))                    // for WDT testing
 SETTING_FN(cmd_analog_test, state.analog_test_mode = atoi(v))
-// RESET is a full reset: re-entering setup() appended the altitude to the
-// station name a second time and re-initialised the radio underneath us.
+// RESET is deliberately a *soft* reset: it re-runs setup() so the web debug
+// tool gets the whole boot output without the USB device disconnecting. That
+// tool sends RESET=1 right after connecting, so turning this into a real reset
+// drops the CDC link and it reconnects in a loop. Whenever USB is plugged in
+// the physical reset button is right there anyway, and REBOOT below is the
+// hard reset for everything else.
+//
+// Re-entering setup() is safe for the station name: parse_file() starts with
+// settings = Settings() and re-reads NAME from flash, so the " (1234m)"
+// altitude suffix is appended to a fresh name each time, not stacked up.
+//
+// state is cleared alongside it: before the runtime flags were split out of
+// Settings, parse_file()'s "settings = Settings()" wiped SKIP_LORA and
+// ANALOG_TEST on every soft reset. Keep that, otherwise a debug switch set
+// earlier in the session would silently survive into the "fresh boot" output.
+SETTING_FN(cmd_soft_reset,  state = RuntimeState(); setup())
 SETTING_FN(cmd_reboot,      log_flush(); NVIC_SystemReset())
 
 #undef SETTING_FN
@@ -592,8 +606,8 @@ static const SettingEntry setting_table[] = {
   {"GET_UUID",                   cmd_get_uuid},
   {"SLEEP",                      cmd_sleep},
   {"FORMAT",                     cmd_format},
-  {"RESET",                      cmd_reboot},
-  {"REBOOT",                     cmd_reboot},
+  {"RESET",                      cmd_soft_reset}, // re-run setup(), keeps USB up
+  {"REBOOT",                     cmd_reboot},     // real MCU reset
   {"SKIP_LORA",                  cmd_skip_lora},
   {"DELAY",                      cmd_delay},
   {"ANALOG_TEST",                cmd_analog_test},
