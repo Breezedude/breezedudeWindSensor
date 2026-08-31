@@ -143,7 +143,7 @@ void read_batt_perc(){
     float val = (float)(vsum - vmin - vmax) / (float)(N_SAMPLES - 2);
 
     pinDisable(PIN_V_READ);
-    val *= 0.0040925; // 100k/330k 1.0V Vref
+    val *= 0.0040925f; // 100k/330k 1.0V Vref
 
     // Moving average over last 5 readings to suppress short voltage dips
     constexpr int V_AVG_LEN = 5;
@@ -295,7 +295,7 @@ void baro_start_reading(){
     }
     #endif
   } else {
-    if(now > (sensor.next_baro_reading + 200)){
+    if(time_reached(sensor.next_baro_reading + 200)){
       sensor.next_baro_reading = 0;
     }
   }
@@ -304,14 +304,19 @@ void baro_start_reading(){
 // read value of baro, needs baro_start_reading in advance
 void read_baro(){
   bool data_ok = false;
-  double T = 0, P = 0;
+  // float, not double: the SAMD21 has no FPU and double math pulls in the
+  // soft-float library. Only the BMP280 driver API needs doubles (see below).
+  float T = 0, P = 0;
   uint32_t now = time();
 
   #if BREEZEDUDE_BARO_BMP280
   if(chip_baro == BARO_BMP280){
-    if(sensor.next_baro_reading && (now > sensor.next_baro_reading)){
-      uint8_t result = bmp280.getTemperatureAndPressure(T, P);
+    if(sensor.next_baro_reading && time_reached(sensor.next_baro_reading)){
+      double dT = 0, dP = 0; // BMP280 driver signature takes double&
+      uint8_t result = bmp280.getTemperatureAndPressure(dT, dP);
       if(result != 0){
+        T = (float)dT;
+        P = (float)dP;
         data_ok = true;
       }
     } else { return; }
@@ -320,9 +325,9 @@ void read_baro(){
 
   #if BREEZEDUDE_BARO_SPL06
   if(chip_baro == BARO_SPL06){
-    if(sensor.next_baro_reading && (now > sensor.next_baro_reading)){
-      P = spl.get_pressure();
-      T = spl.get_temp_c();
+    if(sensor.next_baro_reading && time_reached(sensor.next_baro_reading)){
+      P = (float)spl.get_pressure();
+      T = (float)spl.get_temp_c();
       spl.sleep();
       if(P > 0){
         data_ok = true;
@@ -333,7 +338,7 @@ void read_baro(){
 
   #if BREEZEDUDE_BARO_BMP3XX
   if(chip_baro == BARO_BMP3xx){
-    if(sensor.next_baro_reading && (now > sensor.next_baro_reading)){
+    if(sensor.next_baro_reading && time_reached(sensor.next_baro_reading)){
       P = bmp3xx.pressure / 100;
       T = bmp3xx.temperature;
       bmp3xx.setOutputDataRate(BMP3_ODR_0_001_HZ);
@@ -344,7 +349,7 @@ void read_baro(){
 
   #if BREEZEDUDE_BARO_HP203B
   if(chip_baro == BARO_HP203B){
-    if(sensor.next_baro_reading && (now > sensor.next_baro_reading)){
+    if(sensor.next_baro_reading && time_reached(sensor.next_baro_reading)){
       hp.Measure_Pressure();
       hp.Measure_Temperature();
       hp.startMeasure();
@@ -359,7 +364,7 @@ void read_baro(){
     sensor.baro_temp = T;
     sensor.next_baro_reading = 0;
     sensor.last_baro_reading = now;
-    sensor.baro_pressure = apply_altitude_correction((float)P, (float)T, settings.altitude);
+    sensor.baro_pressure = apply_altitude_correction(P, T, settings.altitude);
     log_v("Baro: ", sensor.baro_pressure);
     log_v("Baro Temp: ", sensor.baro_temp);
   } else {
@@ -441,40 +446,6 @@ bool set_value(char* key,  char* value){
 
   //log_i(" ->not_found\n");
   return false;
-}
-
-
-bool parse_wsdat(char* input, int len){
-    char buffer[20];
-    int num=0;
-    strncpy(buffer, input, len+1);
-    buffer[sizeof(buffer) - 1] = '\0';
-
-    char *token = strtok(buffer, ",");
-    while (token != NULL) {
-        if(num == 0){
-          if(strcmp(token, "$WSDAT")==0){
-            log_v("$WSDAT\n");
-            num =1;
-          }
-        }
-        else if(num == 1){
-          sensor.wind_speed = parse_decimal_fast(token);
-          num =2;
-        }
-        else if(num == 2){
-          sensor.wind_gust = parse_decimal_fast(token);
-          num =3;
-        }
-        else if(num == 3){
-          sensor.wind_dir_raw = atoi(token);
-          //printf("WSDAT: %0.2f, %0.2f, %i\n", wind_speed, wind_gust, wind_dir_raw);
-          //DEBUGSER.flush();
-          return true;
-        }
-        token = strtok(NULL, ",");
-    }
-    return false;
 }
 
 // read UART and process input buffer, needs to be called periodically until new block is complete (last_ws80_data = time())
@@ -630,9 +601,13 @@ int read_ws85_uart(){
 }
 
 int read_windnerd(){
-  constexpr int WINDNERD_BUFFER_SIZE = 10; // size of linebuffer
-  static char buffer[WINDNERD_BUFFER_SIZE];
-  static int pos = 0;
+  // A frame is exactly 4 bytes: speed, dir_hi, dir_lo, checksum.
+  // Keep a 4-byte sliding window holding the most recent bytes. The previous
+  // ring buffer reset its index to 0 and then incremented it, so after a wrap
+  // it restarted at index 1 and the "last 4 bytes" slice picked up a stale byte.
+  constexpr int WINDNERD_FRAME_LEN = 4;
+  static uint8_t frame[WINDNERD_FRAME_LEN];
+  static int filled = 0;
 
   const uint32_t serial_wait = 2000;
   uint32_t lastByte = micros();
@@ -640,32 +615,31 @@ int read_windnerd(){
   while( (micros()- lastByte) < serial_wait){
 
     while(SENSOR_UART.available()){
-      buffer[pos] = SENSOR_UART.read();
+      const uint8_t c = (uint8_t)SENSOR_UART.read();
       lastByte = micros();
-      
-      // prevent overflow
-      if(pos > WINDNERD_BUFFER_SIZE - 2){
-        pos = 0;
+
+      if(filled < WINDNERD_FRAME_LEN){
+        frame[filled++] = c;
+      } else { // window full: shift the oldest byte out
+        frame[0] = frame[1];
+        frame[1] = frame[2];
+        frame[2] = frame[3];
+        frame[3] = c;
       }
-      //if(settings.test_with_usb && usb_connected){
-      //  Serial.write(&buffer[pos]);
-      //}
-      pos++;
     }
   }
 
-  // parse buffer
-  // Must have at least 4 bytes to parse
-  if (pos < 4) return RESP_OK;
-  //log_i("Buffer: ", pos);
+  // Must have a full frame to parse
+  if (filled < WINDNERD_FRAME_LEN) return RESP_OK;
 
-  // Extract last 4 bytes
-  uint8_t b0 = buffer[pos - 4];     // speed
-  uint8_t b1 = buffer[pos - 3];     // dir high
-  uint8_t b2 = buffer[pos - 2];     // dir low
-  uint8_t cs = buffer[pos - 1];     // checksum received
+  const uint8_t b0 = frame[0];     // speed
+  const uint8_t b1 = frame[1];     // dir high
+  const uint8_t b2 = frame[2];     // dir low
+  const uint8_t cs = frame[3];     // checksum received
 
-  uint8_t calc_cs = b0 ^ b1 ^ b2;   // compute checksum
+  const uint8_t calc_cs = b0 ^ b1 ^ b2;   // compute checksum
+
+  filled = 0; // drop the frame either way, same as the previous implementation
 
   if (cs == calc_cs) {
     int wind = b0;
@@ -675,13 +649,10 @@ int read_windnerd(){
 
     log_i("Wind: ", wind);
     log_i("Direction: ", direction);
-    pos = 0;
     return RESP_COMPLETE;
-
-  } else {
-    log_i("Data invalid\r\n");
   }
-  pos = 0;  
+
+  log_i("Data invalid\r\n");
   return RESP_OK;
 }
   
@@ -718,7 +689,7 @@ pinDisable(PIN_DAVIS_DIR);
 
 if(settings.sensor_type == s_DAVIS6410){
   // Variable resistance 0 - 20KΩ; 10KΩ = south, 180°)
-  val = (int)(360.0/1023.0 * (float)d);
+  val = (int)(360.0f/1023.0f * (float)d);
 }
 
 #if 0
@@ -740,12 +711,11 @@ void calc_pulse_sensor(uint32_t pulses, uint32_t dmillis){
   
   
   if(settings.sensor_type == s_DAVIS6410){
-    sensor.wind_speed = (float) pulses * 1.609 * (2250.0/((float)dmillis+1) ); // avoid div/0
+    sensor.wind_speed = (float) pulses * 1.609f * (2250.0f/((float)dmillis+1) ); // avoid div/0
   }
   // ... other analog sensors
   add_wind_history_wind(sensor.wind_speed);
   add_wind_history_gust(sensor.wind_speed);
-  save_history(sensor.wind_speed, sensor.temperature, sensor.humidity, sensor.light_lux, sensor.batt_volt, sensor.pv_charging, sensor.pv_done);
   log_i("wind speed: ", sensor.wind_speed); 
   log_i("wind dir (raw): ", sensor.wind_dir_raw); 
 }

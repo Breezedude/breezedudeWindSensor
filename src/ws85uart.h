@@ -279,8 +279,8 @@ uint16_t crc16(const uint8_t* data, size_t len) {
         measurement.uvi = inv(r6) ? NAN : r6 / 10.0f;
         measurement.temperatureC = inv(r7) ? NAN : (r7 / 10.0f) - 40.0f;
         measurement.humidity = 0;
-        measurement.windSpeed = inv(r9) ? NAN : r9 / 10.0f*3.6;
-        measurement.gustSpeed = inv(r10) ? NAN : r10 / 10.0f*3.6;
+        measurement.windSpeed = inv(r9) ? NAN : r9 / 10.0f*3.6f;
+        measurement.gustSpeed = inv(r10) ? NAN : r10 / 10.0f*3.6f;
         measurement.windDirection = inv(r11) ? 0 : r11;
         measurement.rainfall = inv(r12) ? NAN : r12 / 10.0f;
         measurement.absPressure = 0;

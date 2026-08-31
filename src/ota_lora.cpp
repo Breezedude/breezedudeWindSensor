@@ -1270,7 +1270,7 @@ bool ota_lora_poll() {
     }
   }
 
-  if(time() > s_ota.deadline) {
+  if(time_reached(s_ota.deadline)) {
     const bool nonce_wait_timeout = s_ota.offer_pending && !s_ota.active;
     uint8_t status = s_ota.active ? OTA_ERR_TIMEOUT : OTA_STATE_IDLE;
     if(nonce_wait_timeout) {

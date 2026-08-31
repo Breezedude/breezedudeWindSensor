@@ -46,6 +46,8 @@ int div_cpu = 1; // current div
 bool first_sleep = true; // first sleep after reset, USB perephial could still be on
 bool usb_connected = false;
 uint32_t next_tx_time = 0;
+// Sentinel returned by timeToSend()/calc_time_to_sleep() for "no message due".
+static constexpr uint32_t TTS_NEVER = 0xFFFFFFFFu;
 uint32_t boot_usb_hold_until_ms = 0;
 
 uint32_t sleep_allowed = 0; // time() when is is ok so enter deepsleep
@@ -191,13 +193,17 @@ void wakeup(){
   sleep_allowed = time() + 100; // go back to sleep after 6 secs as fallback
 }
 
-uint32_t timeToSend(int last, int interval) {
+// Milliseconds until the next message of this kind is due, 0 if it is due now,
+// TTS_NEVER if the interval is disabled.
+// All arithmetic is unsigned: time() is a uint32_t ms counter and the signed
+// version returned nonsense once time() passed INT32_MAX (~24.8 days uptime).
+uint32_t timeToSend(uint32_t last, uint32_t interval) {
   if (interval) {
-    int delay = interval * broadcast_scale_factor;
-    int elapsed = time() - last;
+    const uint32_t delay = interval * broadcast_scale_factor;
+    const uint32_t elapsed = time() - last; // wrap-safe difference
     return (elapsed < delay) ? (delay - elapsed) : 0;
   }
-  return -1;
+  return TTS_NEVER;
 }
 
 enum TxAttemptResult : uint8_t {
@@ -248,9 +254,9 @@ static void defer_next_send(uint32_t &last_msg, uint32_t interval, const char *l
 
 // calc time to sleep til next fanet message needs to be send
 uint32_t calc_time_to_sleep(){
-  uint32_t tts_weather = -1;
-  uint32_t tts_name = -1;
-  uint32_t tts_info = -1;
+  uint32_t tts_weather = TTS_NEVER;
+  uint32_t tts_name = TTS_NEVER;
+  uint32_t tts_info = TTS_NEVER;
   uint32_t tts = 0;
   static uint32_t last_print = 0;
 
@@ -304,7 +310,7 @@ uint32_t calc_time_to_sleep(){
     log_v("tts: ", tts);
   }
 
-  if(tts == (uint32_t)-1){ tts=0;}
+  if(tts == TTS_NEVER){ tts=0;}
   
 
   if( !tts && loopcounter > 25){
@@ -555,7 +561,7 @@ TxAttemptResult send_msg_weather(){
   }
   led_status(1);
   sensor.wind_gust = get_gust_from_hist(settings.gust_age);
-  sensor.wind_speed = current_wind.wind/10.0;
+  sensor.wind_speed = current_wind.wind/10.0f;
   sensor.wind_dir_raw = current_wind.dir_raw;
   sensor.wind_heading = sensor.wind_dir_raw + settings.heading_offset;
   if(sensor.wind_heading > 359){ sensor.wind_heading -=360;}
@@ -626,7 +632,6 @@ TxAttemptResult send_msg_weather(){
 
   print_data();
   led_status(0);
-  save_history(sensor.wind_speed, sensor.temperature, sensor.humidity, sensor.light_lux, sensor.batt_volt, sensor.pv_charging, sensor.pv_done); // only save history on send
   return tx_result;
 }
 
@@ -892,10 +897,7 @@ void setup(){
     #endif
   }
 
-// init history array
-  for( int i = 0; i< HISTORY_LEN; i++){
-    history[i].set = false;
-  }
+// init wind history ringbuffer
   for( int i=0; i< WIND_HIST_LEN; i++){
     wind_history[i].time = 0;
     wind_history[i].gust = 0;
@@ -1095,7 +1097,7 @@ loopcounter++;
   }
 
 // Check if everything is done --> sleep
-  if(!settings.analog_test_mode && !send_active && !ota_lora_busy() && !boot_usb_hold_active && sleep_allowed && (time() > sleep_allowed) && (time() > 2500)){ // allow sleep after 2500 ms to get a chance to detect USB / CDC commands
+  if(!settings.analog_test_mode && !send_active && !ota_lora_busy() && !boot_usb_hold_active && sleep_allowed && time_reached(sleep_allowed) && (time() > 2500)){ // allow sleep after 2500 ms to get a chance to detect USB / CDC commands
     go_sleep();
   }
 

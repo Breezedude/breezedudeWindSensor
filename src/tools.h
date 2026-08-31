@@ -83,6 +83,15 @@ void attachInterruptWakeup(uint32_t pin, voidFuncPtr callback, uint32_t mode, bo
 bool is_wsxx();
 bool process_line(char * in, int len, bool (*cb)(char*, char*));
 uint32_t time();
+
+// Wrap-safe deadline test.  time() is a free-running uint32_t millisecond
+// counter that wraps every ~49.7 days, so an absolute comparison such as
+// (time() > deadline) flips to the wrong answer around the wrap.  Comparing
+// the *signed* difference stays correct as long as the deadline is less than
+// ~24.8 days away, which holds for every deadline in this firmware.
+static inline bool time_reached(uint32_t deadline){
+  return (int32_t)(time() - deadline) >= 0;
+}
 uint16_t get_fanet_id();
 void pinDisable( uint32_t ulPin);
 bool led_status(bool s);

@@ -146,6 +146,12 @@ void read_serial_cmd(){
   while (Serial.available()){
     usb_connected = true;
     usb_last_activity_ms = millis();
+    // Drop an over-long line instead of writing past the buffer: input longer
+    // than CMDBUFFERSIZE without a newline used to corrupt memory here.
+    if(co >= (CMDBUFFERSIZE - 1)){
+      log_e("Serial cmd too long, discarded\r\n");
+      co = 0;
+    }
     buffer[co] = Serial.read();
     if(buffer[co] == '\n'){
       ok = process_line(buffer, co, &apply_setting); // Line complete
@@ -482,7 +488,7 @@ bool apply_setting(char* settingName,  char* settingValue){
 
   if(strcmp(settingName,"SLEEP")==0) {usb_connected =false; return 1;}
   if(strcmp(settingName,"FORMAT")==0) {if(format_flash()){NVIC_SystemReset();} else {log_i("Error resetting bootloader settings\r\n");} return 1;}
-  if(strcmp(settingName,"RESET")==0) {setup(); return 1;}
+  if(strcmp(settingName,"RESET")==0) {NVIC_SystemReset(); return 1;} // full reset; re-entering setup() would append the altitude to the station name a second time
   if(strcmp(settingName,"SKIP_LORA")==0) {settings.skip_lora = true; return 1;}
   if(strcmp(settingName,"DELAY")==0) {delay(atoi(settingValue)); return 1;} // delay for WDT testing
   if(strcmp(settingName,"REBOOT")==0) {NVIC_SystemReset(); return 1;}
@@ -787,9 +793,9 @@ void i2c_scan(){
 
 
 bool zone_not_eu(){
-  return ((settings.pos_lon < -30.0 && settings.pos_lon > -180.0) ||            // North/South America
-    (settings.pos_lon > 110.0 && settings.pos_lon <= 180.0) ||                  // Japan, Australia, NZ
-    (settings.pos_lon >= 75.0 && settings.pos_lon <= 110.0 && settings.pos_lat > 15.0)  // China
+  return ((settings.pos_lon < -30.0f && settings.pos_lon > -180.0f) ||          // North/South America
+    (settings.pos_lon > 110.0f && settings.pos_lon <= 180.0f) ||                // Japan, Australia, NZ
+    (settings.pos_lon >= 75.0f && settings.pos_lon <= 110.0f && settings.pos_lat > 15.0f)  // China
     );
 }
 

@@ -109,7 +109,6 @@ void read_batt_perc();
 void baro_start_reading();
 void forward_analog_test_serial();
 bool set_value(char* key,  char* value);
-bool parse_wsdat(char* input, int len);
 int read_wsxx();
 int read_ws85_uart();
 

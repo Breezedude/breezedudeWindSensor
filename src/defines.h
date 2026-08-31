@@ -71,9 +71,6 @@
 
 
 
-#define HISTORY_INTERVAL 30*1000 // 30s 3600*1000 // 1h
-#define HISTORY_LEN 15*24 // in hours, 15 days
-
 #define WIND_AGE 1000*30 // 30s history
 #define GUST_AGE 1000*60*10 // 10 min history
 #define WIND_HIST_STEP 1000*4 //ms history slots, 22 sek

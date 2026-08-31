@@ -201,7 +201,14 @@ bool fanet_rx(){
     loraReceivedFlag = false;
 
     int numBytes = radio_phy->getPacketLength();
-    byte byteArr[numBytes];
+    // Fixed buffer instead of a VLA: getPacketLength() is unvalidated radio
+    // input, 0 would form a zero-length array and 255 is a large stack
+    // allocation on the path right after a deep-sleep wakeup.
+    if(numBytes <= 0 || numBytes > (int)sizeof(forward_buf)) {
+      log_i("FANET RX: bad packet length, dropped len=", numBytes);
+      return true; // packet consumed, caller re-arms RX
+    }
+    uint8_t byteArr[sizeof(forward_buf)];
     int state = radio_phy->readData(byteArr, numBytes);
     // readData() leaves the radio in standby; caller must re-arm RX when safe.
 
@@ -278,14 +285,13 @@ bool fanet_rx(){
 
 uint32_t fanet_forward_delay_ms() {
   if (!forward_pending) return 0;
-  uint32_t now = time();
-  if (now >= forward_after_time) return 0;
-  return forward_after_time - now;
+  if (time_reached(forward_after_time)) return 0;
+  return forward_after_time - time();
 }
 
 // Call from main loop (when no TX is active) to transmit a queued forward packet.
 bool fanet_forward_check() {
-  if(!forward_pending || time() < forward_after_time) {
+  if(!forward_pending || !time_reached(forward_after_time)) {
     return false;
   }
   forward_pending = false;
