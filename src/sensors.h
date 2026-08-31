@@ -91,6 +91,9 @@ typedef struct {
 
     // GPS
     uint32_t last_gps_valid = 0;
+    float gps_lat = 0;
+    float gps_lon = 0;
+    float gps_alt = 0;
 
     // PV
     bool pv_charging = false; // currently charging, state from pv charger
@@ -106,6 +109,11 @@ bool init_imu();
 void get_imu();
 void switch_sensor_power(bool state);
 void read_batt_perc();
+void battery_update_power_state(float v);
+uint8_t battery_soc_percent(float v);
+float position_lat();
+float position_lon();
+float position_alt();
 void baro_start_reading();
 void forward_analog_test_serial();
 bool set_value(char* key,  char* value);

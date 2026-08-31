@@ -19,8 +19,14 @@ typedef enum {
   s_WINDNERD
 } Sensor;
 
+// Room for the configured name plus the " (1234m)" altitude suffix that
+// setup() appends.  A fixed array keeps the configuration off the heap: the
+// station is expected to run for months without a reset.  Longer names are
+// truncated with a warning (see the NAME handler in tools.cpp).
+#define STATION_NAME_LEN 64
+
 typedef struct {
-  String station_name ="";
+  char station_name[STATION_NAME_LEN] = {0};
   float pos_lon;
   float pos_lat;
   float altitude = -1;
@@ -31,9 +37,6 @@ typedef struct {
   bool use_wdt = true; // use watchdog reset
   int div_cpu_fast = 1; // fast CPU clock 1= 48Mhz/1
   int div_cpu_slow = 1; // if > 1, cpu clocks down by 48/n Mhz
-
-  bool use_pulse_counter;
-  bool use_rtc_counter;
 
   // Sensor selction
   float reduce_interval_voltage = 3.38; // below this voltage the send inverval will be reduced to save energy
@@ -51,7 +54,6 @@ typedef struct {
   int lora_sf = 7;
   int lora_cr = 5;
   bool lora_lbt = false;
-  uint8_t lbt_counter=0; // 8bit counter for LBT retries, resets on boot
   int  lora_rssi_threshold = -104;  // RSSI threshold in dBm for LBT (lower = more sensitive)
   bool lora_smart_rcv = false;
   bool forward_data = false;    // set forward bit on all outgoing FANET packets (relay-friendly station)
@@ -62,17 +64,33 @@ typedef struct {
   bool ota_enable = true;                      // allow OTA updates (set OTA_ENABLE=0 to disable)
   bool ota_fast = false;                        // send OTA hwinfo after 20s instead of 10min (debug)
 
-  // debug states
-  bool uv_triggered = false; // flag to indicate if undervoltage has been triggered, resets when voltage is at 100% again
-
   // debugging
   bool verbose_usb = false;
-  bool skip_lora = false; // skip lora module init
-  bool analog_test_mode = false; // for davis sensor testing, set to 1 to power on sensor and output adc values, 0 to power off
   bool use_protection_board = true; // if true, wait 160us after powering on sensor to allow protection board to switch on power
 } Settings;
 
 extern Settings settings;
+
+// Volatile runtime state.  This used to live inside Settings, which mixed three
+// unrelated things: values parsed from the config file, flags the firmware sets
+// while running, and one-shot debug switches.  Reloading the configuration
+// (settings = Settings()) silently cleared the runtime flags as a side effect.
+typedef struct {
+  // set by the firmware while running
+  uint8_t lbt_counter = 0;      // LBT retries since boot
+  bool uv_triggered = false;    // undervoltage seen; clears once the battery is full again
+  bool use_pulse_counter = false; // TC pulse counter configured in setup()
+  bool use_rtc_counter = false;   // RTC counter configured in setup()
+
+  // debug switches, set over the USB console
+  bool skip_lora = false;         // skip lora module init
+  bool analog_test_mode = false;  // power the davis sensor and stream raw ADC values
+} RuntimeState;
+
+extern RuntimeState state;
+
+// True once parse_file() has accepted a complete configuration.
+extern bool settings_ok;
 extern uint32_t sleeptime_cum;
 extern volatile bool usb_detach_event;
 extern volatile bool usb_ignore_detach_event;
@@ -81,6 +99,24 @@ extern const char* wakeup_source_string[];
 
 void attachInterruptWakeup(uint32_t pin, voidFuncPtr callback, uint32_t mode, bool en_rtc);
 bool is_wsxx();
+
+// Sensor-class predicates.  These three combinations were written out inline at
+// nine different places, so adding a sensor meant finding every one of them.
+//
+//   sensor_uses_uart()        - sensor is powered and streams over SENSOR_UART
+//   sensor_uses_raw_uart()    - ... and is read with a plain SENSOR_UART.begin()
+//                               (WS85_UART goes through the WS85WindSensor driver)
+//   sensor_tracks_last_data() - ... and updates sensor.last_data, so the
+//                               freshness of the wind data can be checked
+static inline bool sensor_uses_uart(){
+  return is_wsxx() || settings.sensor_type == s_WS85_UART || settings.sensor_type == s_WINDNERD;
+}
+static inline bool sensor_uses_raw_uart(){
+  return is_wsxx() || settings.sensor_type == s_WINDNERD;
+}
+static inline bool sensor_tracks_last_data(){
+  return is_wsxx() || settings.sensor_type == s_WS85_UART;
+}
 bool process_line(char * in, int len, bool (*cb)(char*, char*));
 uint32_t time();
 
@@ -103,7 +139,7 @@ bool update_settings_in_flash(const char* key, const char* value);
 bool update_multiple_settings_in_flash(const char** keys, const char** values, size_t count);
 bool zone_not_eu();
 float parse_decimal_fast(const char *s);
-String get_bootloader_version();
+const char* get_bootloader_version();
 bool create_versionfile(const char *filename);
 void handle_usb_link_watchdog();
 bool parse_file(char * filename);

@@ -125,7 +125,7 @@ bool lbt_channel_free(int max_attempts) {
     for (int i = 0; i < max_attempts; i++) {
       if(i > 0){
         led_error(1);
-        settings.lbt_counter++;
+        state.lbt_counter++;
       }
       // Start RX briefly to get active RSSI measurement
       radio_phy->startReceive();
@@ -324,7 +324,7 @@ bool fanet_forward_check() {
 
 
 bool radio_init(){
-  if(settings.skip_lora){return false;}
+  if(state.skip_lora){return false;}
 
   if(zone_not_eu()){ // check GPS coordinates for freuency selection
     settings.lora_freq = LORA_FREQ_NA;

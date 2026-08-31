@@ -1174,7 +1174,7 @@ void ota_lora_prepare_hwinfo(hwInfoData &info) {
     info.debug_dynamic.pv_state = (sensor.pv_charging ? 0x01u : 0x00u) | (sensor.pv_done ? 0x02u : 0x00u);
     info.debug_dynamic.rx_count = fanet_rx_counter;
     info.debug_dynamic.forward_count = fanet_forward_counter;
-    info.debug_dynamic.lbt_counter = settings.lbt_counter;
+    info.debug_dynamic.lbt_counter = state.lbt_counter;
     info.debug_dynamic.reserved = 0u;
     s_hwinfo_last_dynamic_ts = now_ms;
   } else if(ota_due) {
@@ -1194,7 +1194,7 @@ void ota_lora_prepare_hwinfo(hwInfoData &info) {
     info.debug_type = HWINFO_DEBUG_STATIC;
     info.debug_static.sensor_type = settings.sensor_type;
     info.debug_static.use_baro = settings.use_baro ? 1u : 0u;
-    info.debug_static.uv_triggered = settings.uv_triggered ? 1u : 0u;
+    info.debug_static.uv_triggered = state.uv_triggered ? 1u : 0u;
     info.debug_static.lbt = settings.lora_lbt ? 1u : 0u;
     info.debug_static.lora_rssi_threshold = (uint8_t)constrain(-settings.lora_rssi_threshold, 0, 255);
     info.debug_static.sensor_integ_s = (uint8_t)constrain((int)(settings.sensor_integration_time / 1000u), 0, 255);

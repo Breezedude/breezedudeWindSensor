@@ -13,6 +13,7 @@ extern volatile int wakeup_source;
 
 uint32_t sleeptime_cum = 0; // cumulative time spend in sleepmode, used for time() calculation
 Settings settings;
+RuntimeState state;
 volatile bool usb_detach_event = false;
 volatile bool usb_ignore_detach_event = false;
 static uint32_t usb_last_activity_ms = 0;
@@ -112,7 +113,7 @@ bool parse_file(char * filename){
   if(parsed){
     ret = true;
 
-    if(settings.station_name.length() == 0){
+    if(settings.station_name[0] == '\0'){
       ret = false;
       log_e("Missing mandatory setting: NAME\r\n");
     }
@@ -270,9 +271,9 @@ void attachInterruptWakeup(uint32_t pin, voidFuncPtr callback, uint32_t mode, bo
 
 const char* wakeup_source_string[] = {"NONE", "RTC", "EIC", "WDT", "UART", "LORA", "USB"};
 
-String get_bootloader_version(){
+const char* get_bootloader_version(){
+  static char version[40] = "unknown";
   static bool cached = false;
-  static String version = "unknown";
   if(cached){
     return version;
   }
@@ -291,7 +292,7 @@ String get_bootloader_version(){
       continue;
     }
 
-    char buf[40];
+    char buf[sizeof(version)];
     size_t n = 0;
     const char *s = reinterpret_cast<const char *>(flash_ptr + i + prefix_len);
     while(n < sizeof(buf) - 1u){
@@ -304,7 +305,7 @@ String get_bootloader_version(){
     buf[n] = '\0';
 
     if(n > 0u){
-      version = String(buf);
+      memcpy(version, buf, n + 1u);
     }
     break;
   }
@@ -312,20 +313,21 @@ String get_bootloader_version(){
   return version;
 }
 
-static String get_bootloader_version_for_version_text(){
+// Copies the bootloader version into dst, cut off at the "-0-g<sha>" git
+// suffix and at the first space.
+static void get_bootloader_version_for_version_text(char *dst, size_t dst_len){
 #ifdef BOOTLOADER_VERSION_TXT_OVERRIDE
-  return String(BOOTLOADER_VERSION_TXT_OVERRIDE);
+  snprintf(dst, dst_len, "%s", BOOTLOADER_VERSION_TXT_OVERRIDE);
 #else
-  String version = get_bootloader_version();
-  int git_suffix = version.indexOf("-0-g");
-  if(git_suffix > 0){
-    version.remove(git_suffix);
+  snprintf(dst, dst_len, "%s", get_bootloader_version());
+  char *git_suffix = strstr(dst, "-0-g");
+  if(git_suffix != nullptr && git_suffix != dst){
+    *git_suffix = '\0';
   }
-  int feature_suffix = version.indexOf(' ');
-  if(feature_suffix > 0){
-    version.remove(feature_suffix);
+  char *feature_suffix = strchr(dst, ' ');
+  if(feature_suffix != nullptr && feature_suffix != dst){
+    *feature_suffix = '\0';
   }
-  return version;
 #endif
 }
 
@@ -419,89 +421,196 @@ static void cmd_print_uuid() {
   log_flush();
 }
 
+// Settings are dispatched through a table instead of a 55-deep strcmp chain.
+// Order no longer matters, adding a key is a one-line entry, and the key list
+// is data other code can walk.
+//
+// The handlers are named functions rather than lambdas on purpose: with
+// -std=gnu++11 the lambda-to-function-pointer conversion is not constexpr, so a
+// table of lambdas cannot be statically initialised and ends up in RAM, filled
+// in by startup code.
+typedef bool (*SettingApplyFn)(const char *value);
+
+typedef struct {
+  const char    *key;
+  SettingApplyFn apply;
+} SettingEntry;
+
+// Seconds in the config file, milliseconds internally.
+static uint32_t seconds_to_ms(const char *v){ return (uint32_t)atoi(v) * 1000u; }
+
+// Most handlers are a single assignment; SETTING_FN keeps them to one line each
+// while still producing an ordinary named function.
+#define SETTING_FN(fn_name, statement) \
+  static bool fn_name(const char *v){ (void)v; statement; return true; }
+
+// --- station identity and position ---
+static bool set_name(const char *v){
+  if(strlen(v) >= sizeof(settings.station_name)){
+    log_e("NAME too long, truncated\r\n");
+  }
+  snprintf(settings.station_name, sizeof(settings.station_name), "%s", v);
+  return true;
+}
+SETTING_FN(set_lon,       settings.pos_lon  = parse_decimal_fast(v))
+SETTING_FN(set_lat,       settings.pos_lat  = parse_decimal_fast(v))
+SETTING_FN(set_alt,       settings.altitude = parse_decimal_fast(v))
+
+// --- radio ---
+SETTING_FN(set_lora_freq, settings.lora_freq = parse_decimal_fast(v))
+SETTING_FN(set_lora_bw,   settings.lora_bw   = atoi(v))
+SETTING_FN(set_lbt,       settings.lora_lbt  = atoi(v))
+SETTING_FN(set_lbt_rssi,  settings.lora_rssi_threshold = atoi(v))
+SETTING_FN(set_smart_fwd, settings.lora_smart_rcv = atoi(v))
+SETTING_FN(set_fwd_data,  settings.forward_data   = atoi(v))
+SETTING_FN(set_repeater,  settings.repeater       = atoi(v))
+
+// --- measurement / averaging ---
+SETTING_FN(set_heading_offset, settings.heading_offset = atoi(v))
+SETTING_FN(set_gust_age,       settings.gust_age = seconds_to_ms(v))
+SETTING_FN(set_wind_age,       settings.wind_age = seconds_to_ms(v))
+SETTING_FN(set_redu_volt,      settings.reduce_interval_voltage = parse_decimal_fast(v))
+
+// --- broadcast intervals, in seconds; 0 disables ---
+SETTING_FN(set_bc_weather, settings.broadcast_interval_weather = seconds_to_ms(v))
+SETTING_FN(set_bc_name,    settings.broadcast_interval_name    = seconds_to_ms(v))
+
+// --- sensor selection ---
+SETTING_FN(set_baro,        settings.use_baro = atoi(v))
+SETTING_FN(set_davis6410,   if(atoi(v)){ settings.sensor_type = s_DAVIS6410; })
+SETTING_FN(set_ws80,        if(atoi(v)){ settings.sensor_type = s_WS80; })       // WSXX auto detection
+SETTING_FN(set_ws85,        if(atoi(v)){ settings.sensor_type = s_WS85; })
+SETTING_FN(set_ws85_uart,   if(atoi(v)){ settings.sensor_type = s_WS85_UART; })
+SETTING_FN(set_windnerd,    if(atoi(v)){ settings.sensor_type = s_WINDNERD; })
+SETTING_FN(set_gps,         settings.use_gps  = atoi(v))
+SETTING_FN(set_gps_baud,    settings.gps_baud = atoi(v))
+SETTING_FN(set_imu,         settings.use_imu  = atoi(v))
+
+// --- Davis 6410 specific ---
+SETTING_FN(set_integration_time, settings.sensor_integration_time = seconds_to_ms(v))
+SETTING_FN(set_protection_board, settings.use_protection_board    = atoi(v))
+
+// --- logging / misc ---
+SETTING_FN(set_debug,       log_set_debug(atoi(v)))
+SETTING_FN(set_errors,      log_set_error(atoi(v)))
+SETTING_FN(set_usb_verbose, settings.verbose_usb   = atoi(v))
+SETTING_FN(set_testmode,    settings.testmode      = atoi(v))
+SETTING_FN(set_wdt,         settings.use_wdt       = atoi(v))
+SETTING_FN(set_div_cpu_slow,settings.div_cpu_slow  = atoi(v))
+
+// --- OTA ---
+SETTING_FN(set_ota_enable,  settings.ota_enable = atoi(v) != 0)
+SETTING_FN(set_ota_fast,    settings.ota_fast   = atoi(v))
+
+// --- console commands ---
+SETTING_FN(cmd_get_uuid,    cmd_print_uuid())
+SETTING_FN(cmd_sleep,       usb_connected = false)
+SETTING_FN(cmd_skip_lora,   state.skip_lora = true)
+SETTING_FN(cmd_delay,       delay(atoi(v)))                    // for WDT testing
+SETTING_FN(cmd_analog_test, state.analog_test_mode = atoi(v))
+// RESET is a full reset: re-entering setup() appended the altitude to the
+// station name a second time and re-initialised the radio underneath us.
+SETTING_FN(cmd_reboot,      NVIC_SystemReset())
+
+#undef SETTING_FN
+
+static bool cmd_ota_confirm(const char *v){
+  (void)v;
+  return ota_ab_confirm_current();
+}
+
+static bool cmd_ota_boot_slot(const char *v){
+  // Manual debug trigger, not a real OTA transfer: no verified image size is
+  // known here, so pass 0 (unknown) and let the bootloader fall back to its
+  // scan-based size detection.
+  if(ota_ab_request_slot((uint8_t)atoi(v), 0u)) {
+    NVIC_SystemReset();
+  }
+  return true;
+}
+
+static bool cmd_format(const char *v){
+  (void)v;
+  if(format_flash()){
+    NVIC_SystemReset();
+  } else {
+    log_i("Error resetting bootloader settings\r\n");
+  }
+  return true;
+}
+
+static const SettingEntry setting_table[] = {
+  {"NAME",                       set_name},
+  {"LON",                        set_lon},
+  {"LAT",                        set_lat},
+  {"ALT",                        set_alt},
+
+  {"LORA_FREQ",                  set_lora_freq},
+  {"LORA_BW",                    set_lora_bw},
+  {"LBT",                        set_lbt},
+  {"LBT_RSSI_THRESHOLD",         set_lbt_rssi},
+  {"FANET_SMART_FORWARD",        set_smart_fwd},
+  {"FORWARD_DATA",               set_fwd_data},
+  {"REPEATER",                   set_repeater},
+
+  {"HEADING_OFFSET",             set_heading_offset},
+  {"GUST_AGE",                   set_gust_age},
+  {"WIND_AGE",                   set_wind_age},
+  {"REDU_INTERV_VOLT",           set_redu_volt},
+
+  {"BROADCAST_INTERVAL_WEATHER", set_bc_weather},
+  {"BROADCAST_INTERVAL_NAME",    set_bc_name},
+
+  {"SENSOR_BARO",                set_baro},
+  {"SENSOR_DAVIS6410",           set_davis6410},
+  {"SENSOR_WSXX",                set_ws80},   // auto detection
+  {"SENSOR_WS80",                set_ws80},   // kept for old settings files
+  {"SENSOR_WS85",                set_ws85},
+  {"SENSOR_WS85_UART",           set_ws85_uart},
+  {"SENSOR_WINDNERD",            set_windnerd},
+  {"SENSOR_GPS",                 set_gps},
+  {"GPS_BAUD",                   set_gps_baud},
+  {"SENSOR_IMU",                 set_imu},
+
+  {"SENSOR_INTEGRATION_TIME",    set_integration_time},
+  {"SENSOR_PROTECTION_BOARD",    set_protection_board},
+
+  {"DEBUG",                      set_debug},
+  {"ERRORS",                     set_errors},
+  {"USB_VERBOSE",                set_usb_verbose},
+  {"TESTMODE",                   set_testmode},
+  {"WDT",                        set_wdt},
+  {"DIV_CPU_SLOW",               set_div_cpu_slow},
+
+  {"OTA_ENABLE",                 set_ota_enable},
+  {"OTA_FAST",                   set_ota_fast},
+  {"OTA_CONFIRM",                cmd_ota_confirm},
+  {"OTA_BOOT_SLOT",              cmd_ota_boot_slot},
+
+  {"GET_UUID",                   cmd_get_uuid},
+  {"SLEEP",                      cmd_sleep},
+  {"FORMAT",                     cmd_format},
+  {"RESET",                      cmd_reboot},
+  {"REBOOT",                     cmd_reboot},
+  {"SKIP_LORA",                  cmd_skip_lora},
+  {"DELAY",                      cmd_delay},
+  {"ANALOG_TEST",                cmd_analog_test},
+};
+
 bool apply_setting(char* settingName,  char* settingValue){
   //if(debug_enabled()){printf("Setting: %s = %s\r\n",settingName, settingValue); log_flush();}
-  
-  if(strcmp(settingName,"NAME")==0){settings.station_name = settingValue; return 1;}
-  if(strcmp(settingName,"LON")==0) {settings.pos_lon = parse_decimal_fast(settingValue); return 1;}
-  if(strcmp(settingName,"LAT")==0) {settings.pos_lat = parse_decimal_fast(settingValue); return 1;}
-  if(strcmp(settingName,"ALT")==0) {settings.altitude = parse_decimal_fast(settingValue); return 1;}
-  if(strcmp(settingName,"LORA_FREQ")==0){settings.lora_freq = parse_decimal_fast(settingValue); return 1;} 
-  if(strcmp(settingName,"LORA_BW")==0)  {settings.lora_bw = atoi(settingValue); return 1;}
-
-  if(strcmp(settingName,"REDU_INTERV_VOLT")==0) { settings.reduce_interval_voltage = parse_decimal_fast(settingValue); return 1;}
-
-  if(strcmp(settingName,"HEADING_OFFSET")==0) {settings.heading_offset = atoi(settingValue); return 1;}
-  if(strcmp(settingName,"GUST_AGE")==0) {settings.gust_age = (uint32_t)atoi(settingValue)*1000; return 1;}
-  if(strcmp(settingName,"WIND_AGE")==0) {settings.wind_age = (uint32_t)atoi(settingValue)*1000; return 1;}
-  
-// Broadcast intervals in seconds, 0 = disable
-  if(strcmp(settingName,"BROADCAST_INTERVAL_WEATHER")==0) {settings.broadcast_interval_weather = (uint32_t)atoi(settingValue)*1000; return 1;}
-  if(strcmp(settingName,"BROADCAST_INTERVAL_NAME")==0)    {settings.broadcast_interval_name = (uint32_t)atoi(settingValue)*1000; return 1;}
-
-  if(strcmp(settingName,"SENSOR_BARO")==0) {settings.use_baro = atoi(settingValue); return 1;}
-  if(strcmp(settingName,"SENSOR_DAVIS6410")==0) { if(atoi(settingValue)){settings.sensor_type = s_DAVIS6410;} return 1;}
-  if(strcmp(settingName,"SENSOR_WSXX")==0) { if(atoi(settingValue)){settings.sensor_type = s_WS80;} return 1;} // auto detection
-  if(strcmp(settingName,"SENSOR_WS80")==0) { if(atoi(settingValue)){settings.sensor_type = s_WS80;} return 1;} // keep for comatibility with old settings file
-  if(strcmp(settingName,"SENSOR_WS85")==0) { if(atoi(settingValue)){settings.sensor_type = s_WS85;} return 1;}
-  if(strcmp(settingName,"SENSOR_WS85_UART")==0) { if(atoi(settingValue)){settings.sensor_type = s_WS85_UART;} return 1;}
-  if(strcmp(settingName,"SENSOR_WINDNERD")==0) { if(atoi(settingValue)){settings.sensor_type = s_WINDNERD;} return 1;}
-  
-
-// Davis 6410 specific
-  if(strcmp(settingName,"SENSOR_INTEGRATION_TIME")==0) {settings.sensor_integration_time = atoi(settingValue)*1000; return 1;}
-  if(strcmp(settingName,"SENSOR_PROTECTION_BOARD")==0) {settings.use_protection_board = atoi(settingValue); return 1;}
-
-  if(strcmp(settingName,"SENSOR_GPS")==0) {settings.use_gps = atoi(settingValue); return 1;}
-  if(strcmp(settingName,"GPS_BAUD")==0) {settings.gps_baud = atoi(settingValue); return 1;}
-  if(strcmp(settingName,"SENSOR_IMU")==0) {settings.use_imu = atoi(settingValue); return 1;}
-
-  if(strcmp(settingName,"DEBUG")==0) {log_set_debug(atoi(settingValue)); return 1;}
-  if(strcmp(settingName,"ERRORS")==0) {log_set_error(atoi(settingValue)); return 1;}
-  if(strcmp(settingName,"TESTMODE")==0) {settings.testmode = atoi(settingValue); return 1;}
-  if(strcmp(settingName,"OTA_FAST")==0) {settings.ota_fast = atoi(settingValue); return 1;}
-  if(strcmp(settingName,"WDT")==0) {settings.use_wdt = atoi(settingValue); return 1;}
-  if(strcmp(settingName,"DIV_CPU_SLOW")==0) {settings.div_cpu_slow = atoi(settingValue); return 1;}
-  if(strcmp(settingName,"USB_VERBOSE")==0) {settings.verbose_usb = atoi(settingValue); return 1;}
-
-
-// Test commands
-  if(strcmp(settingName,"LBT")==0) {settings.lora_lbt = atoi(settingValue); return 1;}
-  if(strcmp(settingName,"LBT_RSSI_THRESHOLD")==0) {settings.lora_rssi_threshold = atoi(settingValue); return 1;}
-  if(strcmp(settingName,"FANET_SMART_FORWARD")==0) {settings.lora_smart_rcv = atoi(settingValue); return 1;}
-  if(strcmp(settingName,"FORWARD_DATA")==0) {settings.forward_data = atoi(settingValue); return 1;}
-  if(strcmp(settingName,"REPEATER")==0) {settings.repeater = atoi(settingValue); return 1;}
-
-  if(strcmp(settingName,"OTA_ENABLE")==0) {settings.ota_enable = atoi(settingValue) != 0; return 1;}
-  if(strcmp(settingName,"OTA_CONFIRM")==0) {return ota_ab_confirm_current() ? 1 : 0;}
-  if(strcmp(settingName,"GET_UUID")==0) {cmd_print_uuid(); return 1;}
-  if(strcmp(settingName,"OTA_BOOT_SLOT")==0) {
-    uint8_t slot = (uint8_t)atoi(settingValue);
-    // Manual debug trigger, not a real OTA transfer: no verified image size
-    // is known here, so pass 0 (unknown) and let the bootloader fall back
-    // to its scan-based size detection.
-    if(ota_ab_request_slot(slot, 0u)) {
-      NVIC_SystemReset();
+  for(const SettingEntry &e : setting_table){
+    if(strcmp(settingName, e.key) == 0){
+      return e.apply(settingValue);
     }
-    return 1;
   }
-
-  if(strcmp(settingName,"SLEEP")==0) {usb_connected =false; return 1;}
-  if(strcmp(settingName,"FORMAT")==0) {if(format_flash()){NVIC_SystemReset();} else {log_i("Error resetting bootloader settings\r\n");} return 1;}
-  if(strcmp(settingName,"RESET")==0) {NVIC_SystemReset(); return 1;} // full reset; re-entering setup() would append the altitude to the station name a second time
-  if(strcmp(settingName,"SKIP_LORA")==0) {settings.skip_lora = true; return 1;}
-  if(strcmp(settingName,"DELAY")==0) {delay(atoi(settingValue)); return 1;} // delay for WDT testing
-  if(strcmp(settingName,"REBOOT")==0) {NVIC_SystemReset(); return 1;}
-
-  if(strcmp(settingName,"ANALOG_TEST")==0) {settings.analog_test_mode = atoi(settingValue); return 1;} // power on/off davis sensor for testing
-
-  return 0;
+  return false;
 }
 
 void print_settings(){
   if(debug_enabled()){
     if(!settings.use_baro){log_i("Baro: OFF\r\n");}
-    log_i("Name: "); log_i(settings.station_name.c_str()); log_i("\r\n");
+    log_i("Name: "); log_i(settings.station_name); log_i("\r\n");
     //log_i("Lon: ", pos_lon);
     //log_i("Lat: ", pos_lat);
     //log_i("Alt: ", altitude);
@@ -799,8 +908,11 @@ bool zone_not_eu(){
     );
 }
 
-static String build_version_text(){
-  String bootloader_version = get_bootloader_version_for_version_text();
+// Renders version.txt into out. Returns the length written (excluding the
+// terminator), or 0 if it did not fit.
+static size_t build_version_text(char *out, size_t out_len){
+  char bootloader_version[40];
+  get_bootloader_version_for_version_text(bootloader_version, sizeof(bootloader_version));
 
   const char *lora_name = "UNKNOWN";
   if(lora_module == LORA_SX1276) { lora_name = "SX1276"; }
@@ -813,46 +925,48 @@ static String build_version_text(){
   if(chip_baro == BARO_SPL06) { baro_name = "SPL06"; }
   if(chip_baro == BARO_HP203B) { baro_name = "HP203B"; }
 
-  char line[96];
-  String rawText;
-  rawText.reserve(256);
-  rawText += "Firmware: "; rawText += VERSION; rawText += "\r\n";
-  int n = snprintf(line, sizeof(line), "FW Build: %s %s\r\n", __DATE__, __TIME__);
-  if(n > 0) { rawText += line; }
-  rawText += "Bootloader: "; rawText += bootloader_version; rawText += "\r\n";
-  n = snprintf(line, sizeof(line), "FANET ID: %02X%04X\r\n", FANET_VENDOR_ID, get_fanet_id());
-  if(n > 0) { rawText += line; }
-  n = snprintf(line, sizeof(line), "LoRa Module: %s\r\n", lora_name);
-  if(n > 0) { rawText += line; }
-  n = snprintf(line, sizeof(line), "Barometer: %s\r\n", baro_name);
-  if(n > 0) { rawText += line; }
-  n = snprintf(line, sizeof(line),
+  int n = snprintf(out, out_len,
+    "Firmware: %s\r\n"
+    "FW Build: %s %s\r\n"
+    "Bootloader: %s\r\n"
+    "FANET ID: %02X%04X\r\n"
+    "LoRa Module: %s\r\n"
+    "Barometer: %s\r\n"
     "Chip-ID: %02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X\r\n",
+    VERSION,
+    __DATE__, __TIME__,
+    bootloader_version,
+    FANET_VENDOR_ID, get_fanet_id(),
+    lora_name,
+    baro_name,
     UniqueID[0],  UniqueID[1],  UniqueID[2],  UniqueID[3],
     UniqueID[4],  UniqueID[5],  UniqueID[6],  UniqueID[7],
     UniqueID[8],  UniqueID[9],  UniqueID[10], UniqueID[11],
     UniqueID[12], UniqueID[13], UniqueID[14], UniqueID[15]);
-  if(n > 0) { rawText += line; }
 
-  return rawText;
-}
-
-static bool versionfile_needs_rewrite(const char *path){
-  (void)path;
-  char existing[OTA_VERSIONS_SIZE] = {0};
-  if(!ota_storage_read_text(OTA_VERSIONS_ADDRESS, existing, sizeof(existing))){
-    return true; // flash empty → write needed
+  if(n <= 0 || (size_t)n >= out_len){
+    log_e("Version text does not fit\r\n");
+    return 0;
   }
-  return build_version_text() != String(existing);
+  return (size_t)n;
 }
 
 bool create_versionfile(const char *filename){
   (void)filename;
-  if(!versionfile_needs_rewrite(filename)){
-    return true;
+  // One buffer, built once: the old code rendered the text twice, once to
+  // compare and once to write, and did it through Arduino String.
+  char text[OTA_VERSIONS_SIZE];
+  if(build_version_text(text, sizeof(text)) == 0u){
+    return false;
   }
-  String text = build_version_text();
-  bool ok = ota_storage_write_text(OTA_VERSIONS_ADDRESS, OTA_VERSIONS_SIZE, text.c_str());
+
+  char existing[OTA_VERSIONS_SIZE] = {0};
+  if(ota_storage_read_text(OTA_VERSIONS_ADDRESS, existing, sizeof(existing)) &&
+     strcmp(existing, text) == 0){
+    return true; // unchanged
+  }
+
+  bool ok = ota_storage_write_text(OTA_VERSIONS_ADDRESS, OTA_VERSIONS_SIZE, text);
   if(ok){
     log_i("Version file updated\r\n");
   } else {

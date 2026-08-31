@@ -35,7 +35,7 @@ Sensors sensor;
 
 void switch_sensor_power(bool state){
   static bool current_power_state = false;
-  const bool uses_uart = (is_wsxx() || settings.sensor_type == s_WS85_UART || settings.sensor_type == s_WINDNERD);
+  const bool uses_uart = sensor_uses_uart();
   if(state && !current_power_state){ // turn on
     current_power_state = true;
     pinMode(PIN_PS_WS,OUTPUT);
@@ -61,25 +61,40 @@ void switch_sensor_power(bool state){
   }
 }
 
-static uint8_t voltageToSOCNonLinear(float v) {
-  if(v < 0.8f) {led_error(1); log_i("V_Batt read error: ", v); return 0;} // bad reading
+// Undervoltage / sensor-power state machine.  This used to sit inside the SOC
+// conversion, so a function named "voltage to percent" cut the sensor supply
+// and set global flags as a side effect.
+void battery_update_power_state(float v) {
+  if(v < 0.8f) { led_error(1); log_i("V_Batt read error: ", v); return; } // bad reading, keep state
+
   // Deep UV: 3 consecutive readings < 2.9V trigger extended sleep for solar charging recovery.
   // Hysteresis: clears when voltage rises above 3.0V.
-  {
-    static uint8_t deep_uv_count = 0;
-    if (v < 2.9f) {
-      if (deep_uv_count < 3) ++deep_uv_count;
-      if (deep_uv_count >= 3) deep_undervoltage = true;
-    } else if (v > 3.0f) {
-      deep_uv_count = 0;
-      deep_undervoltage = false;
-    }
+  static uint8_t deep_uv_count = 0;
+  if (v < 2.9f) {
+    if (deep_uv_count < 3) ++deep_uv_count;
+    if (deep_uv_count >= 3) deep_undervoltage = true;
+  } else if (v > 3.0f) {
+    deep_uv_count = 0;
+    deep_undervoltage = false;
   }
-  if(v < 3.15f) {switch_sensor_power(0); settings.uv_triggered = true; undervoltage = true; return 0;} // undervoltage, turn off sensor to save power
-  if(v > 3.3f) {if(is_wsxx() || settings.sensor_type == s_WS85_UART || settings.sensor_type == s_WINDNERD){
-                  switch_sensor_power(1);
-                } undervoltage = false;}
-  if(v > 4.15f){settings.uv_triggered = false; return 100;}
+
+  if(v < 3.15f) { // undervoltage, turn off sensor to save power
+    switch_sensor_power(0);
+    state.uv_triggered = true;
+    undervoltage = true;
+    return;
+  }
+  if(v > 3.3f) {
+    if(sensor_uses_uart()) { switch_sensor_power(1); }
+    undervoltage = false;
+  }
+  if(v > 4.15f) { state.uv_triggered = false; }
+}
+
+// Pure open-circuit-voltage -> state of charge conversion, no side effects.
+uint8_t battery_soc_percent(float v) {
+  if(v < 3.15f) { return 0; }   // also covers the bad-reading case
+  if(v > 4.15f) { return 100; }
 
   // Piecewise linear OCV->SOC for 3.7V Li-Ion at low discharge rate.
   // Use compact integer tables to save flash; 1% SOC resolution is sufficient here.
@@ -120,7 +135,10 @@ void read_batt_perc(){
     //ADC->SAMPCTRL.reg = ADC_SAMPCTRL_SAMPLEN(4);
     //while (ADC->STATUS.bit.SYNCBUSY);
 
-    constexpr int N_SAMPLES = 15;
+    // 7 samples with min/max discarded removes ADC glitches; the moving
+    // average further down smooths load dips across wakeups. 15 samples bought
+    // no extra accuracy and doubled the time the ADC stays powered.
+    constexpr int N_SAMPLES = 7;
     uint16_t samples[N_SAMPLES];
     digitalWrite(PIN_V_READ_TRIGGER,0);
     delayMicroseconds(50); // allow divider to settle
@@ -157,7 +175,8 @@ void read_batt_perc(){
     for (int i = 0; i < v_count; i++) v_sum += v_history[i];
     sensor.batt_volt = v_sum / v_count;
 
-    sensor.batt_perc = voltageToSOCNonLinear(sensor.batt_volt);
+    battery_update_power_state(sensor.batt_volt);
+    sensor.batt_perc = battery_soc_percent(sensor.batt_volt);
     log_i("V_Bat: ", sensor.batt_volt);
     log_i("Bat_perc: ", sensor.batt_perc);
   }
@@ -364,7 +383,7 @@ void read_baro(){
     sensor.baro_temp = T;
     sensor.next_baro_reading = 0;
     sensor.last_baro_reading = now;
-    sensor.baro_pressure = apply_altitude_correction(P, T, settings.altitude);
+    sensor.baro_pressure = apply_altitude_correction(P, T, position_alt());
     log_v("Baro: ", sensor.baro_pressure);
     log_v("Baro Temp: ", sensor.baro_temp);
   } else {
@@ -379,7 +398,7 @@ static void davis_speed_isr() { davis_speed_pulse = true; }
 void forward_analog_test_serial(){
   static bool isr_attached = false;
 
-  if(settings.analog_test_mode){
+  if(state.analog_test_mode){
     static uint32_t last_print = 0;
 
     analogReference(AR_DEFAULT); //3.3V refernece
@@ -732,6 +751,20 @@ void get_solar_charger_state(){
 }
 
 // GPS ----------------------------------------------------------------------------------------------------------------------
+// Position used for transmission and for the baro altitude correction: the GPS
+// fix when GPS is enabled and has produced one, the configured position
+// otherwise.  read_gps() used to overwrite settings.pos_* directly, so a
+// measurement silently rewrote the user's configuration.
+float position_lat(){
+  return (settings.use_gps && sensor.last_gps_valid) ? sensor.gps_lat : settings.pos_lat;
+}
+float position_lon(){
+  return (settings.use_gps && sensor.last_gps_valid) ? sensor.gps_lon : settings.pos_lon;
+}
+float position_alt(){
+  return (settings.use_gps && sensor.last_gps_valid) ? sensor.gps_alt : settings.altitude;
+}
+
 void read_gps(){
 #if BREEZEDUDE_ENABLE_GPS
   while (GPS_SERIAL.available() > 0){
@@ -739,9 +772,9 @@ void read_gps(){
     //DEBUGSER.print(c);
     tinyGps.encode(c);
     if (tinyGps.location.isUpdated() && tinyGps.location.isValid() ){
-      settings.pos_lat = tinyGps.location.lat();
-      settings.pos_lon = tinyGps.location.lng();
-      settings.altitude = tinyGps.altitude.meters();
+      sensor.gps_lat = tinyGps.location.lat();
+      sensor.gps_lon = tinyGps.location.lng();
+      sensor.gps_alt = tinyGps.altitude.meters();
       sensor.last_gps_valid = time();
       //DEBUGSER.println("Position Update");
     }
