@@ -23,6 +23,22 @@ static bool g_ota_busy = false;
 
 bool ota_lora_busy(){ return g_ota_busy; }
 
+// ---- fake clock (settings_edit uses time() for the FILE transfer timeout) ----
+static uint32_t g_now = 1000;
+uint32_t time(){ return g_now; }
+
+// ---- captured whole-file write ----
+static std::string g_file_written;
+static bool g_file_write_should_fail = false;
+static int  g_file_write_calls = 0;
+
+bool write_settings_flash(const char *text){
+  g_file_write_calls++;
+  if(g_file_write_should_fail) return false;
+  g_file_written = text;
+  return true;
+}
+
 bool update_multiple_settings_in_flash(const char** keys, const char** values, size_t count){
   g_write_calls++;
   if(g_write_should_fail) return false;
@@ -234,6 +250,98 @@ int main(){
   memset(fake_settings_flash, 0xFF, sizeof(fake_settings_flash));
   feed("DUMP");
   check(out_has("DUMP BEGIN") && out_has("DUMP END"), "DUMP on a blank device still terminates");
+
+  printf("\nFILE transfer\n");
+  feed("SETCLEAR");
+  check(feed("FILE BEGIN") && out_has("FILE BEGIN OK"), "FILE BEGIN enters transfer mode");
+  check(feed("#Kommentar"),      "  comment line is consumed as content");
+  check(feed("NAME=Teststation"),"  KEY=VALUE line is consumed as content");
+  check(feed("LAT=45.678901"),   "  ... and not executed as a command");
+  check(feed("LON=12.345678"),   "  ...");
+  check(feed("REBOOT=1"),        "  a command inside the file is content, not executed");
+  g_file_written.clear();
+  feed("FILE END");
+  check(out_has("FILE OK"),      "FILE END writes");
+  check(g_file_written == "#Kommentar\r\nNAME=Teststation\r\nLAT=45.678901\r\n"
+                          "LON=12.345678\r\nREBOOT=1\r\n",
+        "  content stored verbatim, CRLF normalised");
+  check(!out_has("FILE WARN"),   "  no warning when NAME/LAT/LON are present");
+  check(!feed("DUMP=1"),         "  normal dispatch works again afterwards");
+
+  feed("FILE BEGIN");
+  feed("WDT=0");
+  feed("FILE END");
+  check(out_has("FILE WARN missing: NAME LAT LON"), "missing mandatory keys are reported");
+  check(out_has("FILE OK"),      "  ... but the write still goes through");
+
+  feed("FILE BEGIN");
+  feed("NAME=x");
+  check(feed("FILE ABORT") && out_has("FILE ABORTED"), "FILE ABORT leaves transfer mode");
+  check(!feed("NAME=y"),         "  ... and lines are no longer swallowed");
+
+  feed("FILE BEGIN");
+  feed("FILE END");
+  check(out_has("FILE ERR no content received"), "empty transfer refused");
+
+  check(feed("FILE END") && out_has("FILE ERR no transfer active"),
+        "FILE END without BEGIN refused");
+  check(feed("FILE NONSENSE") && out_has("FILE ERR expected BEGIN, END or ABORT"),
+        "unknown FILE subcommand refused");
+
+  printf("\nFILE guards\n");
+  feed("SETCLEAR");
+  feed("SET NAME=Pending");
+  check(feed("FILE BEGIN") && out_has("FILE ERR staged changes pending"),
+        "FILE BEGIN refused while SET changes are staged");
+  feed("SETCLEAR");
+
+  feed("FILE BEGIN");
+  feed("NAME=Keep");
+  g_ota_busy = true;
+  int fcalls = g_file_write_calls;
+  feed("FILE END");
+  check(out_has("FILE ERR OTA in progress"), "FILE END refused during an OTA");
+  check(g_file_write_calls == fcalls,        "  ... no write attempted");
+  g_ota_busy = false;
+  g_file_written.clear();
+  feed("FILE END");
+  check(out_has("FILE OK") && g_file_written == "NAME=Keep\r\n",
+        "  ... content survived and writes afterwards");
+
+  feed("FILE BEGIN");
+  feed("NAME=Keep");
+  g_file_write_should_fail = true;
+  feed("FILE END");
+  check(out_has("FILE ERR flash write failed"), "flash failure reported");
+  g_file_write_should_fail = false;
+  g_file_written.clear();
+  feed("FILE END");
+  check(out_has("FILE OK") && g_file_written == "NAME=Keep\r\n",
+        "  ... buffer kept so the host can retry");
+
+  printf("\nFILE limits\n");
+  feed("FILE BEGIN");
+  {
+    // 768 byte region: fill past it and the transfer must be dropped, not overflow.
+    char filler[100];
+    memset(filler, 'z', sizeof(filler)); filler[sizeof(filler)-1] = '\0';
+    bool dropped = false;
+    for(int i = 0; i < 20 && !dropped; i++){
+      feed(filler);
+      if(out_has("FILE ERR too large")) dropped = true;
+    }
+    check(dropped, "over-long transfer dropped instead of overflowing");
+    check(!feed("NAME=y"), "  ... and transfer mode was left");
+  }
+
+  printf("\nFILE timeout\n");
+  feed("FILE BEGIN");
+  feed("NAME=Half");
+  g_now += 31000;                    // host went away mid-transfer
+  bool consumed = feed("DUMP");
+  check(out_has("FILE ABORTED (timeout)"), "stale transfer times out");
+  check(consumed && out_has("DUMP BEGIN"), "  ... and the current line runs normally");
+  g_now = 1000;
 
   printf("\n%s\n", g_fail ? "FAILURES" : "all checks passed");
   return g_fail != 0;

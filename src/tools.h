@@ -139,6 +139,8 @@ bool apply_setting(char* settingName,  char* settingValue);
 // parse_file() replay it on every boot.
 bool setting_key_persistable(const char *key);
 void print_settings();
+// Replaces settings.txt in flash with text, watchdog-guarded.
+bool write_settings_flash(const char *text);
 bool update_settings_in_flash(const char* key, const char* value);
 bool update_multiple_settings_in_flash(const char** keys, const char** values, size_t count);
 bool zone_not_eu();

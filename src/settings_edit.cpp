@@ -9,26 +9,42 @@
 
 // update_multiple_settings_in_flash() accepts at most 16 keys per write.
 #define SETTINGS_EDIT_MAX_ENTRIES 16
-// Packed "KEY\0VALUE\0" storage for the staged changes. 512 B holds far more
-// than the ~10 parameters a configuration round trip realistically touches.
-#define SETTINGS_EDIT_BUF_SIZE 512
 #define SETTINGS_EDIT_LINE_MAX 128
 #define SETTINGS_EDIT_KEY_MAX 32
 #define SETTINGS_EDIT_VALUE_MAX 96
+// A FILE transfer that stops halfway would otherwise swallow every later
+// command, so it is dropped once nothing has arrived for this long.
+#define SETTINGS_EDIT_FILE_TIMEOUT_MS 30000UL
 
-static char     stage_buf[SETTINGS_EDIT_BUF_SIZE];
-static uint16_t stage_len = 0;
+// One buffer for both modes - they are mutually exclusive. In EDIT_STAGE it
+// holds packed "KEY\0VALUE\0" entries, in EDIT_FILE the raw settings.txt text.
+// Sized to the flash region so a full file always fits.
+static char     edit_buf[OTA_SETTINGS_SIZE];
+static uint16_t edit_len = 0;
+
+typedef enum : uint8_t {
+  EDIT_IDLE,
+  EDIT_STAGE,
+  EDIT_FILE,
+} EditMode;
+
+static EditMode edit_mode = EDIT_IDLE;
+static uint32_t file_last_line_ms = 0;
+
 static uint8_t  stage_count = 0;
 static uint16_t stage_key_off[SETTINGS_EDIT_MAX_ENTRIES];
 static uint16_t stage_val_off[SETTINGS_EDIT_MAX_ENTRIES];
 
-static const char* staged_key(uint8_t i)   { return stage_buf + stage_key_off[i]; }
-static const char* staged_value(uint8_t i) { return stage_buf + stage_val_off[i]; }
+static const char* staged_key(uint8_t i)   { return edit_buf + stage_key_off[i]; }
+static const char* staged_value(uint8_t i) { return edit_buf + stage_val_off[i]; }
 
-static void stage_clear(){
-  stage_len = 0;
+static void edit_reset(){
+  edit_len = 0;
   stage_count = 0;
+  edit_mode = EDIT_IDLE;
 }
+
+// Staging --------------------------------------------------------------------
 
 // Drops entry i and closes the gap, keeping the remaining offsets valid.
 static void stage_remove(uint8_t i){
@@ -36,8 +52,8 @@ static void stage_remove(uint8_t i){
   const uint16_t entry_end   = (uint16_t)(stage_val_off[i] + strlen(staged_value(i)) + 1u);
   const uint16_t gap = (uint16_t)(entry_end - entry_start);
 
-  memmove(stage_buf + entry_start, stage_buf + entry_end, (size_t)(stage_len - entry_end));
-  stage_len = (uint16_t)(stage_len - gap);
+  memmove(edit_buf + entry_start, edit_buf + entry_end, (size_t)(edit_len - entry_end));
+  edit_len = (uint16_t)(edit_len - gap);
 
   for(uint8_t j = i; j + 1u < stage_count; j++){
     stage_key_off[j] = (uint16_t)(stage_key_off[j + 1] - gap);
@@ -69,19 +85,20 @@ static const char* stage_set(const char *key, const char *value){
   const size_t key_len = strlen(key);
   const size_t val_len = strlen(value);
   const size_t need = key_len + 1u + val_len + 1u;
-  if((size_t)stage_len + need > sizeof(stage_buf)){
+  if((size_t)edit_len + need > sizeof(edit_buf)){
     return "stage buffer full";
   }
 
-  stage_key_off[stage_count] = stage_len;
-  memcpy(stage_buf + stage_len, key, key_len + 1u);
-  stage_len = (uint16_t)(stage_len + key_len + 1u);
+  stage_key_off[stage_count] = edit_len;
+  memcpy(edit_buf + edit_len, key, key_len + 1u);
+  edit_len = (uint16_t)(edit_len + key_len + 1u);
 
-  stage_val_off[stage_count] = stage_len;
-  memcpy(stage_buf + stage_len, value, val_len + 1u);
-  stage_len = (uint16_t)(stage_len + val_len + 1u);
+  stage_val_off[stage_count] = edit_len;
+  memcpy(edit_buf + edit_len, value, val_len + 1u);
+  edit_len = (uint16_t)(edit_len + val_len + 1u);
 
   stage_count++;
+  edit_mode = EDIT_STAGE;
   return nullptr;
 }
 
@@ -104,7 +121,7 @@ static void reply_err(const char *cmd, const char *reason, const char *detail = 
 static void cmd_dump(){
   log_i("DUMP BEGIN\r\n");
   // The settings region is memory mapped, so it can be streamed out in small
-  // chunks instead of buffering the whole 768 B block in RAM.
+  // chunks instead of buffering the whole block in RAM.
   const uint8_t *src = (const uint8_t *)OTA_SETTINGS_ADDRESS;
   char chunk[65];
   size_t pos = 0;
@@ -203,7 +220,7 @@ static void cmd_setlist(){
 }
 
 static void cmd_setclear(){
-  stage_clear();
+  edit_reset();
   log_i("SET CLEARED\r\n");
   log_flush();
 }
@@ -216,7 +233,7 @@ static void cmd_save(){
   if(ota_lora_busy()){
     // The write erases and reprograms flash rows for several hundred
     // milliseconds, long enough to miss OTA chunks. Staged changes are kept,
-    // so the host can simply retry once the transfer has finished.
+    // so the host can retry once the transfer has finished.
     reply_err("SAVE", "OTA in progress, retry later");
     return;
   }
@@ -230,17 +247,109 @@ static void cmd_save(){
 
   const uint8_t written = stage_count;
   if(!update_multiple_settings_in_flash(keys, values, written)){
-    // update_multiple_settings_in_flash() refuses to rewrite a settings block
-    // that is empty or looks truncated, so a blank device has to be given a
-    // complete settings.txt once before single parameters can be edited.
     reply_err("SAVE", "flash write failed");
     return;
   }
 
-  stage_clear();
+  edit_reset();
   log_i("SAVE OK ");
   log_write((uint32_t)written);
   log_i(" changes, REBOOT to apply\r\n");
+  log_flush();
+}
+
+// Whole-file transfer --------------------------------------------------------
+
+// True if text contains a line starting with "<key>=".
+static bool has_key_line(const char *text, const char *key){
+  const size_t key_len = strlen(key);
+  const char *p = text;
+  bool at_line_start = true;
+  while(*p != '\0'){
+    if(at_line_start && strncmp(p, key, key_len) == 0 && p[key_len] == '='){
+      return true;
+    }
+    at_line_start = (*p == '\n');
+    p++;
+  }
+  return false;
+}
+
+static void cmd_file_begin(){
+  if(stage_count != 0u){
+    reply_err("FILE", "staged changes pending, SAVE or SETCLEAR first");
+    return;
+  }
+  edit_len = 0;
+  edit_mode = EDIT_FILE;
+  file_last_line_ms = time();
+  log_i("FILE BEGIN OK, send lines, end with FILE END\r\n");
+  log_flush();
+}
+
+static void cmd_file_abort(){
+  edit_reset();
+  log_i("FILE ABORTED\r\n");
+  log_flush();
+}
+
+// Appends one received content line, normalised to CRLF like the rest of the
+// settings writer. Returns false if the buffer is full (transfer is dropped).
+static bool file_append_line(const char *line){
+  const size_t line_len = strlen(line);
+  const size_t need = line_len + 2u; // "\r\n"
+  if((size_t)edit_len + need >= sizeof(edit_buf)){
+    return false;
+  }
+  memcpy(edit_buf + edit_len, line, line_len);
+  edit_len = (uint16_t)(edit_len + line_len);
+  edit_buf[edit_len++] = '\r';
+  edit_buf[edit_len++] = '\n';
+  file_last_line_ms = time();
+  return true;
+}
+
+static void cmd_file_end(){
+  if(edit_mode != EDIT_FILE){
+    reply_err("FILE", "no transfer active");
+    return;
+  }
+  if(edit_len == 0u){
+    edit_reset();
+    reply_err("FILE", "no content received");
+    return;
+  }
+  if(ota_lora_busy()){
+    reply_err("FILE", "OTA in progress, retry later"); // buffer is kept
+    return;
+  }
+
+  edit_buf[edit_len] = '\0';
+
+  // Report, but do not refuse: a configuration missing a mandatory key is
+  // still worth storing, because the alternative is being unable to write
+  // anything at all over the console.
+  const bool has_name = has_key_line(edit_buf, "NAME");
+  const bool has_lat  = has_key_line(edit_buf, "LAT");
+  const bool has_lon  = has_key_line(edit_buf, "LON");
+  if(!has_name || !has_lat || !has_lon){
+    log_i("FILE WARN missing:");
+    if(!has_name){ log_i(" NAME"); }
+    if(!has_lat) { log_i(" LAT"); }
+    if(!has_lon) { log_i(" LON"); }
+    log_i("\r\n");
+  }
+
+  const uint16_t bytes = edit_len;
+  if(!write_settings_flash(edit_buf)){
+    reply_err("FILE", "flash write failed"); // buffer is kept, host can retry
+    return;
+  }
+
+  edit_reset();
+  log_i("FILE OK ");
+  log_write((uint32_t)bytes);
+  log_i(" bytes, REBOOT to apply\r\n");
   log_flush();
 }
 
@@ -281,6 +390,28 @@ bool settings_edit_handle_line(const char *line, int len){
                     buf[end - 1] == ' '  || buf[end - 1] == '\t')){
     buf[--end] = '\0';
   }
+
+  // A transfer whose host went away must not swallow commands forever.
+  if(edit_mode == EDIT_FILE && (time() - file_last_line_ms) > SETTINGS_EDIT_FILE_TIMEOUT_MS){
+    edit_reset();
+    log_i("FILE ABORTED (timeout)\r\n");
+    log_flush();
+  }
+
+  if(edit_mode == EDIT_FILE){
+    // Everything is content now, except the two commands that end the transfer.
+    const char *arg = match_cmd(buf, "FILE");
+    if(arg != nullptr){
+      if(strcmp(arg, "END") == 0)   { cmd_file_end();   return true; }
+      if(strcmp(arg, "ABORT") == 0) { cmd_file_abort(); return true; }
+    }
+    if(!file_append_line(buf)){
+      edit_reset();
+      reply_err("FILE", "too large, transfer dropped");
+    }
+    return true;
+  }
+
   const char *start = buf;
   while(*start == ' ' || *start == '\t'){
     start++;
@@ -297,6 +428,13 @@ bool settings_edit_handle_line(const char *line, int len){
   if((arg = match_cmd(start, "SET")) != nullptr)      { cmd_set(arg);   return true; }
   if((arg = match_cmd(start, "SAVE")) != nullptr)     { cmd_save();     return true; }
   if((arg = match_cmd(start, "DUMP")) != nullptr)     { cmd_dump();     return true; }
+  if((arg = match_cmd(start, "FILE")) != nullptr){
+    if(strcmp(arg, "BEGIN") == 0) { cmd_file_begin(); return true; }
+    if(strcmp(arg, "ABORT") == 0) { cmd_file_abort(); return true; }
+    if(strcmp(arg, "END") == 0)   { cmd_file_end();   return true; }
+    reply_err("FILE", "expected BEGIN, END or ABORT");
+    return true;
+  }
 
   return false; // not ours, let process_line()/apply_setting() have it
 }

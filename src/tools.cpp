@@ -679,6 +679,23 @@ bool update_settings_in_flash(const char* key, const char* value) {
   return update_multiple_settings_in_flash(keys, values, 1);
 }
 
+// Writes the complete settings.txt text to flash.
+// The watchdog is disabled for the duration: a flash erase+write takes well
+// over 500 ms for two rows and would otherwise trip it.
+bool write_settings_flash(const char *text) {
+  if (text == nullptr) {
+    return false;
+  }
+  if (settings.use_wdt) {
+    wdt_disable();
+  }
+  const bool ok = ota_storage_write_text(OTA_SETTINGS_ADDRESS, OTA_SETTINGS_SIZE, text);
+  if (settings.use_wdt) {
+    wdt_enable(2500, false);
+  }
+  return ok;
+}
+
 // Update multiple settings in flash atomically
 // Uses static buffers to avoid heap fragmentation / large stack allocations.
 bool update_multiple_settings_in_flash(const char** keys, const char** values, size_t count) {
@@ -697,26 +714,20 @@ bool update_multiple_settings_in_flash(const char** keys, const char** values, s
   memset(existing, 0, sizeof(existing));
   memset(output,   0, sizeof(output));
 
+  // An empty or unreadable block is not an error: the keys are then simply
+  // appended to an empty document. This used to be refused, together with
+  // anything shorter than 100 bytes, on the assumption that a short block meant
+  // a truncated file. That heuristic blocked the two cases where patching is
+  // most useful: a factory device carrying only a dummy line, and a station
+  // whose configuration is damaged and needs repairing over the console.
   if (!ota_storage_read_text(OTA_SETTINGS_ADDRESS, existing, sizeof(existing))) {
-    log_e("Settings flash empty, refusing update\r\n");
-    return false;
-  } else {
-    size_t existing_len = strlen(existing);
-    if (existing_len < 100u) {
-      // Settings appear truncated. Refuse partial rewrite until user uploads a valid file.
-      log_e("Settings truncated (");
-      char lbuf[8]; snprintf(lbuf, sizeof(lbuf), "%u", (unsigned)existing_len);
-      log_e(lbuf);
-      log_e(" bytes), refusing update\r\n");
-      return false;
-    } else {
-      if (debug_enabled()) {
-        char lbuf[8]; snprintf(lbuf, sizeof(lbuf), "%u", (unsigned)existing_len);
-        log_i("Settings read: ");
-        log_i(lbuf);
-        log_i(" bytes\r\n");
-      }
-    }
+    existing[0] = '\0';
+    log_i("SF:empty, creating\r\n");
+  } else if (debug_enabled()) {
+    char lbuf[8]; snprintf(lbuf, sizeof(lbuf), "%u", (unsigned)strlen(existing));
+    log_i("Settings read: ");
+    log_i(lbuf);
+    log_i(" bytes\r\n");
   }
 
   bool keys_found[16] = {false};
@@ -828,17 +839,7 @@ bool update_multiple_settings_in_flash(const char** keys, const char** values, s
     log_i(lbuf); log_flush();
   }
 
-  // Disable WDT for the duration of flash erase+write (can take >500ms for 2 rows).
-  // Re-enable immediately after so normal watchdog protection resumes.
-  if (settings.use_wdt) {
-    wdt_disable();
-  }
-
-  bool write_ok = ota_storage_write_text(OTA_SETTINGS_ADDRESS, OTA_SETTINGS_SIZE, output);
-
-  if (settings.use_wdt) {
-    wdt_enable(2500, false);
-  }
+  bool write_ok = write_settings_flash(output);
 
   if (!write_ok) {
     log_e("SF:write failed\r\n");
