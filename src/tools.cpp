@@ -6,6 +6,7 @@
 #include "ota_lora.h"
 #include "config_update.h"
 #include "settings_edit.h"
+#include "status.h"
 #include <Adafruit_TinyUSB.h>
 
 extern LORA_MODULE lora_module;
@@ -139,35 +140,58 @@ bool parse_file(char * filename){
   return ret;
 }
 
-void read_serial_cmd(){
-  #define CMDBUFFERSIZE 127
-  static char buffer [CMDBUFFERSIZE];
-  static int co = 0;
-  bool ok = false;
+#define CMDBUFFERSIZE 127
 
-  while (Serial.available()){
-    usb_connected = true;
-    usb_last_activity_ms = millis();
+// Assembles lines from one console and dispatches them. Each port needs its own
+// buffer and index: interleaving bytes from two sources into one buffer would
+// splice their lines together.
+static void read_console(Stream &stream, char *buffer, int &co, bool is_usb){
+  while (stream.available()){
+    if(is_usb){
+      usb_connected = true;
+      usb_last_activity_ms = millis();
+    }
     // Drop an over-long line instead of writing past the buffer: input longer
     // than CMDBUFFERSIZE without a newline used to corrupt memory here.
     if(co >= (CMDBUFFERSIZE - 1)){
       log_e("Serial cmd too long, discarded\r\n");
       co = 0;
     }
-    buffer[co] = Serial.read();
+    buffer[co] = stream.read();
     if(buffer[co] == '\n'){
       // Settings-editor commands (SET/SAVE/DUMP/...) get the raw line first:
       // process_line() would swallow a second '=' and strip the spaces out of
       // a value like "SET NAME=Wendelstein Nord".
       if(!settings_edit_handle_line(buffer, co)){
-        ok = process_line(buffer, co, &apply_setting); // Line complete
+        process_line(buffer, co, &apply_setting); // Line complete
       }
       co=-1; // against +1 below
     }
     co++;
   }
-  if(ok){
-    // Apply new mppt voltage
+}
+
+void read_serial_cmd(){
+  static char usb_buffer[CMDBUFFERSIZE];
+  static int usb_co = 0;
+  read_console(Serial, usb_buffer, usb_co, true);
+
+  // The debug UART is a second console, so a test rig or a long-term monitor
+  // can drive the station without USB attached - which matters because a
+  // connected USB host keeps the MCU out of its normal low-power behaviour.
+  //
+  // It only exists while DEBUG=1, since setup() ends the UART and releases the
+  // pins otherwise. Reading it is free: SERCOM1 is already running for the log
+  // output and its RX pad is already configured, so this adds no current.
+  //
+  // It cannot wake the MCU: SERCOM1 is unclocked in standby, so a command that
+  // arrives while the station sleeps is lost. sleep_window_over() does check
+  // for pending bytes, so a command lands as soon as the station is up for any
+  // other reason - bounded by the send interval. Senders must retry.
+  if(debug_enabled()){
+    static char uart_buffer[CMDBUFFERSIZE];
+    static int uart_co = 0;
+    read_console(DEBUGSER, uart_buffer, uart_co, false);
   }
 }
 
@@ -543,6 +567,41 @@ SETTING_FN(cmd_reboot,      log_flush(); NVIC_SystemReset())
 
 #undef SETTING_FN
 
+// Restarts into the UF2 bootloader. uf2-samdx1 looks for this magic in the last
+// word of RAM on reset, which is what a double tap on the reset button sets.
+// Verified present in bootloader-breezedude-16k.bin and v4.1.5.
+static bool cmd_bootloader(const char *v){
+  (void)v;
+  log_i("Entering UF2 bootloader\r\n");
+  log_flush();
+  *((volatile uint32_t *)(HMCRAMC0_ADDR + HMCRAMC0_SIZE - 4u)) = 0xf01669efUL;
+  NVIC_SystemReset();
+  return true;
+}
+
+// Moves time() forward by the given number of seconds.
+//
+// time() is millis() plus the accumulated sleep time and wraps after 49.7 days,
+// with the signed halfway point at 24.8 days. Both boundaries have produced
+// real bugs, and neither is reachable in a test run of sensible length. This
+// jumps to just before one so the wrap can be observed in seconds instead of
+// weeks. Everything scheduled becomes due at once right after the jump, which
+// is expected and is itself worth watching.
+static bool cmd_time_skip(const char *v){
+  const uint32_t seconds = strtoul(v, nullptr, 10);
+  sleeptime_cum += seconds * 1000UL;
+  log_i("TIME_SKIP OK, time is now ms: ", time());
+  log_i("\r\n");
+  log_flush();
+  return true;
+}
+
+static bool cmd_status(const char *v){
+  (void)v;
+  status_print_json();
+  return true;
+}
+
 static bool cmd_ota_confirm(const char *v){
   (void)v;
   return ota_ab_confirm_current();
@@ -618,6 +677,9 @@ static const SettingEntry setting_table[] = {
   {"OTA_CONFIRM",                cmd_ota_confirm, SETTING_CMD},
   {"OTA_BOOT_SLOT",              cmd_ota_boot_slot, SETTING_CMD},
 
+  {"STATUS",                     cmd_status,      SETTING_CMD}, // one JSON line
+  {"BOOTLOADER",                 cmd_bootloader,  SETTING_CMD}, // restart into UF2
+  {"TIME_SKIP",                  cmd_time_skip,   SETTING_CMD}, // seconds, for wrap tests
   {"GET_UUID",                   cmd_get_uuid,    SETTING_CMD},
   {"SLEEP",                      cmd_sleep,       SETTING_CMD},
   {"FORMAT",                     cmd_format,      SETTING_CMD},

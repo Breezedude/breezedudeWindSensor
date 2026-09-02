@@ -145,7 +145,12 @@ void wakeup(){
 // Wake reasons that end a sleep window. Any other wakeup (a LoRa DIO edge, a
 // configured external pin interrupt) is serviced and then slept through again.
 static bool sleep_window_over(){
-  return wakeup_source == WAKEUP_RTC || wakeup_source == WAKEUP_USB || Serial.available();
+  // DEBUGSER cannot wake the MCU - SERCOM1 is unclocked in standby - but once
+  // the station is up for any other reason, a pending console command should
+  // end the sleep window instead of being sat on for another cycle.
+  return wakeup_source == WAKEUP_RTC || wakeup_source == WAKEUP_USB
+         || Serial.available()
+         || (debug_enabled() && DEBUGSER.available());
 }
 
 // Service a LoRa packet that arrived while sleeping.
