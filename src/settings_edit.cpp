@@ -146,6 +146,22 @@ static void cmd_dump(){
   log_flush();
 }
 
+// Characters that process_line() cannot carry through on the next boot, so a
+// value containing one would silently come back different from what was sent:
+//   '#' '!' '>'  end the line, truncating the value
+//   '?'          toggles literal mode and is swallowed
+//   >= 127       are skipped outright (so no umlauts in a station name)
+// Returns the offending character, or 0 if the value round-trips cleanly.
+static char value_unstorable_char(const char *value){
+  for(const char *p = value; *p != '\0'; ++p){
+    const unsigned char c = (unsigned char)*p;
+    if(c == '#' || c == '!' || c == '>' || c == '?' || c >= 127u){
+      return *p;
+    }
+  }
+  return 0;
+}
+
 static void cmd_set(const char *arg){
   const char *eq = strchr(arg, '=');
   if(eq == nullptr){
@@ -187,6 +203,23 @@ static void cmd_set(const char *arg){
     // of those would make parse_file() replay it on every boot.
     reply_err("SET", "unknown or non-persistable key", key);
     return;
+  }
+
+  const char bad = value_unstorable_char(value);
+  if(bad != 0){
+    const char detail[4] = { '\'', bad, '\'', '\0' };
+    reply_err("SET", "character cannot be stored", detail);
+    return;
+  }
+
+  // A value containing spaces needs process_line()'s literal mode switched on,
+  // otherwise the next boot reads "Wendelstein Nord" back as "WendelsteinNord".
+  // The '?' is consumed by the parser and is not part of the value.
+  char stored[SETTINGS_EDIT_VALUE_MAX + 1];
+  if(strpbrk(value, " \t") != nullptr){
+    stored[0] = '?';
+    snprintf(stored + 1, sizeof(stored) - 1, "%s", value);
+    value = stored;
   }
 
   const char *fail = stage_set(key, value);

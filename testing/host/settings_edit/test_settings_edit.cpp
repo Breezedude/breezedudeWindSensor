@@ -104,12 +104,13 @@ int main(){
   feed("SET NAME=Wendelstein Nord");
   check(out_has("SET OK NAME"),          "spaces inside a value are preserved (accepted)");
   feed("SETLIST");
-  check(out_has("NAME=Wendelstein Nord"),"  ... and stored verbatim");
+  // stored with the '?' literal prefix, see the literal-prefix section below
+  check(out_has("NAME=?Wendelstein Nord"),"  ... and stored verbatim");
 
   feed("SETCLEAR");
   feed("SET NAME = Foo Bar ");
   feed("SETLIST");
-  check(out_has("NAME=Foo Bar"),         "spaces around '=' trimmed, inner/trailing handled");
+  check(out_has("NAME=?Foo Bar"),        "spaces around '=' trimmed, inner/trailing handled");
 
   feed("SETCLEAR");
   feed("SET NAME=A=B");
@@ -122,6 +123,31 @@ int main(){
   // SETLIST terminates each line with \r\n itself, so the value kept the CR
   // only if we see it twice.
   check(out_has("NAME=Foo\r\n") && !out_has("NAME=Foo\r\r\n"), "trailing CR stripped");
+
+  printf("\nliteral prefix (process_line compatibility)\n");
+  feed("SETCLEAR");
+  feed("SET NAME=Wendelstein Nord");
+  feed("SETLIST");
+  check(out_has("NAME=?Wendelstein Nord"),
+        "value with spaces gets the '?' literal prefix");
+  feed("SETCLEAR");
+  feed("SET NAME=Kufstein");
+  feed("SETLIST");
+  check(out_has("NAME=Kufstein") && !out_has("NAME=?"),
+        "value without spaces gets no prefix");
+  feed("SETCLEAR");
+  feed("SET LAT=47.7011");
+  feed("SETLIST");
+  check(out_has("LAT=47.7011"), "numbers are untouched");
+
+  feed("SETCLEAR");
+  check(feed("SET NAME=Bad#Name") && out_has("SET ERR character cannot be stored: '#'"),
+        "'#' refused (would truncate the line on reboot)");
+  check(feed("SET NAME=Bad!Name") && out_has("cannot be stored: '!'"), "'!' refused");
+  check(feed("SET NAME=Bad>Name") && out_has("cannot be stored: '>'"), "'>' refused");
+  check(feed("SET NAME=Bad?Name") && out_has("cannot be stored: '?'"), "'?' refused");
+  feed("SETLIST");
+  check(out_has("STAGED 0"), "  ... and none of them was staged");
 
   printf("\nvalidation\n");
   feed("SETCLEAR");
