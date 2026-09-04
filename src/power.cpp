@@ -183,7 +183,7 @@ void go_sleep(){
 
 // shut down the USB peripheral
   if(first_sleep && !keep_usb){
-    log_i("Disable USB\r\n");
+    log_d("Disable USB\r\n");
     usb_ignore_detach_event = true;
     USB->DEVICE.CTRLA.bit.ENABLE = 0;                   
     while(USB->DEVICE.SYNCBUSY.bit.ENABLE){};
@@ -207,7 +207,7 @@ void go_sleep(){
 
   if(deep_undervoltage){
     radio_sleep();
-    log_i("Deep UV (<2.9V). Sleeping until solar charges or voltage recovers\r\n");
+    log_e("Deep UV (<2.9V). Sleeping until solar charges or voltage recovers\r\n");
     log_flush();
     // PV_CHARGE (PB23) is active-LOW: falls LOW when the solar charger draws ~3mA.
     // INPUT_PULLUP ensures pin is HIGH (defined state); EIC only fires on genuine FALLING edge.
@@ -229,7 +229,7 @@ void go_sleep(){
 
   if(undervoltage){
     radio_sleep(); // ensure radio is in PHY sleep and DIO1 interrupt is detached
-    log_i("Undervoltage. will sleep for ", time_to_sleep);
+    log_w("Undervoltage. will sleep for ", time_to_sleep);
     log_flush();
     sleep(false); // will sleep in 30min blocks with 70µA current draw until battery recovers.
     wakeup(); // re-read battery so undervoltage clears if voltage has recovered
@@ -261,9 +261,9 @@ void go_sleep(){
   //if(!time_to_sleep){ return;} // if time_to_sleep = 0, do not sleep at all
 
   if(time_to_sleep > 200000UL) {
-    log_i("will sleep for s: ", time_to_sleep / 1000);
+    log_d("will sleep for s: ", time_to_sleep / 1000);
   } else {
-    log_i("will sleep for ms: ", time_to_sleep);
+    log_d("will sleep for ms: ", time_to_sleep);
   }
   log_flush();
 

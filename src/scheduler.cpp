@@ -90,10 +90,10 @@ static void defer_next_send(uint32_t &last_msg, uint32_t interval, const char *l
   next_tx_time = time() + retry_delay;
   sleep_allowed = time() + 1;
 
-  log_i("LBT: defer ");
-  log_i(label);
-  log_i(" TX by ms: ", retry_delay);
-  log_i("\r\n");
+  log_d("LBT: defer ");
+  log_d(label);
+  log_d(" TX by ms: ", retry_delay);
+  log_d("\r\n");
 }
 
 // calc time to sleep til next fanet message needs to be send
@@ -113,7 +113,7 @@ uint32_t calc_time_to_sleep(){
     } else if(sensor.batt_volt < settings.reduce_interval_voltage){
       reduced_interval = true;
       broadcast_scale_factor = 3;
-      log_i("Low voltage\r\n");
+      log_w("Low voltage\r\n");
     } else {
       // battery voltage is normal
       reduced_interval = false;
@@ -162,7 +162,7 @@ uint32_t calc_time_to_sleep(){
   }
 
   if( !tts && loopcounter > 25){
-    log_e("just looping, will sleep\r\n");
+    log_w("just looping, will sleep\r\n");
     tts = 12000; // set to sleep to keep updating sensor data
   }
 
@@ -174,28 +174,28 @@ uint32_t calc_time_to_sleep(){
 
 static void print_data(){
   if((debug_enabled())){
-    log_i("\r\nmillis: ", millis()); 
-    log_i("time: ", time()); 
+    log_d("\r\nmillis: ", millis()); 
+    log_d("time: ", time()); 
     //log_i("Wind dir_raw: ", wind_dir_raw);
-    log_i("Wind Heading: ", sensor.wind_heading);
-    log_i("Wind Speed: ", sensor.wind_speed);
-    log_i("Wind Gust: ", sensor.wind_gust);
-    log_i("Temp: ", sensor.temperature);
+    log_d("Wind Heading: ", sensor.wind_heading);
+    log_d("Wind Speed: ", sensor.wind_speed);
+    log_d("Wind Gust: ", sensor.wind_gust);
+    log_d("Temp: ", sensor.temperature);
     //log_i("Humd: ", humidity);
     if(settings.use_baro){
-    log_i("Baro: ", sensor.baro_pressure);
-    log_i("PCB_Temp: ", sensor.baro_temp);
+    log_d("Baro: ", sensor.baro_pressure);
+    log_d("PCB_Temp: ", sensor.baro_temp);
     }
     if(is_wsxx()) {
-      log_i("VCC: ", sensor.wsxx_vcc);
+      log_d("VCC: ", sensor.wsxx_vcc);
       //log_i("LUX: ", light_lux);
       //log_i("UV: ", uv_level);
     }
-    log_i("\r\n");
-    log_i("V_Bat: ", sensor.batt_volt);
-    log_i("Bat_perc: ", sensor.batt_perc);
-    log_i("PV_charge: ", sensor.pv_charging);
-    log_i("PV_done: ", sensor.pv_done);
+    log_d("\r\n");
+    log_d("V_Bat: ", sensor.batt_volt);
+    log_d("Bat_perc: ", sensor.batt_perc);
+    log_d("PV_charge: ", sensor.pv_charging);
+    log_d("PV_done: ", sensor.pv_done);
   }
 }
 
@@ -208,7 +208,7 @@ static TxAttemptResult send_msg_weather(){
   
   WindSample current_wind = get_wind_from_hist(settings.wind_age);
   if(!current_wind.valid){
-    log_i("No valid wind data\r\n");
+    log_w("No valid wind data\r\n");
     return TX_ATTEMPT_NONE;
   }
   led_status(1);
@@ -224,7 +224,7 @@ static TxAttemptResult send_msg_weather(){
   } 
   if( sensor.wind_speed > (sensor.wind_gust +3)){
     sensor.wind_gust = sensor.wind_speed;
-    log_i("adapting gust speed\r\n");
+    log_d("adapting gust speed\r\n");
   }
 
   weatherData wd;
@@ -265,7 +265,7 @@ static TxAttemptResult send_msg_weather(){
     wd.wGust = 7;      
     wd.temp = 10;
     wd.Humidity = 15;
-    log_i("\r\nTESTMODE - Fake values\r\n");
+    log_w("\r\nTESTMODE - Fake values\r\n");
   }
 
   log_i("\r\nSending Weather\r\n");
@@ -309,13 +309,13 @@ static bool allowed_to_send_weather(){
  // Print reasons for not beeing ready
   if(!ok){
     if(sensor.last_data && !sensor.next_baro_reading && !undervoltage){ // ever got some sensor data and baro currently not waiting for data
-      log_i("Wind Sensor data age: ", time()- sensor.last_data);
-      log_i("Baro data age: ", time()- sensor.last_baro_reading);
+      log_d("Wind Sensor data age: ", time()- sensor.last_data);
+      log_d("Baro data age: ", time()- sensor.last_baro_reading);
     }
     #if BREEZEDUDE_ENABLE_GPS
     if(settings.use_gps){
       if(time()-sensor.last_gps_valid > 3000){
-        log_i("No GPS fix");
+        log_w("No GPS fix");
       }
     }
     #endif
@@ -437,8 +437,8 @@ static void handle_stale_wind_data(){
     return;
   }
   const uint32_t wdata_age = time() - sensor.last_data;
-  log_i("Wdata not ready. Wdata age: ", wdata_age);
-  log_i("Last Baro reading age: ", (time() - sensor.last_baro_reading));
+  log_w("Wdata not ready. Wdata age: ", wdata_age);
+  log_d("Last Baro reading age: ", (time() - sensor.last_baro_reading));
   if(wdata_age > 3600000UL){
     log_e("Wind data stale > 1h, restarting to recover\r\n");
     log_flush();
@@ -460,7 +460,7 @@ static void tx_weather_none(){
   // no valid wind data yet, retry in 10 seconds
   last_msg_weather = time() - (settings.broadcast_interval_weather * broadcast_scale_factor) + 10000;
   sleep_allowed = time() + 1;
-  log_i("Weather TX skipped, retry in 10s\r\n");
+  log_w("Weather TX skipped, retry in 10s\r\n");
 }
 
 static TxAttemptResult tx_send_info(){
@@ -474,8 +474,8 @@ static void tx_info_deferred(uint32_t retry_delay){
   ota_lora_defer_hwinfo_retry(retry_delay);
   next_tx_time = time() + retry_delay;
   sleep_allowed = time() + 1;
-  log_i("LBT: defer info TX by ms: ", retry_delay);
-  log_i("\r\n");
+  log_d("LBT: defer info TX by ms: ", retry_delay);
+  log_d("\r\n");
 }
 
 static const TxJob tx_jobs[] = {
@@ -542,7 +542,7 @@ void tx_service_active_send(){
 
   if( (time()- send_active > (3500))){
     led_error(1);
-    log_i("Send timed out\r\n");
+    log_w("Send timed out\r\n");
     led_status(0);
     send_active =0;
     sleep_allowed = time() + (1);

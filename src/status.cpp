@@ -175,7 +175,7 @@ void status_print_json(){
   // truncated on a long name.
   char buf[768];
   status_build_json(buf, sizeof(buf));
-  log_i(buf);
-  log_i("\r\n");
+  log_raw(buf);
+  log_raw("\r\n");
   log_flush();
 }

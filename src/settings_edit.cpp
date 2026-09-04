@@ -140,7 +140,7 @@ static void cmd_dump(){
       break;
     }
     chunk[n] = '\0';
-    log_i(chunk);
+    log_raw(chunk);
   }
   log_i("\r\nDUMP END\r\n");
   log_flush();

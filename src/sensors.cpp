@@ -45,7 +45,7 @@ void switch_sensor_power(bool state){
       pinPeripheral(PIN_RX, PIO_SERCOM);
       pinPeripheral(PIN_TX, PIO_SERCOM);
       SENSOR_UART.begin(115200 * div_cpu);
-      log_i("WS sensor power ON\r\n");
+      log_d("WS sensor power ON\r\n");
     }
   }
   if(!state && current_power_state){ // turn off
@@ -56,7 +56,7 @@ void switch_sensor_power(bool state){
       // sensor through its input protection diodes when its VCC is removed.
       pinDisable(PIN_TX); // PA10 - UART idles HIGH, would source current into sensor
       pinDisable(PIN_RX); // PA11 - symmetric isolation
-      log_i("WS sensor power OFF\r\n");
+      log_d("WS sensor power OFF\r\n");
     }
   }
 }
@@ -65,7 +65,7 @@ void switch_sensor_power(bool state){
 // conversion, so a function named "voltage to percent" cut the sensor supply
 // and set global flags as a side effect.
 void battery_update_power_state(float v) {
-  if(v < 0.8f) { led_error(1); log_i("V_Batt read error: ", v); return; } // bad reading, keep state
+  if(v < 0.8f) { led_error(1); log_w("V_Batt read error: ", v); return; } // bad reading, keep state
 
   // Deep UV: 3 consecutive readings < 2.9V trigger extended sleep for solar charging recovery.
   // Hysteresis: clears when voltage rises above 3.0V.
@@ -177,8 +177,8 @@ void read_batt_perc(){
 
     battery_update_power_state(sensor.batt_volt);
     sensor.batt_perc = battery_soc_percent(sensor.batt_volt);
-    log_i("V_Bat: ", sensor.batt_volt);
-    log_i("Bat_perc: ", sensor.batt_perc);
+    log_d("V_Bat: ", sensor.batt_volt);
+    log_d("Bat_perc: ", sensor.batt_perc);
   }
 }
 
@@ -229,7 +229,7 @@ bool init_imu(){
       // add other IMU models here
 
     settings.use_imu = false;
-    log_e("IMU not found");
+    log_w("IMU not found");
     return false;
 }
 
@@ -277,7 +277,7 @@ bool init_baro(){
     }
     #endif
 
-    log_e("Baro: not found\r\n");
+    log_w("Baro: not found\r\n");
     settings.use_baro = false;
     return false; 
 }
@@ -421,12 +421,12 @@ void forward_analog_test_serial(){
       bool pulse = davis_speed_pulse;
       davis_speed_pulse = false; // clear after reading
       log_write((uint32_t)time());
-      log_i(" Speed/Dir state: ");
-      log_i(" ");
-      log_i(pulse ? "-" : "o");
-      log_i("\t");
+      log_d(" Speed/Dir state: ");
+      log_d(" ");
+      log_d(pulse ? "-" : "o");
+      log_d("\t");
       log_write(d);
-      log_i("\r\n");
+      log_d("\r\n");
     }
     
   } else {
@@ -459,7 +459,7 @@ bool set_value(char* key,  char* value){
     sensor.wsxx_vcc = parse_decimal_fast(value); 
     sensor.last_data =time();
     
-    log_i("WSXX data complete\r\n");
+    log_d("WSXX data complete\r\n");
     return true;
   }
 
@@ -589,8 +589,8 @@ int read_ws85_uart(){
       if(settings.verbose_usb && usb_connected){
         ws85uart.printWS85Measurement(w85m, Serial);
       } else {
-        log_i("Wind: ", w85m.windSpeed);
-        log_i("Dir: " , w85m.windDirection);
+        log_d("Wind: ", w85m.windSpeed);
+        log_d("Dir: " , w85m.windDirection);
       }
 
       add_wind_history_dir(w85m.windDirection);
@@ -606,7 +606,7 @@ int read_ws85_uart(){
   }
   errorcount++;
   if(errorcount == 20){ // try a single baud resync after repeated failed reads
-    log_i("Trying WS85 baud sync\r\n");
+    log_w("Trying WS85 baud sync\r\n");
     ws85uart.set_baud_115200();
   }
   if(errorcount > 1000){
@@ -666,12 +666,12 @@ int read_windnerd(){
     int direction = ((uint16_t)b1 << 8) | b2;
     add_wind_history_dir(direction);
 
-    log_i("Wind: ", wind);
-    log_i("Direction: ", direction);
+    log_d("Wind: ", wind);
+    log_d("Direction: ", direction);
     return RESP_COMPLETE;
   }
 
-  log_i("Data invalid\r\n");
+  log_w("Data invalid\r\n");
   return RESP_OK;
 }
   
@@ -712,9 +712,9 @@ if(settings.sensor_type == s_DAVIS6410){
 }
 
 #if 0
-  log_i("DIR samples:");
-  for (int i = 0; i < N_DIR; i++) { log_i(" ", samples[i]); }
-  log_i("\r\n");
+  log_d("DIR samples:");
+  for (int i = 0; i < N_DIR; i++) { log_d(" ", samples[i]); }
+  log_d("\r\n");
 #endif
 
 
@@ -723,8 +723,8 @@ return val;
 
 
 void calc_pulse_sensor(uint32_t pulses, uint32_t dmillis){
-  log_i("delta_t: ", dmillis);
-  log_i("pulses: ", pulses); 
+  log_d("delta_t: ", dmillis);
+  log_d("pulses: ", pulses); 
   sensor.wind_dir_raw = read_wind_dir();
   add_wind_history_dir(sensor.wind_dir_raw);
   
@@ -735,8 +735,8 @@ void calc_pulse_sensor(uint32_t pulses, uint32_t dmillis){
   // ... other analog sensors
   add_wind_history_wind(sensor.wind_speed);
   add_wind_history_gust(sensor.wind_speed);
-  log_i("wind speed: ", sensor.wind_speed); 
-  log_i("wind dir (raw): ", sensor.wind_dir_raw); 
+  log_d("wind speed: ", sensor.wind_speed); 
+  log_d("wind dir (raw): ", sensor.wind_dir_raw); 
 }
 
 

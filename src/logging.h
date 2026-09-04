@@ -36,6 +36,27 @@ void log_write_hex_v(uint32_t num, uint8_t width = 0);
 // already gets the full detail via log_write_v above.
 void log_s(const char * msg);
 void log_s(const char * msg, uint32_t num, const char * suffix = "");
+// Every line is marked with its level: E| endangers regular operation,
+// W| a fault that does not weigh heavily, I| normal, D| extra detail.
+// The marker is written once per line, not once per call, so a message built
+// from several log_i()/log_write() fragments still carries exactly one.
+// Warnings share the errors_en gate with log_e(): both are worth having on the
+// debug UART when the ordinary chatter is switched off.
+// Extra detail - same reach as log_i(), only marked D| instead of I|. For
+// numbers and internals: chunk counters, raw samples, sleep durations.
+void log_d(const char * msg);
+void log_d(const char * msg, uint32_t num);
+void log_d(const char * msg, int32_t num);
+void log_d(const char * msg, int num);
+void log_d(const char * msg, float num);
+// Machine readable payload: written without a line marker, so a DUMP stays a
+// verbatim copy of the settings file. Gated like log_i().
+void log_raw(const char * msg);
+void log_w(const char * msg);
+void log_w(const char * msg, uint32_t num);
+void log_w(const char * msg, int32_t num);
+void log_w(const char * msg, int num);
+void log_w(const char * msg, float num);
 void log_e(const char * msg);
 void log_flush();
 void log_ser_begin();

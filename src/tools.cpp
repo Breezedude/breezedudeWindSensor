@@ -36,7 +36,7 @@ bool setup_flash(){
   if(ota_storage_read_text(OTA_SETTINGS_ADDRESS, probe, sizeof(probe))){
     log_v("Bootloader settings storage ready\r\n");
   } else {
-    log_i("Bootloader settings storage empty, waiting for user config\r\n");
+    log_e("Bootloader settings storage empty, waiting for user config\r\n");
   }
   return true;
 }
@@ -154,7 +154,7 @@ static void read_console(Stream &stream, char *buffer, int &co, bool is_usb){
     // Drop an over-long line instead of writing past the buffer: input longer
     // than CMDBUFFERSIZE without a newline used to corrupt memory here.
     if(co >= (CMDBUFFERSIZE - 1)){
-      log_e("Serial cmd too long, discarded\r\n");
+      log_w("Serial cmd too long, discarded\r\n");
       co = 0;
     }
     buffer[co] = stream.read();
@@ -205,9 +205,9 @@ void log_v_hex_dump(const uint8_t *data, size_t len){
     size_t chunk = min((size_t)24, len - i);
     for(size_t j = 0; j < chunk; j++){
       log_write_hex(data[i + j], 2);
-      log_i(" ");
+      log_d(" ");
     }
-    log_i("\r\n");
+    log_d("\r\n");
     i += chunk;
   }
 }
@@ -447,7 +447,7 @@ static void cmd_print_uuid() {
   String uuid = config_update_get_full_uuid_hex();
   char line[48];
   snprintf(line, sizeof(line), "UUID=%s\r\n", uuid.c_str());
-  log_i(line);
+  log_raw(line);
   log_flush();
 }
 
@@ -486,7 +486,7 @@ static uint32_t seconds_to_ms(const char *v){ return (uint32_t)atoi(v) * 1000u; 
 // --- station identity and position ---
 static bool set_name(const char *v){
   if(strlen(v) >= sizeof(settings.station_name)){
-    log_e("NAME too long, truncated\r\n");
+    log_w("NAME too long, truncated\r\n");
   }
   snprintf(settings.station_name, sizeof(settings.station_name), "%s", v);
   return true;
@@ -624,7 +624,7 @@ static bool cmd_format(const char *v){
     log_flush();
     NVIC_SystemReset();
   } else {
-    log_i("Error resetting bootloader settings\r\n");
+    log_e("Error resetting bootloader settings\r\n");
   }
   return true;
 }
@@ -765,7 +765,7 @@ bool update_multiple_settings_in_flash(const char** keys, const char** values, s
     return true;
   }
   if (count > 16) {
-    log_e("Too many settings to update at once\r\n");
+    log_w("Too many settings to update at once\r\n");
     return false;
   }
 
@@ -795,7 +795,7 @@ bool update_multiple_settings_in_flash(const char** keys, const char** values, s
   bool keys_found[16] = {false};
   size_t out_pos = 0;
 
-  log_i("SF:loop\r\n"); log_flush();
+  log_d("SF:loop\r\n"); log_flush();
 
   const char* src = existing;
   while (*src != '\0') {
@@ -868,7 +868,7 @@ bool update_multiple_settings_in_flash(const char** keys, const char** values, s
     src = line_end;
   }
 
-  log_i("SF:append\r\n"); log_flush();
+  log_d("SF:append\r\n"); log_flush();
 
   // Append keys that were not found in the existing file
   for (size_t i = 0; i < count; ++i) {
@@ -898,7 +898,7 @@ bool update_multiple_settings_in_flash(const char** keys, const char** values, s
   {
     char lbuf[24];
     snprintf(lbuf, sizeof(lbuf), "SF:write %u bytes\r\n", (unsigned)out_pos);
-    log_i(lbuf); log_flush();
+    log_d(lbuf); log_flush();
   }
 
   bool write_ok = write_settings_flash(output);
@@ -908,7 +908,7 @@ bool update_multiple_settings_in_flash(const char** keys, const char** values, s
     return false;
   }
 
-  log_i("SF:done\r\n"); log_flush();
+  log_d("SF:done\r\n"); log_flush();
   return true;
 }
 
@@ -1050,7 +1050,7 @@ static size_t build_version_text(char *out, size_t out_len){
     UniqueID[12], UniqueID[13], UniqueID[14], UniqueID[15]);
 
   if(n <= 0 || (size_t)n >= out_len){
-    log_e("Version text does not fit\r\n");
+    log_w("Version text does not fit\r\n");
     return 0;
   }
   return (size_t)n;
@@ -1075,7 +1075,7 @@ bool create_versionfile(const char *filename){
   if(ok){
     log_i("Version file updated\r\n");
   } else {
-    log_e("Version file write failed\r\n");
+    log_w("Version file write failed\r\n");
   }
   return ok;
 }

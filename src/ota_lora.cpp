@@ -269,7 +269,7 @@ static String ota_make_signed_payload(const ota_offer_pkt_t &pkt) {
 static bool ota_verify_manifest_signature(const ota_offer_pkt_t &pkt) {
   const uint32_t now_ts = (uint32_t)time();
   if(pkt.expires && now_ts && now_ts > pkt.expires) {
-    log_i("OTA manifest expired\r\n");
+    log_w("OTA manifest expired\r\n");
     return false;
   }
 
@@ -351,7 +351,7 @@ static void ota_pause_watchdog() {
   if(settings.use_wdt && !s_ota_wdt_paused) {
     wdt_disable();
     s_ota_wdt_paused = true;
-    log_i("OTA WDT paused\r\n");
+    log_d("OTA WDT paused\r\n");
   }
 }
 
@@ -359,7 +359,7 @@ static void ota_resume_watchdog() {
   if(settings.use_wdt && s_ota_wdt_paused) {
     wdt_enable(2500, false);
     s_ota_wdt_paused = false;
-    log_i("OTA WDT resumed\r\n");
+    log_d("OTA WDT resumed\r\n");
   }
 }
 
@@ -693,7 +693,7 @@ static bool ota_send_ack(uint8_t status) {
   dis_rx_sleep();
   int state = radio_phy->transmit((uint8_t *)&ack, sizeof(ack));
   if(state != RADIOLIB_ERR_NONE) {
-    log_i("OTA ack failed\r\n");
+    log_w("OTA ack failed\r\n");
     en_rx_sleep();
     return false;
   }
@@ -722,11 +722,11 @@ static bool ota_enter_update_mode() {
   if(!ota_apply_radio_mode(true)) {
     ota_reset_state(OTA_ERR_RADIO);
     ota_resume_watchdog();
-    log_i("OTA radio switch failed\r\n");
+    log_w("OTA radio switch failed\r\n");
     return false;
   }
 
-  log_i("OTA fast RX mode enabled\r\n");
+  log_d("OTA fast RX mode enabled\r\n");
   return true;
 }
 
@@ -771,7 +771,7 @@ static bool ota_begin_session(const ota_offer_pkt_t &pkt) {
   }
 
   if(!ota_verify_manifest_signature(pkt)) {
-    log_i("OTA signature invalid on device\r\n");
+    log_w("OTA signature invalid on device\r\n");
     ota_send_ack(OTA_ERR_SIGNATURE);
     ota_abort_session(OTA_ERR_SIGNATURE);
     return false;
@@ -816,7 +816,7 @@ static bool ota_process_fanet_ack(const uint8_t *data, size_t len) {
     return false;
   }
 
-  log_i("OTA nonce RX mode end (FANET ACK received)\r\n");
+  log_d("OTA nonce RX mode end (FANET ACK received)\r\n");
   return ota_enter_update_mode();
 }
 
@@ -836,7 +836,7 @@ static bool ota_process_config_update(const uint8_t *data, size_t len) {
 
   // Minimum config packet: prefix(4) + payload + signature(64)
   if (len < (sizeof(ota_pkt_prefix_t) + 70)) {
-    log_e("Config update packet too small\r\n");
+    log_w("Config update packet too small\r\n");
     ota_send_ack(OTA_ERR_SIZE);
     return true; // Consumed the packet even if invalid
   }
@@ -866,7 +866,7 @@ static bool ota_process_config_update(const uint8_t *data, size_t len) {
     delay(200); // let the LoRa TX finish before reset
     NVIC_SystemReset();
   } else {
-    log_e("Config update failed\r\n");
+    log_w("Config update failed\r\n");
     ota_send_ack(OTA_ERR_SIGNATURE); // Use signature error for config failures
     ota_abort_session(OTA_ERR_SIGNATURE);
   }
@@ -1011,7 +1011,7 @@ static bool ota_process_abort(const uint8_t *data, size_t len) {
   // waiting for the first START packet. During offer_pending (before FANET ACK)
   // an IDLE abort means "no update available" and must be honoured.
   if(s_ota.active && pkt->status == OTA_STATE_IDLE && s_ota.status == OTA_STATE_WAIT && s_ota.next_seq == 0u && s_ota.bytes_written == 0u) {
-    log_i("OTA abort idle ignored while waiting for start\r\n");
+    log_d("OTA abort idle ignored while waiting for start\r\n");
     return true;
   }
 
@@ -1059,7 +1059,7 @@ static bool ota_process_finish(const uint8_t *data, size_t len) {
   uint8_t image_hash[32] = {0};
   ota_sha256_final(&s_ota.sha256, image_hash);
   if(memcmp(image_hash, s_ota.expected_sha256, sizeof(image_hash)) != 0) {
-    log_i("OTA SHA256 mismatch on device\r\n");
+    log_w("OTA SHA256 mismatch on device\r\n");
     ota_send_ack(OTA_ERR_SIGNATURE);
     ota_abort_session(OTA_ERR_SIGNATURE);
     return true;
@@ -1101,7 +1101,7 @@ static bool ota_process_finish(const uint8_t *data, size_t len) {
   log_write("\r\n");
 
   if(!reset_in_slot) {
-    log_i("OTA warning: reset vector is outside target slot; bootloader may reject pending slot\r\n");
+    log_w("OTA warning: reset vector is outside target slot; bootloader may reject pending slot\r\n");
   }
 #endif
 
@@ -1243,7 +1243,7 @@ bool ota_lora_on_tx_complete() {
     return false;
   }
   s_ota.deadline = time() + OTA_LORA_RX_WINDOW_MS;
-  log_i("OTA nonce RX mode start\r\n");
+  log_d("OTA nonce RX mode start\r\n");
   en_rx_sleep();
   return true;
 }
@@ -1274,7 +1274,7 @@ bool ota_lora_poll() {
     const bool nonce_wait_timeout = s_ota.offer_pending && !s_ota.active;
     uint8_t status = s_ota.active ? OTA_ERR_TIMEOUT : OTA_STATE_IDLE;
     if(nonce_wait_timeout) {
-      log_i("OTA nonce RX mode end (timeout)\r\n");
+      log_d("OTA nonce RX mode end (timeout)\r\n");
     }
     ota_abort_session(status);
     if(settings.lora_smart_rcv) {

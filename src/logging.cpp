@@ -1,5 +1,6 @@
 #include "logging.h"
 #include "tools.h"
+#include <string.h>
 
 // Note on flushing: the per-call DEBUGSER.flush() that used to sit in every
 // helper below has been removed. Uart::flush() busy-waits until the TX ring
@@ -16,6 +17,80 @@
 bool debug_en = false;
 bool errors_en = false;
 
+// Line markers ---------------------------------------------------------------
+//
+// Every line starts with one character and a bar, so a reader (or the test
+// rig's replay view) can tell at a glance which lines are worth looking at:
+//
+//   E|  endangers regular operation - the station cannot do its job
+//   W|  a fault occurred but does not weigh heavily - rejected packet,
+//       missing optional sensor, a single discarded command
+//   I|  normal operation
+//   D|  extra detail, e.g. OTA chunk counters
+//
+// The marker belongs to the LINE, not to the call. Most messages are assembled
+// from several log_i()/log_write() calls, and marking each of them would give
+// "I| SAVE OK I| 5I|  changes". So the state below remembers where each stream
+// stands and writes the marker only at the start of a line.
+//
+// The same state fixes an older truncation: log_e() writes when errors_en is
+// set, but its log_write() continuations used to be gated on debug_en. With
+// DEBUG=0 - the normal field setting - every error line broke off after its
+// first fragment. A continuation now inherits the level of the line it belongs
+// to, so it passes the same gate as the fragment that opened the line.
+
+#define LOG_ERROR  'E'
+#define LOG_WARN   'W'
+#define LOG_INFO   'I'
+// Extra detail. Two levels share the D marker because they say the same thing
+// to a reader; they differ only in who gets to see them over USB. log_d() goes
+// wherever log_i() goes, log_v() only to a USB reader who asked for verbose
+// output. Marker and gate are deliberately separate: sorting a message into
+// E/W/I/D is a statement about its content, and must not quietly change which
+// port it comes out of.
+#define LOG_DETAIL  'D'
+#define LOG_VERBOSE 'V'
+// Simple status for the non-verbose USB reader. Own gate, but it reads as
+// ordinary information, so it carries the I marker.
+#define LOG_STATUS 'S'
+// Machine readable payload - the body of a DUMP is the settings file itself
+// and has to come out byte for byte, so it gets no marker. Gated like I.
+#define LOG_RAW    'R'
+// A fragment that continues the current line and inherits its level.
+#define LOG_CONT   '\0'
+
+static bool ds_at_start = true;    // DEBUGSER stands at the start of a line
+static bool usb_at_start = true;   // Serial stands at the start of a line
+static bool line_open = false;     // a line is half written, gate independent
+static char open_level = LOG_INFO; // the level of that half written line
+
+static char marker_of(char level){
+  if(level == LOG_STATUS) return LOG_INFO;
+  if(level == LOG_VERBOSE) return LOG_DETAIL;
+  if(level == LOG_RAW) return 0;
+  return level;
+}
+
+// A continuation follows the line it belongs to. Outside any line it counts as
+// information - that is what a bare log_write() at the start of a line is.
+static char resolve(char level){
+  if(level != LOG_CONT) return level;
+  return line_open ? open_level : LOG_INFO;
+}
+
+static bool ds_allows(char level){
+  if(level == LOG_STATUS) return false;               // USB only
+  if(level == LOG_ERROR || level == LOG_WARN) return errors_en;
+  return debug_en;                                    // I, D, V and R
+}
+
+static bool usb_allows(char level){
+  if(!usb_connected) return false;
+  if(level == LOG_VERBOSE) return settings.verbose_usb;
+  if(level == LOG_STATUS)  return !settings.verbose_usb;
+  return true;                                        // E, W, I, D and R
+}
+
 // Serial.flush() alone only calls tud_cdc_write_flush(), which marks data as
 // ready but does not run the TinyUSB task.  yield() drives tud_task() so the
 // USB IN transfer is actually scheduled and completed without waiting for loop().
@@ -24,40 +99,89 @@ static void usb_flush(){
   yield();
 }
 
-static void log_info_msg(const char * msg){
-  if(debug_en){
-    DEBUGSER.print(msg);
-    if(display_present()) {display_add_line(String(msg));}
-  }
-  if(usb_connected){
-    Serial.print(msg);
-    usb_flush();
-  }
-}
-
-template <typename T>
-static void log_info_msg_value(const char * msg, T num){
-  if(debug_en){
-    DEBUGSER.print(msg);
-    DEBUGSER.println(num);
-    if(display_present()) {display_add_line(String(msg) + String(num));}
-  }
-  if(usb_connected){
-    Serial.print(msg);
-    Serial.println(num);
-    usb_flush();
+static void begin_line(Stream &stream, bool &at_start, char level){
+  if(at_start){
+    const char marker = marker_of(level);
+    if(marker){
+      stream.print(marker);
+      stream.print('|');
+      stream.print(' ');
+    }
+    at_start = false;
   }
 }
 
-template <typename T>
-static void log_info_write_value(T num){
-  if(debug_en){
-    DEBUGSER.print(num);
+// Remembers, independent of any gate, whether the line is still open. Both
+// streams get the same call sequence, so one shared flag is enough - only the
+// gates differ, and those are handled per stream.
+static void note_text(char level, const char *msg, size_t len){
+  if(len == 0u) return;
+  line_open = (msg[len - 1u] != '\n');
+  open_level = level;
+}
+
+// Writes text that may carry newlines of its own, marking every line it
+// starts. Several messages have an embedded break - the reset banner is one
+// call containing "\r\n----- RESET -----\r\n" - and marking only the first
+// character would leave exactly the lines a reader looks for unmarked.
+static void put_text(Stream &stream, bool &at_start, char level, const char *msg){
+  const char *p = msg;
+  while(*p){
+    const char *nl = strchr(p, '\n');
+    const size_t seg = nl ? (size_t)(nl - p) + 1u : strlen(p);
+
+    // A line holding nothing but its terminator separates, it does not
+    // report - a marker on it would be noise.
+    bool blank = true;
+    for(size_t i = 0; i < seg; i++){
+      if(p[i] != '\r' && p[i] != '\n'){ blank = false; break; }
+    }
+    if(!blank){
+      begin_line(stream, at_start, level);
+    }
+
+    stream.write((const uint8_t *)p, seg);
+    if(nl){
+      at_start = true;
+    }
+    p += seg;
   }
-  if(usb_connected){
-    Serial.print(num);
+}
+
+static void emit(char level, const char *msg){
+  const char lvl = resolve(level);
+  const size_t len = strlen(msg);
+  // An empty fragment must not open a line - otherwise it leaves a bare
+  // marker behind and the real text of the line starts unmarked.
+  if(len == 0u) return;
+
+  if(ds_allows(lvl)){
+    put_text(DEBUGSER, ds_at_start, lvl, msg);
+  }
+  if(usb_allows(lvl)){
+    put_text(Serial, usb_at_start, lvl, msg);
     usb_flush();
   }
+  note_text(lvl, msg, len);
+}
+
+template <typename T>
+static void emit_num(char level, T num, bool newline){
+  const char lvl = resolve(level);
+
+  if(ds_allows(lvl)){
+    begin_line(DEBUGSER, ds_at_start, lvl);
+    if(newline){ DEBUGSER.println(num); ds_at_start = true; }
+    else       { DEBUGSER.print(num); }
+  }
+  if(usb_allows(lvl)){
+    begin_line(Serial, usb_at_start, lvl);
+    if(newline){ Serial.println(num); usb_at_start = true; }
+    else       { Serial.print(num); }
+    usb_flush();
+  }
+  line_open = !newline;
+  open_level = lvl;
 }
 
 static void write_hex_to_stream(Stream &stream, uint32_t num, uint8_t width){
@@ -78,39 +202,71 @@ static void write_hex_to_stream(Stream &stream, uint32_t num, uint8_t width){
   }
 }
 
-static void log_info_write_hex(uint32_t num, uint8_t width){
-  if(debug_en){
+static void emit_hex(char level, uint32_t num, uint8_t width){
+  const char lvl = resolve(level);
+
+  if(ds_allows(lvl)){
+    begin_line(DEBUGSER, ds_at_start, lvl);
     write_hex_to_stream(DEBUGSER, num, width);
   }
-  if(usb_connected){
+  if(usb_allows(lvl)){
+    begin_line(Serial, usb_at_start, lvl);
     write_hex_to_stream(Serial, num, width);
     usb_flush();
   }
+  line_open = true;
+  open_level = lvl;
 }
 
-static void log_verbose_msg(const char * msg){
-  if(debug_en){
-    DEBUGSER.print(msg);
-    if(display_present()) {display_add_line(String(msg));}
-  }
-  if(settings.verbose_usb && usb_connected){
-    Serial.print(msg);
-    usb_flush();
+// The display shows the message without the marker - three characters of a
+// four line screen are better spent on the text.
+// display_present() is a constant false in builds without a display, and it
+// has to stay its OWN test for the linker to see that. Folded into a combined
+// condition it stopped folding, the String work stayed alive, and String(float)
+// pulled in newlib's float formatting - 7 kB out of a 122 kB flash, for a
+// display that is not fitted.
+static void to_display(char level, const char *msg){
+  if(display_present()){
+    if(ds_allows(level)){ display_add_line(String(msg)); }
   }
 }
 
 template <typename T>
+static void to_display_value(char level, const char *msg, T num){
+  if(display_present()){
+    if(ds_allows(level)){ display_add_line(String(msg) + String(num)); }
+  }
+}
+
+static void log_info_msg(const char * msg){
+  emit(LOG_INFO, msg);
+  to_display(LOG_INFO, msg);
+}
+
+template <typename T>
+static void log_info_msg_value(const char * msg, T num){
+  emit(LOG_INFO, msg);
+  emit_num(LOG_CONT, num, true);
+  to_display_value(LOG_INFO, msg, num);
+}
+
+template <typename T>
+static void log_detail_value(const char * msg, T num){
+  emit(LOG_DETAIL, msg);
+  emit_num(LOG_CONT, num, true);
+  to_display_value(LOG_DETAIL, msg, num);
+}
+
+static void log_verbose_msg(const char * msg){
+  emit(LOG_VERBOSE, msg);
+  to_display(LOG_VERBOSE, msg);
+}
+
+template <typename T>
 static void log_verbose_msg_value(const char * msg, T num){
-  if(debug_en){
-    DEBUGSER.print(msg);
-    DEBUGSER.println(num);
-    if(display_present()) {display_add_line(String(msg));}
-  }
-  if(settings.verbose_usb && usb_connected){
-    Serial.print(msg);
-    Serial.println(num);
-    usb_flush();
-  }
+  emit(LOG_VERBOSE, msg);
+  emit_num(LOG_CONT, num, true);
+  to_display(LOG_VERBOSE, msg);
 }
 
 void log_i(const char * msg){
@@ -154,111 +310,104 @@ void log_v(const char * msg, float num){
 }
 
 void log_write(const char * msg){
-  log_info_msg(msg);
+  emit(LOG_CONT, msg);
 }
 
 void log_write(uint32_t num){
-  log_info_write_value(num);
+  emit_num(LOG_CONT, num, false);
 }
 
 void log_write(int32_t num){
-  log_info_write_value(num);
+  emit_num(LOG_CONT, num, false);
 }
 
 void log_write(int num){
-  log_info_write_value(num);
+  emit_num(LOG_CONT, num, false);
 }
 
 void log_write(float num){
-  log_info_write_value(num);
+  emit_num(LOG_CONT, num, false);
 }
 
 void log_write_hex(uint32_t num, uint8_t width){
-  log_info_write_hex(num, width);
-}
-
-static void log_write_verbose_msg(const char * msg){
-  if(debug_en){
-    DEBUGSER.print(msg);
-  }
-  if(settings.verbose_usb && usb_connected){
-    Serial.print(msg);
-    usb_flush();
-  }
-}
-
-template <typename T>
-static void log_write_verbose_value(T num){
-  if(debug_en){
-    DEBUGSER.print(num);
-  }
-  if(settings.verbose_usb && usb_connected){
-    Serial.print(num);
-    usb_flush();
-  }
-}
-
-static void log_write_verbose_hex(uint32_t num, uint8_t width){
-  if(debug_en){
-    write_hex_to_stream(DEBUGSER, num, width);
-  }
-  if(settings.verbose_usb && usb_connected){
-    write_hex_to_stream(Serial, num, width);
-    usb_flush();
-  }
+  emit_hex(LOG_CONT, num, width);
 }
 
 void log_write_v(const char * msg){
-  log_write_verbose_msg(msg);
+  emit(LOG_VERBOSE, msg);
 }
 
 void log_write_v(uint32_t num){
-  log_write_verbose_value(num);
+  emit_num(LOG_VERBOSE, num, false);
 }
 
 void log_write_v(int32_t num){
-  log_write_verbose_value(num);
+  emit_num(LOG_VERBOSE, num, false);
 }
 
 void log_write_v(int num){
-  log_write_verbose_value(num);
+  emit_num(LOG_VERBOSE, num, false);
 }
 
 void log_write_v(float num){
-  log_write_verbose_value(num);
+  emit_num(LOG_VERBOSE, num, false);
 }
 
 void log_write_hex_v(uint32_t num, uint8_t width){
-  log_write_verbose_hex(num, width);
+  emit_hex(LOG_VERBOSE, num, width);
 }
 
 void log_s(const char * msg){
-  if(!settings.verbose_usb && usb_connected){
-    Serial.print(msg);
-    usb_flush();
-  }
+  emit(LOG_STATUS, msg);
 }
 
 void log_s(const char * msg, uint32_t num, const char * suffix){
-  if(!settings.verbose_usb && usb_connected){
-    Serial.print(msg);
-    Serial.print(num);
-    Serial.println(suffix);
-    usb_flush();
-  }
+  emit(LOG_STATUS, msg);
+  emit_num(LOG_CONT, num, false);
+  emit(LOG_CONT, suffix);
+  emit(LOG_CONT, "\r\n");
 }
 
+void log_w(const char * msg){
+  emit(LOG_WARN, msg);
+  to_display(LOG_WARN, msg);
+}
+
+template <typename T>
+static void log_warn_value(const char * msg, T num){
+  emit(LOG_WARN, msg);
+  emit_num(LOG_CONT, num, true);
+  to_display_value(LOG_WARN, msg, num);
+}
+
+void log_w(const char * msg, uint32_t num){ log_warn_value(msg, num); }
+void log_w(const char * msg, int32_t num) { log_warn_value(msg, num); }
+void log_w(const char * msg, int num)     { log_warn_value(msg, num); }
+void log_w(const char * msg, float num)   { log_warn_value(msg, num); }
+
 void log_e(const char * msg){
-  if(errors_en){
-    DEBUGSER.print(msg);
-    if(display_present()) {display_add_line(String(msg));}
-  }
-  if(usb_connected){
-    Serial.print(msg);
-  }
+  emit(LOG_ERROR, msg);
+  to_display(LOG_ERROR, msg);
+}
+
+void log_d(const char * msg){
+  emit(LOG_DETAIL, msg);
+  to_display(LOG_DETAIL, msg);
+}
+
+void log_d(const char * msg, uint32_t num){ log_detail_value(msg, num); }
+void log_d(const char * msg, int32_t num) { log_detail_value(msg, num); }
+void log_d(const char * msg, int num)     { log_detail_value(msg, num); }
+void log_d(const char * msg, float num)   { log_detail_value(msg, num); }
+
+void log_raw(const char * msg){
+  emit(LOG_RAW, msg);
 }
 
 void log_flush(){
+  // Only under debug_en: log_ser_begin() starts DEBUGSER on that condition,
+  // and Uart::flush() busy-waits on a TXC flag that an unstarted SERCOM never
+  // raises.
   if(debug_en){
     DEBUGSER.flush();
   }

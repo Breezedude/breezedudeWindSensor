@@ -71,7 +71,7 @@ void en_rx_sleep(){
         static_cast<SX126x*>(radio_phy)->clearIrqFlags(0xFFFF);
         int err = radio_phy->startReceive();
         if (err != RADIOLIB_ERR_NONE){
-            log_i("en_rx_sleep: startReceive failed, code=", err);
+            log_w("en_rx_sleep: startReceive failed, code=", err);
             return;
         }
         static_cast<SX126x*>(radio_phy)->clearDio1Action();
@@ -80,7 +80,7 @@ void en_rx_sleep(){
     } else if(lora_module == LORA_SX1276){
         int err = radio_phy->startReceive();
         if(err != RADIOLIB_ERR_NONE){
-            log_i("en_rx_sleep: startReceive SX1276 failed, code=", err);
+            log_w("en_rx_sleep: startReceive SX1276 failed, code=", err);
             return;
         }
         attachInterruptWakeup(PIN_LORA_DIO0, irq_lora_rec, RISING, false); // SX1276: RX done on DIO0
@@ -142,15 +142,15 @@ bool lbt_channel_free(int max_attempts) {
       
       radio_phy->standby();  // Back to standby
       
-      log_i("LBT: attempt ");
+      log_d("LBT: attempt ");
       log_write(i + 1);
-      log_i("/");
+      log_d("/");
       log_write(max_attempts);
-      log_i(" RSSI avg ");
+      log_d(" RSSI avg ");
       log_write(rssi_avg);
-      log_i(" dBm (threshold ");
+      log_d(" dBm (threshold ");
       log_write(settings.lora_rssi_threshold);
-      log_i(" dBm)\r\n");
+      log_d(" dBm)\r\n");
       
       if (rssi_avg < settings.lora_rssi_threshold) {
         led_error(0);
@@ -163,7 +163,7 @@ bool lbt_channel_free(int max_attempts) {
       }
     }
 
-    log_i("LBT: channel not free after retries\r\n");
+    log_w("LBT: channel not free after retries\r\n");
     led_error(0);
     return false; // channel still busy after all attempts
   } else {
@@ -205,7 +205,7 @@ bool fanet_rx(){
     // input, 0 would form a zero-length array and 255 is a large stack
     // allocation on the path right after a deep-sleep wakeup.
     if(numBytes <= 0 || numBytes > (int)sizeof(forward_buf)) {
-      log_i("FANET RX: bad packet length, dropped len=", numBytes);
+      log_w("FANET RX: bad packet length, dropped len=", numBytes);
       return true; // packet consumed, caller re-arms RX
     }
     uint8_t byteArr[sizeof(forward_buf)];
@@ -213,10 +213,10 @@ bool fanet_rx(){
     // readData() leaves the radio in standby; caller must re-arm RX when safe.
 
     if (state == RADIOLIB_ERR_CRC_MISMATCH) {
-      log_i("FANET RX: CRC error\r\n");
+      log_w("FANET RX: CRC error\r\n");
       return true; // packet consumed, re-arm is caller's responsibility
     } else if (state != RADIOLIB_ERR_NONE) {
-      log_i("FANET RX: read failed, code=", state);
+      log_w("FANET RX: read failed, code=", state);
       return true;
     }
 
@@ -271,11 +271,11 @@ bool fanet_rx(){
           log_i("ms\r\n");
         }
       } else {
-        log_i("FANET: skip fwd (dedup) from ");
+        log_d("FANET: skip fwd (dedup) from ");
         log_write_hex(header->vendor, 2);
-        log_i(":");
+        log_d(":");
         log_write_hex(header->address, 4);
-        log_i("\r\n");
+        log_d("\r\n");
       }
     }
     return true; // packet consumed
@@ -301,7 +301,7 @@ bool fanet_forward_check() {
     forward_pending = true;
     forward_after_time = time() + 500 + (millis() % 1500);
     radio_sleep();
-    log_i("FANET fwd: channel busy, deferred\r\n");
+    log_w("FANET fwd: channel busy, deferred\r\n");
     return false;
   }
   // Arm TX-done callback just before transmit (not in dis_rx_sleep, to avoid
@@ -309,7 +309,7 @@ bool fanet_forward_check() {
   radio_phy->setPacketSentAction(set_fanet_send_flag);
   int state = radio_phy->startTransmit(forward_buf, forward_len);
   if(state != RADIOLIB_ERR_NONE) {
-    log_i("FANET fwd: TX failed, code=", state);
+    log_w("FANET fwd: TX failed, code=", state);
     radio_sleep();
     return false;
   }
@@ -363,6 +363,6 @@ bool radio_init(){
   }
   #endif
 
-  log_i("Radio: No LoRa found\r\n");
+  log_e("Radio: No LoRa found\r\n");
   return false;
 }

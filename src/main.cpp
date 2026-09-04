@@ -163,7 +163,7 @@ void setup(){
 
   if(!settings_ok) { // invalid settings, just lite the red LED and sleep
     // Needed for deepsleep
-    log_i("Settings invalid\r\n");
+    log_e("Settings invalid\r\n");
     setup_PM(true, true);
     wdt_enable(WDT_PERIOD,false); // setup clocks
     wdt_disable();
@@ -255,7 +255,7 @@ loopcounter++;
   // If enumeration completes shortly after startup, still arm the boot hold.
   if(!boot_usb_hold_until_ms && usb_host_connected()) {
     boot_usb_hold_until_ms = millis() + 10000UL;
-    log_i("USB connected after boot, keep awake for 10s\r\n");
+    log_d("USB connected after boot, keep awake for 10s\r\n");
   }
 
   bool boot_usb_hold_active = (boot_usb_hold_until_ms != 0) && ((int32_t)(millis() - boot_usb_hold_until_ms) < 0);

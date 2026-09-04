@@ -42,13 +42,13 @@ String config_update_get_full_uuid_hex() {
 bool config_update_verify_packet(const uint8_t *packet, size_t packet_len) {
   // Minimum packet: Type(1) + UUID(4) + NumSettings(1) + Signature(64) = 70 bytes
   if (!packet || packet_len < 70) {
-    log_e("Config update packet too small\r\n");
+    log_w("Config update packet too small\r\n");
     return false;
   }
 
   // Check packet type
   if (packet[0] != CONFIG_UPDATE_PKT_TYPE) {
-    log_e("Config update invalid type\r\n");
+    log_w("Config update invalid type\r\n");
     return false;
   }
 
@@ -63,7 +63,7 @@ bool config_update_verify_packet(const uint8_t *packet, size_t packet_len) {
     uint8_t expected_suffix[CONFIG_UPDATE_UUID_SUFFIX_LEN];
     config_update_get_uuid_suffix(expected_suffix);
     if (memcmp(packet_uuid_suffix, expected_suffix, CONFIG_UPDATE_UUID_SUFFIX_LEN) != 0) {
-      log_e("Config update UUID mismatch\r\n");
+      log_w("Config update UUID mismatch\r\n");
       return false;
     }
   }
@@ -84,7 +84,7 @@ bool config_update_verify_packet(const uint8_t *packet, size_t packet_len) {
                                    signature, uECC_secp256r1());
   
   if (verify_result != 1) {
-    log_e("Config update signature verification failed\r\n");
+    log_w("Config update signature verification failed\r\n");
     return false;
   }
 
@@ -106,7 +106,7 @@ int config_update_parse_packet(const uint8_t *packet, size_t packet_len,
   // Read number of settings
   uint8_t num_settings = packet[pos++];
   if (num_settings == 0 || num_settings > max_settings) {
-    log_e("Config update: invalid num_settings=");
+    log_w("Config update: invalid num_settings=");
     log_write(num_settings);
     log_write("\r\n");
     return -1;
@@ -115,7 +115,7 @@ int config_update_parse_packet(const uint8_t *packet, size_t packet_len,
   // Parse each setting
   for (uint8_t i = 0; i < num_settings; ++i) {
     if (pos >= packet_len - CONFIG_UPDATE_SIGNATURE_LEN) {
-      log_e("Config update: packet truncated at setting ");
+      log_w("Config update: packet truncated at setting ");
       log_write((uint32_t)i);
       log_write("\r\n");
       return -1;
@@ -124,14 +124,14 @@ int config_update_parse_packet(const uint8_t *packet, size_t packet_len,
     // Read key length and key
     uint8_t key_len = packet[pos++];
     if (key_len == 0 || key_len > CONFIG_UPDATE_MAX_KEY_LEN) {
-      log_e("Config update: invalid key_len=");
+      log_w("Config update: invalid key_len=");
       log_write((uint32_t)key_len);
       log_write("\r\n");
       return -1;
     }
 
     if (pos + key_len >= packet_len - CONFIG_UPDATE_SIGNATURE_LEN) {
-      log_e("Config update: key extends beyond packet\r\n");
+      log_w("Config update: key extends beyond packet\r\n");
       return -1;
     }
 
@@ -142,7 +142,7 @@ int config_update_parse_packet(const uint8_t *packet, size_t packet_len,
 
     // Read value length and value
     if (pos >= packet_len - CONFIG_UPDATE_SIGNATURE_LEN) {
-      log_e("Config update: no value_len for key ");
+      log_w("Config update: no value_len for key ");
       log_write(key.c_str());
       log_write("\r\n");
       return -1;
@@ -150,14 +150,14 @@ int config_update_parse_packet(const uint8_t *packet, size_t packet_len,
 
     uint8_t value_len = packet[pos++];
     if (value_len > CONFIG_UPDATE_MAX_VALUE_LEN) {
-      log_e("Config update: invalid value_len=");
+      log_w("Config update: invalid value_len=");
       log_write((uint32_t)value_len);
       log_write("\r\n");
       return -1;
     }
 
     if (pos + value_len > packet_len - CONFIG_UPDATE_SIGNATURE_LEN) {
-      log_e("Config update: value extends beyond packet\r\n");
+      log_w("Config update: value extends beyond packet\r\n");
       return -1;
     }
 
@@ -170,11 +170,11 @@ int config_update_parse_packet(const uint8_t *packet, size_t packet_len,
     settings[i].value = value;
 
     if (debug_enabled()) {
-      log_i("Config update parsed: ");
-      log_i(key.c_str());
-      log_i(" = ");
-      log_i(value.c_str());
-      log_i("\r\n");
+      log_d("Config update parsed: ");
+      log_d(key.c_str());
+      log_d(" = ");
+      log_d(value.c_str());
+      log_d("\r\n");
     }
   }
 
@@ -184,7 +184,7 @@ int config_update_parse_packet(const uint8_t *packet, size_t packet_len,
 int config_update_apply_packet(const uint8_t *packet, size_t packet_len) {
   // First verify signature
   if (!config_update_verify_packet(packet, packet_len)) {
-    log_e("Config update verify failed\r\n");
+    log_w("Config update verify failed\r\n");
     return -1;
   }
 
@@ -195,7 +195,7 @@ int config_update_apply_packet(const uint8_t *packet, size_t packet_len) {
   int num_settings = config_update_parse_packet(packet, packet_len, settings,
                                                   CONFIG_UPDATE_MAX_SETTINGS);
   if (num_settings <= 0) {
-    log_e("Config update parse failed\r\n");
+    log_w("Config update parse failed\r\n");
     return -1;
   }
 
@@ -206,7 +206,7 @@ int config_update_apply_packet(const uint8_t *packet, size_t packet_len) {
   static const char* values[CONFIG_UPDATE_MAX_SETTINGS];
 
   for (int i = 0; i < num_settings; ++i) {
-    log_i("Config update parsed: ");
+    log_d("Config update parsed: ");
     log_write(settings[i].key.c_str());
     log_write(" = ");
     log_write(settings[i].value.c_str());
