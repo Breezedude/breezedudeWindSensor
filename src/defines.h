@@ -110,6 +110,9 @@ enum Wakeup_Source{
   WAKEUP_EIC,
   WAKEUP_WDT,
   WAKEUP_UART,
+  // The debug console on SERCOM1, kept separate from the sensor UART above:
+  // a console command has to end the sleep window, a sensor byte must not.
+  WAKEUP_CONSOLE,
   WAKEUP_LORA,
   WAKEUP_USB
 };

@@ -35,6 +35,10 @@ void wakeup_EIC(){
   wakeup_source = WAKEUP_EIC;
 }
 
+void mark_console_wakeup(){
+  wakeup_source = WAKEUP_CONSOLE;
+}
+
 void mark_uart_wakeup(){
   wakeup_source = WAKEUP_UART;
 }
@@ -162,10 +166,18 @@ void wakeup(){
 // Wake reasons that end a sleep window. Any other wakeup (a LoRa DIO edge, a
 // configured external pin interrupt) is serviced and then slept through again.
 static bool sleep_window_over(){
-  // DEBUGSER cannot wake the MCU - SERCOM1 is unclocked in standby - but once
-  // the station is up for any other reason, a pending console command should
-  // end the sleep window instead of being sat on for another cycle.
+  // With UART_WAKE=0, SERCOM1 is unclocked in standby and DEBUGSER cannot wake
+  // the MCU at all - but once the station is up for any other reason, a pending
+  // console command should end the sleep window instead of being sat on for
+  // another cycle.
+  //
+  // With UART_WAKE=1 it can wake the MCU, and then WAKEUP_CONSOLE is what says
+  // so. Without it the wakeup happened but the command was only serviced at the
+  // next regular wake: measured, 5 answers out of 60 requests instead of 2 -
+  // the extra three all fell into the ~40 s broadcast cycle, not into the
+  // moment the byte arrived.
   return wakeup_source == WAKEUP_RTC || wakeup_source == WAKEUP_USB
+         || wakeup_source == WAKEUP_CONSOLE
          || Serial.available()
          || (debug_enabled() && DEBUGSER.available());
 }

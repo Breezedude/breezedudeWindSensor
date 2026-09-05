@@ -299,7 +299,7 @@ void attachInterruptWakeup(uint32_t pin, voidFuncPtr callback, uint32_t mode, bo
 
 // Helper ----------------------------------------------------------------------------------------------------------------------
 
-const char* wakeup_source_string[] = {"NONE", "RTC", "EIC", "WDT", "UART", "LORA", "USB"};
+const char* wakeup_source_string[] = {"NONE", "RTC", "EIC", "WDT", "UART", "CONSOLE", "LORA", "USB"};
 
 const char* get_bootloader_version(){
   static char version[40] = "unknown";

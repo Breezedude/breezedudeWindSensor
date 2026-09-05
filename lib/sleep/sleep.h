@@ -7,6 +7,7 @@ extern Uart Serial2;
 
 void SERCOM1_Handler();
 void mark_uart_wakeup();
+void mark_console_wakeup();
 void enable_sercom0_int();
 void disable_sercom0_int();
 // The debug UART. Lets the console be reached while the station sleeps; see the

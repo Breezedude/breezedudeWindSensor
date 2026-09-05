@@ -90,7 +90,9 @@ void SERCOM0_Handler(void) {
 void SERCOM1_Handler(){
   if (SERCOM1->USART.INTFLAG.bit.RXS) {
     SERCOM1->USART.INTFLAG.reg = SERCOM_USART_INTFLAG_RXS;
-    mark_uart_wakeup();
+    // Deliberately its own reason, not the sensor's: a console command has to
+    // end the sleep window, whereas a byte from the sensor must not.
+    mark_console_wakeup();
   }
   Serial2.IrqHandler();
 }
