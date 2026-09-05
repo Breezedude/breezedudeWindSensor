@@ -72,6 +72,17 @@ uint32_t sleep(bool enable_uart_interrupt){
   // Drain both outputs before sleeping: the SERCOM clocks stop in standby, so
   // anything still sitting in the UART TX buffer would be lost or corrupted.
   log_flush();
+
+  // Keep the debug console reachable while asleep, if asked for. Strictly
+  // after log_flush(): switching the SERCOM clock with data still in the TX
+  // buffer would corrupt whatever is left in it.
+  //
+  // Only useful with DEBUG=1 - setup() ends the UART and releases the pins
+  // otherwise, so there would be no console to wake for.
+  const bool wake_on_debug_uart = settings.uart_wake && debug_enabled();
+  if(wake_on_debug_uart){
+    enable_sercom1_int();
+  }
   reset_time_counter(); // start counting sleeptime from zero
   bool keep_usb = keep_usb_active_during_sleep();
 
@@ -80,6 +91,12 @@ uint32_t sleep(bool enable_uart_interrupt){
   do {
     deepsleep(keep_usb);
   } while (keep_usb && wakeup_source == WAKEUP_NONE);
+
+  // Back to 48 MHz before anything is written or read: on the 32 kHz standby
+  // clock every character would be sampled at the wrong rate.
+  if(wake_on_debug_uart){
+    disable_sercom1_int();
+  }
   uint32_t p = micros();
 
 

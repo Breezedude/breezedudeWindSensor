@@ -9,6 +9,10 @@ void SERCOM1_Handler();
 void mark_uart_wakeup();
 void enable_sercom0_int();
 void disable_sercom0_int();
+// The debug UART. Lets the console be reached while the station sleeps; see the
+// comment in sleep.cpp for the cost and for the lost first byte.
+void enable_sercom1_int();
+void disable_sercom1_int();
 void pinDisable(uint32_t pin);
 void configGCLK6(bool en_rtc);
 void deepsleep(bool light);

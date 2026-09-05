@@ -84,7 +84,14 @@ void SERCOM0_Handler(void) {
 
 
 
+// The debug UART. Same shape as SERCOM0_Handler above: the start-of-frame flag
+// has to be cleared by hand, and it is the only place that can tell a genuine
+// wakeup on the console from a stray USB interrupt.
 void SERCOM1_Handler(){
+  if (SERCOM1->USART.INTFLAG.bit.RXS) {
+    SERCOM1->USART.INTFLAG.reg = SERCOM_USART_INTFLAG_RXS;
+    mark_uart_wakeup();
+  }
   Serial2.IrqHandler();
 }
 
@@ -761,3 +768,103 @@ void PM_wakeup(){
   PM->APBCMASK.reg |= PM_APBCMASK_SERCOM4;
 }
 */
+
+// Debug UART wakeup ----------------------------------------------------------
+//
+// Same mechanism as enable_sercom0_int() above, for SERCOM1 - the debug UART.
+// It exists so the console stays reachable while the station sleeps.
+//
+// Without it the console is only usable for about two seconds after a reset:
+// the SERCOM clocks stop in standby, so anything arriving while the station is
+// asleep is lost outright and never processed. Measured on the rig: of sixty
+// requests sent one per second, two were answered - the two inside that window
+// - and not one of the other fifty-eight ever produced a late reply.
+//
+// It is off by default and switched on with UART_WAKE=1. Two reasons to leave
+// it off in the field: the RX line sits behind a Schottky and a 10 kOhm pull-up
+// since the phantom-supply fix, so it is high impedance and a stray edge could
+// wake the station for nothing; and keeping OSCULP32K and the SERCOM alive in
+// standby costs current that a mast-mounted station has no use for.
+//
+// Note that the first byte after a wakeup is lost. The start bit is what wakes
+// the device, and the core clock only switches back to 48 MHz afterwards, so
+// the frame that did the waking is sampled at the wrong rate. A host has to
+// send a wake byte, wait a moment, and only then the command.
+void enable_sercom1_int(void) {
+    PM->APBCMASK.reg |= PM_APBCMASK_SERCOM1;
+
+    SERCOM1->USART.CTRLA.bit.ENABLE = 0;
+    while (SERCOM1->USART.SYNCBUSY.reg != 0);
+
+    // GCLK2 is already set up as OSCULP32K with RUNSTDBY by
+    // enable_sercom0_int(); configured again here so this works on its own,
+    // for a station whose sensor does not use a UART.
+    GCLK->GENDIV.reg = GCLK_GENDIV_ID(2) | GCLK_GENDIV_DIV(0);
+    while (GCLK->STATUS.bit.SYNCBUSY);
+
+    GCLK->GENCTRL.reg = GCLK_GENCTRL_ID(2) |
+                        GCLK_GENCTRL_SRC_OSCULP32K |
+                        GCLK_GENCTRL_RUNSTDBY |
+                        GCLK_GENCTRL_GENEN |
+                        GCLK_GENCTRL_IDC |
+                        GCLK_GENCTRL_DIVSEL;
+    while (GCLK->STATUS.bit.SYNCBUSY);
+
+    GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(SERCOM1_GCLK_ID_CORE) |
+                        GCLK_CLKCTRL_GEN_GCLK2 |
+                        GCLK_CLKCTRL_CLKEN;
+    while (GCLK->STATUS.bit.SYNCBUSY);
+
+    // The slow clock is what detects the start bit while the core is stopped.
+    GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(SERCOM1_GCLK_ID_SLOW) |
+                        GCLK_CLKCTRL_GEN_GCLK2 |
+                        GCLK_CLKCTRL_CLKEN;
+    while (GCLK->STATUS.bit.SYNCBUSY);
+
+    SERCOM1->USART.CTRLA.reg = (SERCOM1->USART.CTRLA.reg & ~SERCOM_USART_CTRLA_MODE_Msk)
+                              | SERCOM_USART_CTRLA_MODE_USART_INT_CLK;
+    SERCOM1->USART.CTRLA.bit.RUNSTDBY = 1;
+    while (SERCOM1->USART.SYNCBUSY.reg != 0);
+
+    // SFDE is the point of the whole exercise: start-frame detection is what
+    // raises an interrupt while the core clock is stopped.
+    SERCOM1->USART.CTRLB.reg = SERCOM_USART_CTRLB_CHSIZE(0x0) |
+                               SERCOM_USART_CTRLB_TXEN |
+                               SERCOM_USART_CTRLB_RXEN |
+                               SERCOM_USART_CTRLB_SFDE;
+    while (SERCOM1->USART.SYNCBUSY.bit.CTRLB);
+
+    SERCOM1->USART.INTENSET.reg = SERCOM_USART_INTENSET_RXS | SERCOM_USART_INTENSET_RXC;
+
+    NVIC_ClearPendingIRQ(SERCOM1_IRQn);
+    NVIC_SetPriority(SERCOM1_IRQn, 0);
+    NVIC_EnableIRQ(SERCOM1_IRQn);
+
+    SERCOM1->USART.CTRLA.bit.ENABLE = 1;
+    while (SERCOM1->USART.SYNCBUSY.bit.ENABLE);
+}
+
+void disable_sercom1_int() {
+  const uint16_t baudreg = (uint16_t)(65536.0f * (1.0f - (16.0f * (float)baud / (fcpu * 1000000.0f))));
+
+  SERCOM1->USART.CTRLA.bit.ENABLE = 0;
+  while (SERCOM1->USART.SYNCBUSY.bit.ENABLE);
+
+  // Back to 48 MHz, otherwise the next character is sampled at 32 kHz.
+  GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(SERCOM1_GCLK_ID_CORE) |
+                      GCLK_CLKCTRL_GEN_GCLK0 |
+                      GCLK_CLKCTRL_CLKEN;
+  while (GCLK->STATUS.bit.SYNCBUSY);
+
+  if (SERCOM1->USART.BAUD.reg != baudreg) {
+    SERCOM1->USART.BAUD.reg = baudreg;
+  }
+
+  SERCOM1->USART.CTRLA.bit.RUNSTDBY = 0;
+  SERCOM1->USART.INTENCLR.bit.RXS = 1;
+
+  SERCOM1->USART.CTRLA.bit.ENABLE = 1;
+  while (SERCOM1->USART.SYNCBUSY.bit.ENABLE);
+
+  NVIC_SetPriority(SERCOM1_IRQn, SERCOM_NVIC_PRIORITY);
+}

@@ -66,6 +66,12 @@ typedef struct {
 
   // debugging
   bool verbose_usb = false;
+  // Let the debug UART wake the station from standby, so the console stays
+  // reachable instead of only for the ~2 s after a reset. Off by default: it
+  // costs standby current, and the RX line sits behind a Schottky and a 10 kOhm
+  // pull-up since the phantom-supply fix, so a stray edge could wake it for
+  // nothing. A station on a mast has no console attached anyway.
+  bool uart_wake = false;
   bool use_protection_board = true; // if true, wait 160us after powering on sensor to allow protection board to switch on power
 } Settings;
 

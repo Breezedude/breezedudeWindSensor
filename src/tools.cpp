@@ -533,6 +533,7 @@ SETTING_FN(set_protection_board, settings.use_protection_board    = atoi(v))
 SETTING_FN(set_debug,       log_set_debug(atoi(v)))
 SETTING_FN(set_errors,      log_set_error(atoi(v)))
 SETTING_FN(set_usb_verbose, settings.verbose_usb   = atoi(v))
+SETTING_FN(set_uart_wake,   settings.uart_wake     = atoi(v))
 SETTING_FN(set_testmode,    settings.testmode      = atoi(v))
 SETTING_FN(set_wdt,         settings.use_wdt       = atoi(v))
 SETTING_FN(set_div_cpu_slow,settings.div_cpu_slow  = atoi(v))
@@ -668,6 +669,7 @@ static const SettingEntry setting_table[] = {
   {"DEBUG",                      set_debug,       SETTING_CFG},
   {"ERRORS",                     set_errors,      SETTING_CFG},
   {"USB_VERBOSE",                set_usb_verbose, SETTING_CFG},
+  {"UART_WAKE",                  set_uart_wake,   SETTING_CFG},
   {"TESTMODE",                   set_testmode,    SETTING_CFG},
   {"WDT",                        set_wdt,         SETTING_CFG},
   {"DIV_CPU_SLOW",               set_div_cpu_slow, SETTING_CFG},
