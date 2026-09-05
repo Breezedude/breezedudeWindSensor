@@ -836,7 +836,24 @@ void enable_sercom1_int(void) {
                                SERCOM_USART_CTRLB_SFDE;
     while (SERCOM1->USART.SYNCBUSY.bit.CTRLB);
 
-    SERCOM1->USART.INTENSET.reg = SERCOM_USART_INTENSET_RXS | SERCOM_USART_INTENSET_RXC;
+    // Start-of-frame only. RXC is switched off for the duration of the sleep
+    // because reception proper cannot work anyway while the clock is at 32 kHz;
+    // it is handed back in disable_sercom1_int().
+    //
+    // KNOWN DEFECT, do not switch this on in the field. With UART_WAKE=1 the
+    // station does not reach standby: measured over 90 s, every wake reported
+    // source NONE and not a single RTC wake occurred, while with the flag off
+    // the same window shows RTC x3. The baseline goes from 0.78 mA to 1.98 mA -
+    // that is the cost of not sleeping, not the cost of the oscillator.
+    //
+    // The cause is not yet found. __WFI returns at once while an enabled SERCOM
+    // interrupt is pending, so something here keeps one asserted; disabling RXC
+    // (this line) was the obvious candidate and did not change the measurement.
+    // Next suspects: the ERROR interrupt the Arduino core enables, and the fact
+    // that the SERCOM slow clock is shared across all SERCOMs on the SAMD21, so
+    // pointing it at GCLK2 also moves it under SERCOM0.
+    SERCOM1->USART.INTENCLR.reg = SERCOM_USART_INTENCLR_RXC;
+    SERCOM1->USART.INTENSET.reg = SERCOM_USART_INTENSET_RXS;
 
     NVIC_ClearPendingIRQ(SERCOM1_IRQn);
     NVIC_SetPriority(SERCOM1_IRQn, 0);
@@ -864,6 +881,8 @@ void disable_sercom1_int() {
 
   SERCOM1->USART.CTRLA.bit.RUNSTDBY = 0;
   SERCOM1->USART.INTENCLR.bit.RXS = 1;
+  // Hand reception back to the Arduino core, which owns RXC while awake.
+  SERCOM1->USART.INTENSET.reg = SERCOM_USART_INTENSET_RXC;
 
   SERCOM1->USART.CTRLA.bit.ENABLE = 1;
   while (SERCOM1->USART.SYNCBUSY.bit.ENABLE);
