@@ -108,6 +108,13 @@ extern Sensors sensor;
 bool init_imu();
 void get_imu();
 void switch_sensor_power(bool state);
+// Whether the sensor currently has supply. Arming SERCOM0 for a UART sensor
+// without one is worse than pointless - see switch_sensor_power().
+bool sensor_power_is_on();
+// Test override for the sensor supply: -1 automatic, 0 forced off, 1 forced on.
+// Runtime only - it is deliberately not stored, so a reset undoes it.
+void set_sensor_power_override(int8_t mode);
+int8_t get_sensor_power_override();
 void read_batt_perc();
 void battery_update_power_state(float v);
 uint8_t battery_soc_percent(float v);
@@ -122,6 +129,8 @@ int read_ws85_uart();
 
 bool init_baro();
 void read_baro();
+// True while a barometer conversion runs and its result is not due yet.
+bool baro_conversion_running();
 
 int read_windnerd();
 int read_wind_dir();

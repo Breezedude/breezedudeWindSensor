@@ -111,6 +111,11 @@ void setup(){
       DEBUGSER.end();
       pinDisable(PIN_SERCOM1_RX);
       pinDisable(PIN_SERCOM1_TX);
+    } else {
+      // The settings are known only now, so this is the first point where
+      // UART_WAKE can be honoured - the begin() at the top of setup() ran
+      // before they had been read.
+      configure_debug_uart_standby(settings.uart_wake);
     }
   }
 
@@ -228,6 +233,9 @@ void setup(){
 
   //log_i("Startup init complete\r\n");
   log_flush();
+  // One battery reading at boot, so undervoltage is known before the first
+  // sleep decision. After that it is read when a transmission needs it.
+  read_batt_perc();
   wakeup();
   if(settings_ok && settings.use_wdt){
     wdt_enable(WDT_PERIOD,false);
@@ -237,6 +245,10 @@ void setup(){
 }
 
 // loop ----------------------------------------------------------------------------------------------------------------------
+
+// Below this, sleep() costs more in synchronisation waits than it saves, so a
+// nearly closed OTA window is simply waited out.
+static constexpr uint32_t OTA_OFFER_SLEEP_MIN_MS = 50u;
 
 void loop(){
 
@@ -292,7 +304,7 @@ loopcounter++;
     return;
   }
 
-  if(settings.use_baro){read_baro();}
+  // The barometer is read when a transmission needs it, see tx_run_jobs().
   #if BREEZEDUDE_ENABLE_GPS
   if(settings.use_gps){read_gps();}
   #endif
@@ -318,6 +330,23 @@ loopcounter++;
 
   if(state.analog_test_mode){
     forward_analog_test_serial();
+  }
+
+  // Waiting for the answer to the OTA HWInfo: only the radio has to listen.
+  // Sleep until it hears something (DIO1 wakes the MCU) or the window closes
+  // (RTC), instead of spinning this loop at full speed for the whole window -
+  // which cost about 12 mA, radio and MCU together, once an hour.
+  //
+  // loraReceivedFlag is checked once more right before sleep(): a packet that
+  // arrives while the RTC is being set up would otherwise wait for the deadline.
+  if(!tx_send_in_progress() && ota_lora_offer_waiting() && !loraReceivedFlag){
+    const uint32_t left = ota_lora_offer_ms_left();
+    if(left >= OTA_OFFER_SLEEP_MIN_MS){
+      rtc_sleep_cfg(left);
+      if(!loraReceivedFlag){
+        sleep(false);
+      }
+    }
   }
 
 // Check if everything is done --> sleep

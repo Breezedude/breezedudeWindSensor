@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <Adafruit_TinyUSB.h>
+#include "wiring_private.h" // pinPeripheral(), to put muxed pins back after a sleep
 
 #include "power.h"
 #include "defines.h"
@@ -53,6 +54,61 @@ static bool keep_usb_active_during_sleep(){
   return usb_host_connected();
 }
 
+// Pins released for the duration of the standby, and put back on the way out.
+//
+// The point is to measure what an idle pin costs without changing what the
+// station does. Releasing a pin permanently does not do that: it breaks the
+// peripheral behind it, the station stops reaching standby, and the reading is
+// then the CPU being awake rather than any pin leakage. Measured that way, the
+// SPI group appeared to cost 2.1 mA - it cost nothing, the radio had simply
+// stopped answering.
+//
+// Between quiet_pins_for_standby() and restore_pins_after_standby() nothing can
+// use these pins: the radio is in PHY sleep and the barometer is not addressed.
+// The mask is runtime only, set with the SLEEPQUIET console command.
+//
+//   1  the SPI bus - MISO, MOSI, SCK
+//   2  MISO alone, which floats whenever the radio is deselected
+//   4  the LoRa status inputs DIO0/DIO1/DIO2
+//   8  I2C - SDA and SCL
+//
+// CS and RESET are never released: floating, they would let the module drift
+// into a selected or reset state.
+static uint32_t sleep_quiet_mask = 0;
+
+void set_sleep_quiet_mask(uint32_t mask){ sleep_quiet_mask = mask; }
+uint32_t get_sleep_quiet_mask(){ return sleep_quiet_mask; }
+
+/** Back to whatever the variant says the pin is for - the same call SPI.begin()
+ *  and Wire.begin() use, so no mux is hard-coded here. */
+static inline void pin_restore(uint32_t pin){
+  pinPeripheral(pin, (EPioType)g_APinDescription[pin].ulPinType);
+}
+
+static void quiet_pins_for_standby(){
+  if(!sleep_quiet_mask) return;
+  if(sleep_quiet_mask & 0x01){
+    pinDisable(PIN_LORA_MISO); pinDisable(PIN_LORA_MOSI); pinDisable(PIN_LORA_SCK);
+  }
+  if(sleep_quiet_mask & 0x02){ pinDisable(PIN_LORA_MISO); }
+  if(sleep_quiet_mask & 0x04){
+    pinDisable(PIN_LORA_DIO0); pinDisable(PIN_LORA_DIO1); pinDisable(PIN_LORA_DIO2);
+  }
+  if(sleep_quiet_mask & 0x08){ pinDisable(PIN_SDA); pinDisable(PIN_SCL); }
+}
+
+static void restore_pins_after_standby(){
+  if(!sleep_quiet_mask) return;
+  if(sleep_quiet_mask & 0x01){
+    pin_restore(PIN_LORA_MISO); pin_restore(PIN_LORA_MOSI); pin_restore(PIN_LORA_SCK);
+  }
+  if(sleep_quiet_mask & 0x02){ pin_restore(PIN_LORA_MISO); }
+  if(sleep_quiet_mask & 0x04){
+    pin_restore(PIN_LORA_DIO0); pin_restore(PIN_LORA_DIO1); pin_restore(PIN_LORA_DIO2);
+  }
+  if(sleep_quiet_mask & 0x08){ pin_restore(PIN_SDA); pin_restore(PIN_SCL); }
+}
+
 uint32_t sleep(bool enable_uart_interrupt){
   // Reset the wake reason before each sleep cycle so spurious USB IRQs can be ignored.
   wakeup_source = WAKEUP_NONE;
@@ -67,52 +123,47 @@ uint32_t sleep(bool enable_uart_interrupt){
     wdt_disable();
   }
 
-  if(enable_uart_interrupt){
-    if(sensor_uses_uart()){
-      enable_sercom0_int();
-      //log_i("Enable UART Interrupt\r\n");
-    }
+  // Only worth arming for a sensor that actually has supply. With the sensor
+  // switched off its UART pins are released, the receiver reads a permanent low
+  // and would wake the station continuously.
+  const bool sensor_uart_armed = enable_uart_interrupt &&
+                                 sensor_uses_uart() &&
+                                 sensor_power_is_on();
+  if(sensor_uart_armed){
+    enable_sercom0_int();
   }
   // Drain both outputs before sleeping: the SERCOM clocks stop in standby, so
   // anything still sitting in the UART TX buffer would be lost or corrupted.
   log_flush();
 
-  // Keep the debug console reachable while asleep, if asked for. Strictly
-  // after log_flush(): switching the SERCOM clock with data still in the TX
-  // buffer would corrupt whatever is left in it.
-  //
-  // Only useful with DEBUG=1 - setup() ends the UART and releases the pins
-  // otherwise, so there would be no console to wake for.
-  const bool wake_on_debug_uart = settings.uart_wake && debug_enabled();
-  if(wake_on_debug_uart){
-    enable_sercom1_int();
-  }
+  // Nothing to do here for the debug console any more. It is set up once, by
+  // configure_debug_uart_standby() after each DEBUGSER.begin(), and stays that
+  // way through the sleep - which is precisely what stops it losing bytes.
   reset_time_counter(); // start counting sleeptime from zero
   bool keep_usb = keep_usb_active_during_sleep();
 
   // With USB test mode active we use light sleep and ignore wakeups that do not
   // set a wakeup source, otherwise USB IRQ traffic would break the normal flow.
+  quiet_pins_for_standby();
   do {
     deepsleep(keep_usb);
   } while (keep_usb && wakeup_source == WAKEUP_NONE);
+  restore_pins_after_standby();
 
-  // Back to 48 MHz before anything is written or read: on the 32 kHz standby
-  // clock every character would be sampled at the wrong rate.
-  if(wake_on_debug_uart){
-    disable_sercom1_int();
-  }
   uint32_t p = micros();
 
 
 
-  if(sensor_uses_raw_uart()){
+  // Symmetric to the arming above: without supply the sensor UART stays down,
+  // and re-beginning it would put the receiver back on a floating pin.
+  if(sensor_uart_armed && sensor_uses_raw_uart()){
     disable_sercom0_int();
     p = micros()-p;
     //DEBUGSER.println(p);
     SENSOR_UART.begin(115200*div_cpu);
   }
 
-  if(settings.sensor_type == s_WS85_UART) {
+  if(sensor_uart_armed && settings.sensor_type == s_WS85_UART) {
     disable_sercom0_int();
     ws85uart.begin(div_cpu); // required to get data
   }
@@ -129,6 +180,7 @@ uint32_t sleep(bool enable_uart_interrupt){
   if(settings.use_wdt) {
     wdt_enable(WDT_PERIOD, false);
   }
+
   return t;
 }
 
@@ -136,11 +188,23 @@ uint32_t sleep(bool enable_uart_interrupt){
 void wakeup(){
   // USB->DEVICE.CTRLA.reg |= USB_CTRLA_ENABLE; // Re-enable USB, no need, not working?
   loopcounter = 0;
-  pinMode(PIN_V_READ_TRIGGER, OUTPUT); // prepare voltage measurement, charge trigger cap
-  digitalWrite(PIN_V_READ_TRIGGER,1);
   log_i("\r\n########\r\n");
   log_i("Wakeup: ", time()); 
   log_v("Wakeup source: "); log_v(wakeup_source_string[wakeup_source]);log_v("\r\n");
+  if(settings.uart_wake){
+    // What was this wakeup, really? See the note above SERCOM1_Handler: rxs
+    // alone only reports an edge on RxD, rxc says a valid byte followed, and
+    // err says the frame behind the edge was not a frame. Together they tell a
+    // genuine command apart from noise on a high-impedance line.
+    log_v("SERCOM1 irq: ", (uint32_t)sercom1_irq_count);
+    log_v("SERCOM1 rxs: ", (uint32_t)sercom1_rxs_count);
+    log_v("SERCOM1 rxc: ", (uint32_t)sercom1_rxc_count);
+    log_v("SERCOM1 err: ", (uint32_t)sercom1_err_count);
+    log_v("SERCOM1 status: ", (uint32_t)sercom1_last_status);
+    // The one number that separates "woke up" from "received something": how
+    // much of the command actually made it into the ring buffer.
+    log_v("Console bytes: ", (uint32_t)DEBUGSER.available());
+  }
   wakeup_source = WAKEUP_NONE;
 
   // In !settings_ok mode: after the first 5 minutes, flash the red LED only while awake.
@@ -152,15 +216,19 @@ void wakeup(){
 
 
   get_solar_charger_state();
-  if(settings.use_baro){
-    baro_start_reading(); // request data aquisition, will be read later
-  }
   if(settings.use_imu){
     get_imu();
   }
 
-  read_batt_perc();
-  sleep_allowed = time() + 100; // go back to sleep after 6 secs as fallback
+  // Barometer and battery are no longer read here. Neither value is used unless
+  // something is transmitted, so tx_run_jobs() refreshes them right before a job
+  // that carries them - once per send interval instead of once per wakeup.
+  //
+  // No minimum awake time either. The 100 ms that stood here dated from when the
+  // barometer conversion had to be waited for after every wakeup; now the loop
+  // sleeps as soon as nothing is left to do. A transmission still keeps it awake
+  // until the radio reports TX done, see tx_send_in_progress().
+  sleep_allowed = time();
 }
 
 // Wake reasons that end a sleep window. Any other wakeup (a LoRa DIO edge, a
@@ -222,6 +290,8 @@ void go_sleep(){
     if(set_cpu_div(settings.div_cpu_slow)){ // USB test mode keeps 48MHz; only lower the clock for real low-power sleep.
       div_cpu = settings.div_cpu_slow;
       DEBUGSER.begin(115200*div_cpu); // F_CPU ist still 48M, so every clock needs to by multiplied manually
+      // begin() does a SWRST, so the standby configuration has to go back on.
+      configure_debug_uart_standby(settings.uart_wake && debug_enabled());
     }
   }
 
@@ -230,6 +300,16 @@ void go_sleep(){
   if (force_wait_for_wdata) {
     time_to_sleep = 12000UL;
     force_wait_for_wdata = false;
+  }
+  // A forward that is already scheduled has to go out on time, and
+  // calc_time_to_sleep() only knows the station's own transmissions. Forwards
+  // are queued 500-1500 ms out (500-2000 ms after an LBT retry), so one queued
+  // while the station was awake used to be slept through until its next regular
+  // wakeup - with or without the old 100 ms awake time. Inside the sleep loop
+  // service_lora_during_sleep() already handled this; now this path does too.
+  const uint32_t fwd_delay = fanet_forward_delay_ms();
+  if(fwd_delay && fwd_delay < time_to_sleep){
+    time_to_sleep = fwd_delay;
   }
   if(time_to_sleep == 0){ return;} // if time_to_sleep = 0, do not sleep at all
   rtc_sleep_cfg(time_to_sleep);
@@ -261,7 +341,10 @@ void go_sleep(){
     log_w("Undervoltage. will sleep for ", time_to_sleep);
     log_flush();
     sleep(false); // will sleep in 30min blocks with 70µA current draw until battery recovers.
-    wakeup(); // re-read battery so undervoltage clears if voltage has recovered
+    // wakeup() does not read the battery any more, so it is read here: this is
+    // how undervoltage clears once the voltage has recovered.
+    read_batt_perc();
+    wakeup();
     return; // do not read sensors
   }
 

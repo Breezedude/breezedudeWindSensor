@@ -711,7 +711,7 @@ static bool ota_enter_update_mode() {
   // Use a short deadline while waiting for the first START packet.
   // ota_begin_session() will extend this to OTA_LORA_SESSION_TIMEOUT_MS once
   // the offer is accepted and the session is actually running.
-  s_ota.deadline = time() + OTA_LORA_RX_WINDOW_MS;
+  s_ota.deadline = time() + OTA_LORA_START_WAIT_MS;
   s_ota.next_seq = 0;
   s_ota.ack_resend_count = 0;
   s_ota.bytes_written = 0;
@@ -1252,6 +1252,17 @@ bool ota_lora_busy() {
   return s_ota.offer_pending || s_ota.active;
 }
 
+bool ota_lora_offer_waiting() {
+  return s_ota.offer_pending && !s_ota.active;
+}
+
+uint32_t ota_lora_offer_ms_left() {
+  if(!ota_lora_offer_waiting() || time_reached(s_ota.deadline)) {
+    return 0;
+  }
+  return s_ota.deadline - (uint32_t)time();
+}
+
 bool ota_lora_poll() {
   ota_chunk_led_update();
   if(!ota_lora_busy()) {
@@ -1270,7 +1281,9 @@ bool ota_lora_poll() {
     }
   }
 
-  if(time_reached(s_ota.deadline)) {
+  // A packet that arrived just before the window closed is still handled: the
+  // MCU may have slept right up to the deadline and only now gets to it.
+  if(time_reached(s_ota.deadline) && !loraReceivedFlag) {
     const bool nonce_wait_timeout = s_ota.offer_pending && !s_ota.active;
     uint8_t status = s_ota.active ? OTA_ERR_TIMEOUT : OTA_STATE_IDLE;
     if(nonce_wait_timeout) {
@@ -1366,5 +1379,7 @@ void ota_lora_note_hwinfo_tx_started() {}
 bool ota_lora_on_tx_complete() { return false; }
 bool ota_lora_poll() { return false; }
 bool ota_lora_busy() { return false; }
+bool ota_lora_offer_waiting() { return false; }
+uint32_t ota_lora_offer_ms_left() { return 0; }
 
 #endif

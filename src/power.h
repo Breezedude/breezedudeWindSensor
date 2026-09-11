@@ -22,6 +22,10 @@ uint32_t sleep(bool enable_uart_interrupt);
 
 // Re-arm peripherals after a sleep window and refresh battery/charger state.
 void wakeup();
+// Pin groups released for the duration of the standby only; see power.cpp.
+// Runtime only, so a reset always returns the station to normal behaviour.
+void set_sleep_quiet_mask(uint32_t mask);
+uint32_t get_sleep_quiet_mask();
 
 // Full sleep cycle: work out how long to sleep, shut things down, sleep,
 // service the sensor and any LoRa traffic, then wake up again.

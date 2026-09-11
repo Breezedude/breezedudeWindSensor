@@ -8,12 +8,21 @@ extern Uart Serial2;
 void SERCOM1_Handler();
 void mark_uart_wakeup();
 void mark_console_wakeup();
+// Diagnostics for UART_WAKE, see the note above SERCOM1_Handler in sleep.cpp
+// for how to read them together.
+extern volatile uint32_t sercom1_irq_count;
+extern volatile uint32_t sercom1_rxs_count;
+extern volatile uint32_t sercom1_rxc_count;
+extern volatile uint32_t sercom1_err_count;
+extern volatile uint32_t sercom1_last_status;
 void enable_sercom0_int();
 void disable_sercom0_int();
-// The debug UART. Lets the console be reached while the station sleeps; see the
-// comment in sleep.cpp for the cost and for the lost first byte.
-void enable_sercom1_int();
-void disable_sercom1_int();
+// The debug UART, set up once to keep receiving while the station sleeps.
+//
+// Must be called after every DEBUGSER.begin(): Uart::begin() runs a SWRST that
+// wipes RUNSTDBY, SFDE and BAUD. Passing false leaves the UART exactly as the
+// Arduino core configured it, which is the zero-cost default.
+void configure_debug_uart_standby(bool enable);
 void pinDisable(uint32_t pin);
 void configGCLK6(bool en_rtc);
 void deepsleep(bool light);
@@ -28,8 +37,6 @@ void setup_BOD33_interrupt();
 
 void attachInterruptWakeup(uint32_t pin, voidFuncPtr callback, uint32_t mode, bool en_rtc);
 void setup_PM(bool en_pulse_counter, bool en_rtc_counter);
-void PM_sleep();
-//void PM_wakeup();
 
 void setup_pulse_counter();
 uint16_t read_pulse_counter();

@@ -7,6 +7,8 @@
 #include "config_update.h"
 #include "settings_edit.h"
 #include "status.h"
+#include "sensors.h"
+#include "power.h"
 #include <Adafruit_TinyUSB.h>
 
 extern LORA_MODULE lora_module;
@@ -597,6 +599,59 @@ static bool cmd_time_skip(const char *v){
   return true;
 }
 
+/**
+ * WS_POWER=0|1|A - force the sensor supply off, on, or back to automatic.
+ *
+ * There to attribute the standby current. About 94 % of the 0.78 mA baseline
+ * sits outside the MCU, and cutting PIN_PS_WS for a few seconds during a PPK2
+ * measurement puts a number on the sensor's share instead of a guess.
+ *
+ * switch_sensor_power() already isolates the UART pins when the supply goes:
+ * TX idles HIGH and would otherwise feed the sensor through its protection
+ * diodes with its VCC removed.
+ *
+ * Runtime only, deliberately not a stored setting - a reset returns the station
+ * to automatic, so a forgotten test cannot strand a station with a dead sensor.
+ */
+static bool cmd_ws_power(const char *v){
+  if(v[0] == 'A' || v[0] == 'a' || v[0] == '-'){
+    set_sensor_power_override(-1);
+    log_i("WS_POWER automatic\r\n");
+  } else {
+    const bool on = (strtoul(v, nullptr, 10) != 0);
+    set_sensor_power_override(on ? 1 : 0);
+    log_i(on ? "WS_POWER forced ON\r\n" : "WS_POWER forced OFF\r\n");
+  }
+  log_flush();
+  return true;
+}
+
+/**
+ * SLEEPQUIET=<mask> - release pin groups for the standby only.
+ *
+ * A diagnostic for the roughly 260 uA of standby baseline that has no owner
+ * once the sensor is switched off. Pins that are never touched before a sleep
+ * are the obvious place to look: SPI and I2C stay under peripheral control from
+ * their begin() call onwards, and an input buffer on a floating line draws
+ * crowbar current where a driven one draws none - MISO in particular floats
+ * whenever the radio is deselected.
+ *
+ * The mask is applied around __WFI and undone immediately after, so the station
+ * behaves exactly as before while it is awake. An earlier version released the
+ * pins permanently; that broke the peripherals, the station stopped reaching
+ * standby, and the measurement showed the CPU rather than the pins.
+ *
+ * See power.cpp for the group numbers. Runtime only - a reset clears it.
+ */
+static bool cmd_sleep_quiet(const char *v){
+  const uint32_t mask = strtoul(v, nullptr, 10);
+  set_sleep_quiet_mask(mask);
+  log_i("SLEEPQUIET mask: ", mask);
+  log_i("\r\n");
+  log_flush();
+  return true;
+}
+
 static bool cmd_status(const char *v){
   (void)v;
   status_print_json();
@@ -682,6 +737,8 @@ static const SettingEntry setting_table[] = {
   {"STATUS",                     cmd_status,      SETTING_CMD}, // one JSON line
   {"BOOTLOADER",                 cmd_bootloader,  SETTING_CMD}, // restart into UF2
   {"TIME_SKIP",                  cmd_time_skip,   SETTING_CMD}, // seconds, for wrap tests
+  {"WS_POWER",                   cmd_ws_power,    SETTING_CMD}, // 0/1/A, sensor supply
+  {"SLEEPQUIET",                 cmd_sleep_quiet, SETTING_CMD}, // bitmask, pins idle in standby
   {"GET_UUID",                   cmd_get_uuid,    SETTING_CMD},
   {"SLEEP",                      cmd_sleep,       SETTING_CMD},
   {"FORMAT",                     cmd_format,      SETTING_CMD},

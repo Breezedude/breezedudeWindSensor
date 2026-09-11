@@ -33,8 +33,28 @@ CHIP_IMU chip_imu = IMU_NONE;
 
 Sensors sensor;
 
+// Test override for the sensor supply, set by the WS_POWER console command.
+// -1 leaves the undervoltage state machine in charge, 0 and 1 force it.
+//
+// Without this a forced state would not survive: read_batt_perc() runs on every
+// wakeup and battery_update_power_state() would switch the sensor straight back
+// on, which is precisely what happens during a measurement.
+static int8_t sensor_power_override = -1;
+
+void set_sensor_power_override(int8_t mode){
+  sensor_power_override = mode;
+  if(mode >= 0){ switch_sensor_power(mode != 0); }
+}
+
+int8_t get_sensor_power_override(){ return sensor_power_override; }
+
+// File scope rather than a function static, so the sleep path can ask whether
+// it still makes sense to arm SERCOM0 for a sensor that has no supply.
+static bool current_power_state = false;
+
+bool sensor_power_is_on(){ return current_power_state; }
+
 void switch_sensor_power(bool state){
-  static bool current_power_state = false;
   const bool uses_uart = sensor_uses_uart();
   if(state && !current_power_state){ // turn on
     current_power_state = true;
@@ -52,6 +72,12 @@ void switch_sensor_power(bool state){
     current_power_state = false;
     digitalWrite(PIN_PS_WS, 1);
     if(uses_uart){
+      // Stop the SERCOM before letting go of the pins. Once PMUXEN is cleared
+      // the receiver no longer sees a driven line and reads a permanent low -
+      // which to a UART is an endless run of start bits and framing errors.
+      // Leaving it enabled cost 13 mA instead of 0.78 mA: the station never got
+      // to stay asleep, because SERCOM0 kept waking it.
+      SENSOR_UART.end();
       // Disable UART pins so the idle-HIGH TX line cannot leak current into the
       // sensor through its input protection diodes when its VCC is removed.
       pinDisable(PIN_TX); // PA10 - UART idles HIGH, would source current into sensor
@@ -79,13 +105,13 @@ void battery_update_power_state(float v) {
   }
 
   if(v < 3.15f) { // undervoltage, turn off sensor to save power
-    switch_sensor_power(0);
+    if(sensor_power_override < 0) { switch_sensor_power(0); }
     state.uv_triggered = true;
     undervoltage = true;
     return;
   }
   if(v > 3.3f) {
-    if(sensor_uses_uart()) { switch_sensor_power(1); }
+    if(sensor_power_override < 0 && sensor_uses_uart()) { switch_sensor_power(1); }
     undervoltage = false;
   }
   if(v > 4.15f) { state.uv_triggered = false; }
@@ -140,6 +166,13 @@ void read_batt_perc(){
     // no extra accuracy and doubled the time the ADC stays powered.
     constexpr int N_SAMPLES = 7;
     uint16_t samples[N_SAMPLES];
+    // V_IMP is driven here instead of relying on wakeup() having done it. Q2 is
+    // switched by an edge coupled through C9, so the pin must be a real output:
+    // on a pin that is not an output, digitalWrite() only changes the pull
+    // resistor, and no edge reaches the gate. The deep undervoltage loop in
+    // go_sleep() called this with the pin already released by pinDisable().
+    pinMode(PIN_V_READ_TRIGGER, OUTPUT);
+    digitalWrite(PIN_V_READ_TRIGGER,1);
     digitalWrite(PIN_V_READ_TRIGGER,0);
     delayMicroseconds(50); // allow divider to settle
     for (int i = 0; i < N_SAMPLES; i++) {
@@ -371,7 +404,6 @@ void read_baro(){
     if(sensor.next_baro_reading && time_reached(sensor.next_baro_reading)){
       hp.Measure_Pressure();
       hp.Measure_Temperature();
-      hp.startMeasure();
       P = hp.hp_sensorData.P;
       T = hp.hp_sensorData.T;
       if(P > 0){ data_ok = true; }
@@ -381,15 +413,25 @@ void read_baro(){
 
   if(data_ok){
     sensor.baro_temp = T;
-    sensor.next_baro_reading = 0;
     sensor.last_baro_reading = now;
     sensor.baro_pressure = apply_altitude_correction(P, T, position_alt());
     log_v("Baro: ", sensor.baro_pressure);
     log_v("Baro Temp: ", sensor.baro_temp);
-  } else {
-    //log_v("Baro no data, retry\r\n");
-    //baro_start_reading();
   }
+  // Start the next conversion right away. It completes within milliseconds and
+  // the sensor holds the result, so the next transmission reads it without
+  // waiting. The price is that pressure and temperature are up to one send
+  // interval old when they go out, which matters for neither. After a failed
+  // read this is also the retry.
+  sensor.next_baro_reading = 0;
+  baro_start_reading();
+}
+
+// A conversion is running and its result is not due yet. That is not the same
+// as next_baro_reading being set: it now stays set between transmissions,
+// because the next conversion starts as soon as a reading has been taken.
+bool baro_conversion_running(){
+  return sensor.next_baro_reading && !time_reached(sensor.next_baro_reading);
 }
 
 static volatile bool davis_speed_pulse = false;

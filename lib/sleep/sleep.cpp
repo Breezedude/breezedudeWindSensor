@@ -87,8 +87,37 @@ void SERCOM0_Handler(void) {
 // The debug UART. Same shape as SERCOM0_Handler above: the start-of-frame flag
 // has to be cleared by hand, and it is the only place that can tell a genuine
 // wakeup on the console from a stray USB interrupt.
+// Counters for diagnosing UART_WAKE.
+//
+// The question they answer now is what a wakeup with nobody sending actually
+// was. RXS only says a 1-to-0 edge was seen on RxD; it does not say whether a
+// valid frame followed. So RXC and ERROR are counted alongside it:
+//
+//   rxs up, rxc up, err flat  -> a real byte arrived, someone did send
+//   rxs up, rxc flat, err up  -> the "start bit" was a glitch, the frame that
+//                                followed was not a frame - line noise
+//   rxs up, rxc flat, err flat-> an edge with nothing behind it at all
+//
+// STATUS has to be read here, before Serial2's handler clears it, or the
+// distinction between a framing error and an overflow is gone by the time
+// anything can log it.
+volatile uint32_t sercom1_irq_count = 0;
+volatile uint32_t sercom1_rxs_count = 0;
+volatile uint32_t sercom1_rxc_count = 0;
+volatile uint32_t sercom1_err_count = 0;
+volatile uint32_t sercom1_last_status = 0;
+
 void SERCOM1_Handler(){
-  if (SERCOM1->USART.INTFLAG.bit.RXS) {
+  sercom1_irq_count++;
+  const uint8_t flags = SERCOM1->USART.INTFLAG.reg;
+
+  if (flags & SERCOM_USART_INTFLAG_RXC) { sercom1_rxc_count++; }
+  if (flags & SERCOM_USART_INTFLAG_ERROR) {
+    sercom1_err_count++;
+    sercom1_last_status = SERCOM1->USART.STATUS.reg;
+  }
+  if (flags & SERCOM_USART_INTFLAG_RXS) {
+    sercom1_rxs_count++;
     SERCOM1->USART.INTFLAG.reg = SERCOM_USART_INTFLAG_RXS;
     // Deliberately its own reason, not the sensor's: a console command has to
     // end the sleep window, whereas a byte from the sensor must not.
@@ -98,6 +127,134 @@ void SERCOM1_Handler(){
 }
 
 
+// GCLK2 as a low power generator on OSCULP32K, set up exactly once.
+//
+// Configuring it once is hygiene rather than a fix: writing GENCTRL takes the
+// generator down for a moment, and with a UART sensor enable_sercom0_int()
+// attaches SERCOM0 to GCLK2 on every single sleep, so there is no reason to
+// keep re-writing it underneath a running peripheral.
+//
+// It was once believed to be the cause of "Wakeup: 266, source NONE" repeating
+// forever. It was not - that was a fresh boot each time, from a watchdog reset,
+// and the note above enable_sercom0_int() has the real story.
+static void ensure_gclk2_ulp(void) {
+  static bool configured = false;
+  if (configured) return;
+
+  GCLK->GENDIV.reg = GCLK_GENDIV_ID(2) | GCLK_GENDIV_DIV(0);
+  while (GCLK->STATUS.bit.SYNCBUSY);
+
+  GCLK->GENCTRL.reg = GCLK_GENCTRL_ID(2) |
+                      GCLK_GENCTRL_SRC_OSCULP32K |
+                      GCLK_GENCTRL_RUNSTDBY |
+                      GCLK_GENCTRL_GENEN |
+                      GCLK_GENCTRL_IDC |
+                      GCLK_GENCTRL_DIVSEL;
+  while (GCLK->STATUS.bit.SYNCBUSY);
+  configured = true;
+}
+
+// GCLK3 as the fast start-up oscillator for SERCOM cores in standby.
+//
+// The Arduino core startup already puts OSC8M on generator 3 at 8 MHz and
+// already clears OSC8M.ONDEMAND, so the oscillator keeps running instead of
+// being started on request. Only RUNSTDBY is missing.
+//
+// This is what the datasheet asks for. AT11626 section 4.5 is explicit: "In
+// standby sleep mode, the internal fast start-up oscillator must be selected
+// as the GCLK_SERCOMx_CORE source." A 32 kHz generator is not that oscillator,
+// and Microchip's own SOF example clears OSC8M.ONDEMAND for exactly one stated
+// reason - "to avoid the loss of first character which wake up the device from
+// sleep mode". Losing the first byte is therefore not a quirk to live with, it
+// is the symptom of running the wrong clock.
+// Two separate bits are needed, and missing the second one is subtle. The core
+// clears OSC8M.ONDEMAND, which means "always on while enabled" - but that says
+// nothing about standby. OSC8M.RUNSTDBY is what decides there: with 0 the
+// oscillator is stopped in standby unless a peripheral is asking for it, and a
+// SERCOM woken by a start bit asks too late for the first frame. Both bits are
+// set here, plus RUNSTDBY on the generator that carries the clock.
+static bool gclk3_osc8m_running = false;
+
+static void ensure_gclk3_osc8m_stdby(void) {
+  if (gclk3_osc8m_running) return;
+
+  SYSCTRL->OSC8M.bit.ONDEMAND = 0;
+  SYSCTRL->OSC8M.bit.RUNSTDBY = 1;
+
+  GCLK->GENCTRL.reg = GCLK_GENCTRL_ID(3) |
+                      GCLK_GENCTRL_SRC_OSC8M |
+                      GCLK_GENCTRL_RUNSTDBY |
+                      GCLK_GENCTRL_GENEN;
+  while (GCLK->STATUS.bit.SYNCBUSY);
+  gclk3_osc8m_running = true;
+}
+
+/**
+ * Hand the 8 MHz oscillator back when nothing needs it.
+ *
+ * The Arduino core startup puts OSC8M on generator 3 with GENEN and clears
+ * OSC8M.ONDEMAND, so from reset the oscillator runs the whole time the MCU is
+ * awake - roughly 60-70 uA - even though nothing in this project consumes
+ * GCLK3. Standby was never affected: generator 3 has no RUNSTDBY there, stops,
+ * and stops requesting its source. This is purely an awake-time cost, and with
+ * UART_WAKE off it buys nothing at all.
+ *
+ * Disabling the generator and handing ONDEMAND back means OSC8M only starts if
+ * some peripheral actually asks for it.
+ */
+static void release_gclk3_osc8m(void) {
+  GCLK->GENCTRL.reg = GCLK_GENCTRL_ID(3);   // GENEN clear: generator off
+  while (GCLK->STATUS.bit.SYNCBUSY);
+
+  SYSCTRL->OSC8M.bit.RUNSTDBY = 0;
+  SYSCTRL->OSC8M.bit.ONDEMAND = 1;
+  gclk3_osc8m_running = false;
+}
+
+// A note on BAUD, because getting this wrong cost a long hunt.
+//
+// SERCOM::initUART() in the Arduino core programs the rate in **fractional**
+// mode - it writes BAUD.FRAC.BAUD and BAUD.FRAC.FP and selects the mode with
+// CTRLA.SAMPR. Recomputing the register with the arithmetic-mode formula
+// therefore does not produce the same number at all: for 115200 at 48 MHz the
+// arithmetic value is 63019, which read as a fractional register means
+// BAUD=5675, FP=7 - about **528 baud**. The correct fractional value is 26.
+//
+// On SERCOM0 that never showed, because SENSOR_UART.begin() right after the
+// wake reprograms the register anyway. On SERCOM1 nothing did, so the debug
+// console dropped to 528 baud after the first sleep. That was the burst of
+// garbage on the UART, and it is why log_flush() then sat there long enough
+// for the 2500 ms watchdog to reset the station - "Reset cause: 0x20 [WDT]",
+// every 37 s, which looked for a long time like a standby problem.
+//
+// The lesson is to use the same format the core uses, which is what
+// standby_baud_reg() below does. SERCOM1's rate is now set once, for the clock
+// it actually runs on, and never switched again.
+//
+// SERCOM0 is left alone: disable_sercom0_int() still writes the wrong value,
+// but SENSOR_UART.begin() overwrites it microseconds later, so it changes
+// nothing. Worth cleaning up separately, not in the middle of a measurement.
+
+/** The clock the debug UART runs on once configure_debug_uart_standby() ran. */
+#define SERCOM_STANDBY_HZ   8000000UL
+#define SERCOM_STANDBY_BPS  115200UL
+
+/**
+ * Baud register for the 8 MHz core clock, in the core's fractional format.
+ *
+ * Rounded rather than truncated, which is worth a word: the exact quotient is
+ * 34.72, and SERCOM::initUART() takes the integer division, so the core would
+ * program 34 - BAUD = 4, FP = 2, giving 117647 baud, 2.1 % fast. Rounding to
+ * 35 gives BAUD = 4, FP = 3 and 114286 baud, 0.79 % slow. An 8N1 frame carries
+ * roughly 3 %, so the rounded value leaves three times the margin for free.
+ */
+static uint16_t standby_baud_reg(void) {
+  const uint32_t num = SERCOM_STANDBY_HZ * 8UL;
+  const uint32_t den = 16UL * SERCOM_STANDBY_BPS;
+  const uint32_t baud_times_8 = (num + den / 2UL) / den;
+  return (uint16_t)(((baud_times_8 % 8UL) << 13) | (baud_times_8 / 8UL));
+}
+
 void enable_sercom0_int(void) {
     // 1) Make sure SERCOM0 APBC clock is enabled
     PM->APBCMASK.reg |= PM_APBCMASK_SERCOM0;
@@ -106,18 +263,8 @@ void enable_sercom0_int(void) {
     SERCOM0->USART.CTRLA.bit.ENABLE = 0;
     while (SERCOM0->USART.SYNCBUSY.reg != 0); // wait any sync
 
-    // 3) Configure GCLK2 as OSCULP32K and RUNSTDBY (generator setup)
-    //    (assumes nothing else uses GCLK2 — adapt if it does)
-    GCLK->GENDIV.reg = GCLK_GENDIV_ID(2) | GCLK_GENDIV_DIV(0); // DIV=0 => no divide
-    while (GCLK->STATUS.bit.SYNCBUSY);
-
-    GCLK->GENCTRL.reg = GCLK_GENCTRL_ID(2) |
-                        GCLK_GENCTRL_SRC_OSCULP32K |
-                        GCLK_GENCTRL_RUNSTDBY |
-                        GCLK_GENCTRL_GENEN |
-                        GCLK_GENCTRL_IDC |
-                        GCLK_GENCTRL_DIVSEL; // DIVSEL not necessary with DIV 0 but OK
-    while (GCLK->STATUS.bit.SYNCBUSY);
+    // 3) GCLK2 as OSCULP32K with RUNSTDBY, once. See ensure_gclk2_ulp().
+    ensure_gclk2_ulp();
 
     // 4) Attach GCLK2 to SERCOM0 core and slow clocks (use CLKCTRL on SAMD21)
     // core
@@ -446,7 +593,16 @@ void setup_PM(bool en_pulse_counter, bool en_rtc_counter){
   //PM->APBCMASK.reg &= ~PM_APBCMASK_ADC;
   
   PM->APBCMASK.reg &= ~PM_APBCMASK_DAC;
-  PM->APBCMASK.reg &= ~PM_APBBMASK_DMAC;
+
+  // The DMAC, which nothing in this project uses. Both of its clocks have to go,
+  // and both live in registers of their own.
+  //
+  // What used to stand here was "PM->APBCMASK.reg &= ~PM_APBBMASK_DMAC" - an
+  // APBB bit written into the APBC register. PM_APBBMASK_DMAC is bit 4, and bit
+  // 4 of APBCMASK is SERCOM2, so the line switched off SERCOM2 (which the block
+  // below does anyway) and never touched the DMAC at all.
+  PM->AHBMASK.reg  &= ~PM_AHBMASK_DMAC;
+  PM->APBBMASK.reg &= ~PM_APBBMASK_DMAC;
 
   // Bd adafruit default all sercoms are enabled, disable the one we dont use
   //PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM1; // Serial2
@@ -717,175 +873,108 @@ void reset_time_counter(){
 }
 
 
-void PM_sleep(){
-  /* NOT USED
-  PM->APBCMASK.reg &= ~PM_APBCMASK_ADC;
-  PM->APBCMASK.reg &= ~PM_APBBMASK_DMAC;
-  PM->APBCMASK.reg &= ~PM_APBBMASK_DSU;
-  PM->APBCMASK.reg &= ~PM_APBBMASK_USB; // this kills I2C. No
 
-  PM->APBCMASK.reg &= ~PM_APBBMASK_PAC1;
-  PM->APBCMASK.reg &= ~PM_APBBMASK_HMATRIX;
-
-  PM->AHBMASK.reg  &= ~PM_AHBMASK_DMAC;
-  PM->AHBMASK.reg  &= ~PM_AHBMASK_DSU;
-  PM->AHBMASK.reg  &= ~PM_AHBMASK_USB; // this kills I2C after sleep
-
-  PM->AHBMASK.reg  &= ~PM_APBCMASK_I2S;
-  PM->AHBMASK.reg  &= ~PM_APBCMASK_PTC;
-  PM->AHBMASK.reg  &= ~PM_APBCMASK_DAC;
-  PM->AHBMASK.reg  &= ~PM_APBCMASK_AC;
-  PM->AHBMASK.reg  &= ~PM_APBCMASK_ADC;
-
-  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM0;
-  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM1;
-  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM2;
-  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM3;
-  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM4;
-  PM->APBCMASK.reg &= ~PM_APBCMASK_SERCOM5;
-
-  PM->APBCMASK.reg &= ~PM_APBCMASK_TCC0;
-  PM->APBCMASK.reg &= ~PM_APBCMASK_TCC1;
-  PM->APBCMASK.reg &= ~PM_APBCMASK_TCC2;
-  PM->APBCMASK.reg &= ~PM_APBCMASK_TC3;
-  
-  PM->APBCMASK.reg &= ~PM_APBCMASK_TC5;
-  PM->APBCMASK.reg &= ~PM_APBCMASK_TC6;
-  PM->APBCMASK.reg &= ~PM_APBCMASK_TC7;
-
-
-  USB->DEVICE.CTRLA.bit.ENABLE = 0;
-  USB->DEVICE.CTRLA.bit.RUNSTDBY = 0;
-  while(USB->DEVICE.SYNCBUSY.bit.ENABLE){};
-  */
-}
-
-/*
-void PM_wakeup(){
-  PM->APBCMASK.reg |= PM_APBCMASK_ADC;
-
-  PM->APBCMASK.reg |= PM_APBCMASK_SERCOM0; // Serial1
-  PM->APBCMASK.reg |= PM_APBCMASK_SERCOM1; // Serial2
-  PM->APBCMASK.reg |= PM_APBCMASK_SERCOM3;
-  PM->APBCMASK.reg |= PM_APBCMASK_SERCOM4;
-}
-*/
-
-// Debug UART wakeup ----------------------------------------------------------
+// The debug UART in standby ---------------------------------------------------
 //
-// Same mechanism as enable_sercom0_int() above, for SERCOM1 - the debug UART.
-// It exists so the console stays reachable while the station sleeps.
-//
-// Without it the console is only usable for about two seconds after a reset:
+// The point of UART_WAKE: the console stays reachable while the station sleeps.
+// Without it the console is only usable for about two seconds after a reset -
 // the SERCOM clocks stop in standby, so anything arriving while the station is
-// asleep is lost outright and never processed. Measured on the rig: of sixty
-// requests sent one per second, two were answered - the two inside that window
-// - and not one of the other fifty-eight ever produced a late reply.
+// asleep is lost outright. Measured on the rig: of sixty requests sent one per
+// second, two were answered, and not one of the other fifty-eight ever produced
+// a late reply.
 //
-// It is off by default and switched on with UART_WAKE=1. Two reasons to leave
-// it off in the field: the RX line sits behind a Schottky and a 10 kOhm pull-up
-// since the phantom-supply fix, so it is high impedance and a stray edge could
-// wake the station for nothing; and keeping OSCULP32K and the SERCOM alive in
-// standby costs current that a mast-mounted station has no use for.
+// Nothing is switched on going to sleep or on waking, and that is the design.
 //
-// Note that the first byte after a wakeup is lost. The start bit is what wakes
-// the device, and the core clock only switches back to 48 MHz afterwards, so
-// the frame that did the waking is sampled at the wrong rate. A host has to
-// send a wake byte, wait a moment, and only then the command.
-void enable_sercom1_int(void) {
-    PM->APBCMASK.reg |= PM_APBCMASK_SERCOM1;
+// The first attempt did switch: it moved the core clock to a low-power
+// generator before the sleep and back afterwards, which meant disabling the
+// USART at both ends. That window is where the bytes went. The SAMD21 SERCOM
+// has no receive FIFO - AT11626 lists "single transmit buffer and double
+// receive buffers", so two bytes, 174 us at 115200 - and a receiver that is
+// switched off buffers nothing at all. Measured: four bytes lost on every
+// wake, regardless of how much padding the host sent ahead of the command.
+//
+// So the peripheral is configured once and then left alone. The start bit
+// wakes the CPU through SFDE while the SERCOM, still clocked, samples that very
+// frame; RXC then fires and Serial2's handler puts the byte into the 350 byte
+// ring buffer, exactly as it does while awake. Reception no longer depends on
+// what the main code happens to be doing at that moment.
+//
+// The core clock has to be OSC8M for this. AT11626 section 4.5: "In standby
+// sleep mode, the internal fast start-up oscillator must be selected as the
+// GCLK_SERCOMx_CORE source." A 32 kHz generator cannot carry 115200 at all -
+// 16x oversampling would need 1.84 MHz - so the low-power generator was only
+// ever good for being woken, never for receiving.
+//
+// Cost, measured in the field state: about +0.10 mA on a 0.77 mA baseline.
+// AT11491 puts a UART in standby at 28.6 uA and the rest is OSC8M. DEBUG is
+// normally on in the field, so this is a real running cost rather than a
+// lab-only one, which is why it stays behind UART_WAKE and off by default.
+void configure_debug_uart_standby(bool enable){
+  if(!enable){
+    // Nothing here wants the 8 MHz oscillator, so let it go - see
+    // release_gclk3_osc8m(). This is the default path: UART_WAKE is off.
+    release_gclk3_osc8m();
+    return;
+  }
 
-    SERCOM1->USART.CTRLA.bit.ENABLE = 0;
-    while (SERCOM1->USART.SYNCBUSY.reg != 0);
+  PM->APBCMASK.reg |= PM_APBCMASK_SERCOM1;
 
-    // GCLK2 is already set up as OSCULP32K with RUNSTDBY by
-    // enable_sercom0_int(); configured again here so this works on its own,
-    // for a station whose sensor does not use a UART.
-    GCLK->GENDIV.reg = GCLK_GENDIV_ID(2) | GCLK_GENDIV_DIV(0);
-    while (GCLK->STATUS.bit.SYNCBUSY);
-
-    GCLK->GENCTRL.reg = GCLK_GENCTRL_ID(2) |
-                        GCLK_GENCTRL_SRC_OSCULP32K |
-                        GCLK_GENCTRL_RUNSTDBY |
-                        GCLK_GENCTRL_GENEN |
-                        GCLK_GENCTRL_IDC |
-                        GCLK_GENCTRL_DIVSEL;
-    while (GCLK->STATUS.bit.SYNCBUSY);
-
-    GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(SERCOM1_GCLK_ID_CORE) |
-                        GCLK_CLKCTRL_GEN_GCLK2 |
-                        GCLK_CLKCTRL_CLKEN;
-    while (GCLK->STATUS.bit.SYNCBUSY);
-
-    // The slow clock is what detects the start bit while the core is stopped.
-    GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(SERCOM1_GCLK_ID_SLOW) |
-                        GCLK_CLKCTRL_GEN_GCLK2 |
-                        GCLK_CLKCTRL_CLKEN;
-    while (GCLK->STATUS.bit.SYNCBUSY);
-
-    SERCOM1->USART.CTRLA.reg = (SERCOM1->USART.CTRLA.reg & ~SERCOM_USART_CTRLA_MODE_Msk)
-                              | SERCOM_USART_CTRLA_MODE_USART_INT_CLK;
-    SERCOM1->USART.CTRLA.bit.RUNSTDBY = 1;
-    while (SERCOM1->USART.SYNCBUSY.reg != 0);
-
-    // SFDE is the point of the whole exercise: start-frame detection is what
-    // raises an interrupt while the core clock is stopped.
-    SERCOM1->USART.CTRLB.reg = SERCOM_USART_CTRLB_CHSIZE(0x0) |
-                               SERCOM_USART_CTRLB_TXEN |
-                               SERCOM_USART_CTRLB_RXEN |
-                               SERCOM_USART_CTRLB_SFDE;
-    while (SERCOM1->USART.SYNCBUSY.bit.CTRLB);
-
-    // Start-of-frame only. RXC is switched off for the duration of the sleep
-    // because reception proper cannot work anyway while the clock is at 32 kHz;
-    // it is handed back in disable_sercom1_int().
-    //
-    // KNOWN DEFECT, do not switch this on in the field. With UART_WAKE=1 the
-    // station does not reach standby: measured over 90 s, every wake reported
-    // source NONE and not a single RTC wake occurred, while with the flag off
-    // the same window shows RTC x3. The baseline goes from 0.78 mA to 1.98 mA -
-    // that is the cost of not sleeping, not the cost of the oscillator.
-    //
-    // The cause is not yet found. __WFI returns at once while an enabled SERCOM
-    // interrupt is pending, so something here keeps one asserted; disabling RXC
-    // (this line) was the obvious candidate and did not change the measurement.
-    // Next suspects: the ERROR interrupt the Arduino core enables, and the fact
-    // that the SERCOM slow clock is shared across all SERCOMs on the SAMD21, so
-    // pointing it at GCLK2 also moves it under SERCOM0.
-    SERCOM1->USART.INTENCLR.reg = SERCOM_USART_INTENCLR_RXC;
-    SERCOM1->USART.INTENSET.reg = SERCOM_USART_INTENSET_RXS;
-
-    NVIC_ClearPendingIRQ(SERCOM1_IRQn);
-    NVIC_SetPriority(SERCOM1_IRQn, 0);
-    NVIC_EnableIRQ(SERCOM1_IRQn);
-
-    SERCOM1->USART.CTRLA.bit.ENABLE = 1;
-    while (SERCOM1->USART.SYNCBUSY.bit.ENABLE);
-}
-
-void disable_sercom1_int() {
-  const uint16_t baudreg = (uint16_t)(65536.0f * (1.0f - (16.0f * (float)baud / (fcpu * 1000000.0f))));
-
+  // The USART is stopped before the generator is touched, not after: the
+  // SYNCBUSY spin below needs the core clock it is currently running on, and
+  // taking that away first would hang here.
   SERCOM1->USART.CTRLA.bit.ENABLE = 0;
-  while (SERCOM1->USART.SYNCBUSY.bit.ENABLE);
+  while (SERCOM1->USART.SYNCBUSY.reg != 0);
 
-  // Back to 48 MHz, otherwise the next character is sampled at 32 kHz.
+  ensure_gclk2_ulp();
+  ensure_gclk3_osc8m_stdby();
+
+  // The fast start-up oscillator, permanently - awake and asleep alike.
   GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(SERCOM1_GCLK_ID_CORE) |
-                      GCLK_CLKCTRL_GEN_GCLK0 |
+                      GCLK_CLKCTRL_GEN_GCLK3 |
                       GCLK_CLKCTRL_CLKEN;
   while (GCLK->STATUS.bit.SYNCBUSY);
 
-  if (SERCOM1->USART.BAUD.reg != baudreg) {
-    SERCOM1->USART.BAUD.reg = baudreg;
-  }
+  // The slow clock is one single channel for every SERCOM on this chip -
+  // SERCOM0_GCLK_ID_SLOW and SERCOM1_GCLK_ID_SLOW are both 19 - so this moves
+  // SERCOM0's as well. Both want GCLK2, so it makes no difference.
+  GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(SERCOM1_GCLK_ID_SLOW) |
+                      GCLK_CLKCTRL_GEN_GCLK2 |
+                      GCLK_CLKCTRL_CLKEN;
+  while (GCLK->STATUS.bit.SYNCBUSY);
 
-  SERCOM1->USART.CTRLA.bit.RUNSTDBY = 0;
-  SERCOM1->USART.INTENCLR.bit.RXS = 1;
-  // Hand reception back to the Arduino core, which owns RXC while awake.
-  SERCOM1->USART.INTENSET.reg = SERCOM_USART_INTENSET_RXC;
+  SERCOM1->USART.CTRLA.bit.RUNSTDBY = 1;
+  while (SERCOM1->USART.SYNCBUSY.reg != 0);
+
+  SERCOM1->USART.BAUD.reg = standby_baud_reg();
+
+  SERCOM1->USART.CTRLB.reg = SERCOM_USART_CTRLB_CHSIZE(0x0) |
+                             SERCOM_USART_CTRLB_TXEN |
+                             SERCOM_USART_CTRLB_RXEN |
+                             SERCOM_USART_CTRLB_SFDE;
+  while (SERCOM1->USART.SYNCBUSY.bit.CTRLB);
+
+  // Clear whatever the reconfiguration left standing before arming anything:
+  // __WFI returns at once while an enabled interrupt is pending, and a stale
+  // flag would turn the very first sleep into a spin. RXC does not clear by
+  // writing INTFLAG, it goes away by reading DATA.
+  (void)SERCOM1->USART.DATA.reg;
+  SERCOM1->USART.STATUS.reg = SERCOM_USART_STATUS_BUFOVF |
+                              SERCOM_USART_STATUS_FERR |
+                              SERCOM_USART_STATUS_PERR;
+  SERCOM1->USART.INTFLAG.reg = SERCOM_USART_INTFLAG_ERROR |
+                               SERCOM_USART_INTFLAG_RXS |
+                               SERCOM_USART_INTFLAG_TXC;
+
+  // RXS wakes the CPU, RXC delivers the byte, ERROR is the one the Arduino
+  // core owns and its handler clears.
+  SERCOM1->USART.INTENSET.reg = SERCOM_USART_INTENSET_RXS |
+                                SERCOM_USART_INTENSET_RXC |
+                                SERCOM_USART_INTENSET_ERROR;
+
+  NVIC_ClearPendingIRQ(SERCOM1_IRQn);
+  NVIC_SetPriority(SERCOM1_IRQn, SERCOM_NVIC_PRIORITY);
+  NVIC_EnableIRQ(SERCOM1_IRQn);
 
   SERCOM1->USART.CTRLA.bit.ENABLE = 1;
   while (SERCOM1->USART.SYNCBUSY.bit.ENABLE);
-
-  NVIC_SetPriority(SERCOM1_IRQn, SERCOM_NVIC_PRIORITY);
 }

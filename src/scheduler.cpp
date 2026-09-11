@@ -308,7 +308,7 @@ static bool allowed_to_send_weather(){
 
  // Print reasons for not beeing ready
   if(!ok){
-    if(sensor.last_data && !sensor.next_baro_reading && !undervoltage){ // ever got some sensor data and baro currently not waiting for data
+    if(sensor.last_data && !baro_conversion_running() && !undervoltage){ // ever got some sensor data and baro currently not waiting for data
       log_d("Wind Sensor data age: ", time()- sensor.last_data);
       log_d("Baro data age: ", time()- sensor.last_baro_reading);
     }
@@ -413,6 +413,7 @@ typedef struct {
   TxAttemptResult (*send)();
   void           (*on_deferred)(uint32_t retry_delay); // nullptr -> defer_next_send()
   void           (*on_none)();    // nullptr -> nothing
+  bool            fresh_readings; // refresh battery and barometer before sending
 } TxJob;
 
 static bool tx_name_ready(){
@@ -432,7 +433,7 @@ static TxAttemptResult tx_send_name(){
 // Wind data too old to send: log the ages, force a short wait window, and if the
 // sensor has been silent for over an hour, reset to recover.
 static void handle_stale_wind_data(){
-  if(!(sensor_tracks_last_data() && sensor.last_data && !sensor.next_baro_reading &&
+  if(!(sensor_tracks_last_data() && sensor.last_data && !baro_conversion_running() &&
        (time() - sensor.last_data > 10000))) {
     return;
   }
@@ -480,11 +481,11 @@ static void tx_info_deferred(uint32_t retry_delay){
 
 static const TxJob tx_jobs[] = {
   {"name",    &last_msg_name,    &settings.broadcast_interval_name,    nullptr,
-   tx_name_ready,    tx_send_name,     nullptr,          nullptr},
+   tx_name_ready,    tx_send_name,     nullptr,          nullptr,         false},
   {"weather", &last_msg_weather, &settings.broadcast_interval_weather, nullptr,
-   tx_weather_ready, send_msg_weather, nullptr,          tx_weather_none},
+   tx_weather_ready, send_msg_weather, nullptr,          tx_weather_none, true},
   {"info",    &last_msg_info,    nullptr, ota_lora_next_hwinfo_due_ms,
-   nullptr,          tx_send_info,     tx_info_deferred, nullptr},
+   nullptr,          tx_send_info,     tx_info_deferred, nullptr,         true},
 };
 
 static bool tx_job_due(const TxJob &job){
@@ -498,6 +499,24 @@ static bool tx_job_due(const TxJob &job){
   return (time() - *job.last_msg) > (interval * broadcast_scale_factor);
 }
 
+// Battery voltage and barometer, refreshed right before a transmission that
+// carries them. Both used to be read on every wakeup although neither value is
+// used otherwise, and a 1000 mAh battery does not change on that time scale.
+//
+// At most once a second: a job that is due but not ready yet comes back on the
+// next loop iteration, and reading again there achieves nothing.
+static void refresh_tx_readings(){
+  static uint32_t last_refresh = 0;
+  if(last_refresh && (time() - last_refresh) < 1000u) {
+    return;
+  }
+  last_refresh = time();
+  read_batt_perc();
+  if(settings.use_baro) {
+    read_baro();
+  }
+}
+
 // Start any transmission that is due. The busy/cooldown check is re-evaluated
 // per job, exactly as the three original blocks did: a TX started by an earlier
 // job pushes last_fnet_send forward, and the cooldown then holds the rest back
@@ -506,6 +525,8 @@ void tx_run_jobs(){
   for(const TxJob &job : tx_jobs){
     if(ota_lora_busy() || !fanet_cooldown_ok()) continue;
     if(!tx_job_due(job)) continue;
+    // Before ready(): the weather gate checks how old the barometer reading is.
+    if(job.fresh_readings) refresh_tx_readings();
     if(job.ready && !job.ready()) continue;
 
     const TxAttemptResult result = job.send();

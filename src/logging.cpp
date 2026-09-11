@@ -1,5 +1,6 @@
 #include "logging.h"
 #include "tools.h"
+#include "sleep.h"
 #include <string.h>
 
 // Note on flushing: the per-call DEBUGSER.flush() that used to sit in every
@@ -419,6 +420,9 @@ void log_flush(){
 void log_ser_begin(){
   if(debug_en){
     DEBUGSER.begin(115200*div_cpu);
+    // Uart::begin() runs a SWRST that clears RUNSTDBY, SFDE and BAUD, so the
+    // standby configuration has to be put back after every single begin().
+    configure_debug_uart_standby(settings.uart_wake && debug_en);
   }
 }
 
