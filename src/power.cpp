@@ -170,7 +170,7 @@ uint32_t sleep(bool enable_uart_interrupt){
 
   if(sensor_uart_armed && settings.sensor_type == s_WS85_UART) {
     disable_sercom0_int();
-    ws85uart.begin(div_cpu); // required to get data
+    ws85uart.resync((uint8_t)div_cpu); // cheaper than begin(), see WS85WindSensor::resync()
   }
 
   // Ticks since the read at the previous wakeup: this sleep plus the wake phase

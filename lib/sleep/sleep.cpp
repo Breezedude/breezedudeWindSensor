@@ -231,9 +231,8 @@ static void release_gclk3_osc8m(void) {
 // standby_baud_reg() below does. SERCOM1's rate is now set once, for the clock
 // it actually runs on, and never switched again.
 //
-// SERCOM0 is left alone: disable_sercom0_int() still writes the wrong value,
-// but SENSOR_UART.begin() overwrites it microseconds later, so it changes
-// nothing. Worth cleaning up separately, not in the middle of a measurement.
+// SERCOM0 had the same arithmetic value in disable_sercom0_int(), hidden for a
+// long time by a begin() after every wakeup. It no longer writes the register.
 
 /** The clock the debug UART runs on once configure_debug_uart_standby() ran. */
 #define SERCOM_STANDBY_HZ   8000000UL
@@ -308,11 +307,11 @@ void enable_sercom0_int(void) {
 
 
 void disable_sercom0_int() {
-
-  #define fcpu 48
-  #define baud 115200
-  // calculate baudrate register for 48Mhz and 115200
-  const uint16_t baudreg = (uint16_t)(65536.0f * (1.0f - (16.0f * (float)baud / (fcpu * 1000000.0f))));
+  // The baud register is left as Uart::begin() set it. enable_sercom0_int()
+  // never changes it, so it is right again as soon as the core clock is back
+  // on GCLK0. This used to rewrite it from the arithmetic formula (63019), but
+  // the core runs the USART in fractional mode, where that value means about
+  // 550 baud: nothing was received until a begin() overwrote it again.
 
   // Disable USART
   SERCOM0->USART.CTRLA.bit.ENABLE = 0;
@@ -331,20 +330,32 @@ void disable_sercom0_int() {
   //                      GCLK_CLKCTRL_CLKEN;
   //  while (GCLK->STATUS.bit.SYNCBUSY);
 
-    // Reprogram baud only if required
-    if (SERCOM0->USART.BAUD.reg != baudreg)
-    SERCOM0->USART.BAUD.reg = baudreg;
-
     // Disable RUNSTDBY now (clear)
     SERCOM0->USART.CTRLA.bit.RUNSTDBY = 0;
+    // Start-of-frame detection off again, while the USART is disabled (SFDE is
+    // enable-protected). It only matters for waking from standby, and
+    // enable_sercom0_int() sets it again before every sleep.
+    SERCOM0->USART.CTRLB.bit.SFDE = 0;
+    while (SERCOM0->USART.SYNCBUSY.bit.CTRLB);
 
     // Disable RXSTART interrupt, keep RXC
-    SERCOM0->USART.INTENCLR.bit.RXS = 1;
+    // A full register write, not INTENCLR.bit.RXS = 1: reading INTENCLR returns
+    // every enabled interrupt, so the bitfield form wrote RXC back as well and
+    // switched off the receive interrupt. Measured: INTENSET 0x00 after the
+    // wakeup, bytes arriving but none reaching the buffer. The begin() that
+    // used to follow switched RXC back on and hid it.
+    SERCOM0->USART.INTENCLR.reg = SERCOM_USART_INTENCLR_RXS;
+    SERCOM0->USART.INTFLAG.reg = SERCOM_USART_INTFLAG_RXS; // no stale start condition
 
     // Re-enable USART
     SERCOM0->USART.CTRLA.bit.ENABLE = 1;
     while (SERCOM0->USART.SYNCBUSY.bit.ENABLE);
-
+    // The error flags are cleared, but nothing is read from DATA: the parser
+    // syncs on the frame's length byte, and that could be the one dropped.
+    SERCOM0->USART.STATUS.reg = SERCOM_USART_STATUS_BUFOVF |
+                                SERCOM_USART_STATUS_FERR |
+                                SERCOM_USART_STATUS_PERR;
+    SERCOM0->USART.INTFLAG.reg = SERCOM_USART_INTFLAG_ERROR;
     NVIC_SetPriority(SERCOM0_IRQn, SERCOM_NVIC_PRIORITY); // save time
 }
 // https://github.com/adafruit/ArduinoCore-samd/blob/05e83bcb71232684dc259131ac5c5d624db191f5/cores/arduino/SERCOM.cpp#L849C46-L849C66
@@ -526,6 +537,10 @@ void wdt_reset(){
 }
 
 void wdt_disable(){
+  // Wait for a clear or an enable still being synchronised before writing CTRL:
+  // a write during synchronisation stalls the bus. Waiting here lets interrupts
+  // run meanwhile.
+  while (WDT->STATUS.bit.SYNCBUSY){};
   WDT->CTRL.bit.ENABLE = 0; // Stop watchdog
   while (WDT->STATUS.bit.SYNCBUSY){};
 }
@@ -559,9 +574,15 @@ int wdt_enable(int maxPeriodMS, bool isForSleep) {
   static bool last_for_sleep = false;
   static int last_result = 0;
   if(maxPeriodMS == last_period && isForSleep == last_for_sleep && !WDT->CTRL.bit.ENABLE){
-    wdt_reset();
+    // One synchronised write, and no waiting for it: the enable synchronises in
+    // the background. What stood here before - wdt_reset(), then this CTRL
+    // write while the CLEAR was still being synchronised - stalled the
+    // peripheral bus with no interrupt served, measured about 740 us with GCLK6
+    // at 8192 Hz. The WS85 UART lost 5 to 7 bytes in the middle of every frame
+    // to it. Nothing clears the counter now; should it survive wdt_disable(), it
+    // holds only the wake phases since the last wdt_reset(), which are short
+    // against the period.
     WDT->CTRL.bit.ENABLE = 1; // Start watchdog now!
-    while (WDT->STATUS.bit.SYNCBUSY){};
     return last_result;
   }
 
@@ -627,8 +648,8 @@ int wdt_enable(int maxPeriodMS, bool isForSleep) {
     while (WDT->STATUS.bit.SYNCBUSY){}; // Sync CTRL write
   }
 
-  // Clear watchdog interval
-  wdt_reset();             
+  // No wdt_reset() right before the enable: a CLEAR still being synchronised
+  // makes the CTRL write stall the bus, see the fast path above.
   WDT->CTRL.bit.ENABLE = 1; // Start watchdog now!
   while (WDT->STATUS.bit.SYNCBUSY){};
   last_period = maxPeriodMS;

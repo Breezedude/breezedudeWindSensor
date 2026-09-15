@@ -21,6 +21,7 @@ public:
   uint16_t intervalValue = 0;
   uint32_t lastByte = 0;
   uint32_t baud = 9600;
+  uint8_t begun_div = 0;   // CPU divider the baud register was last set for
 
 
   WS85WindSensor(HardwareSerial* s, uint8_t addr = 0x85)
@@ -28,6 +29,7 @@ public:
 
   void begin(uint8_t div_cpu = 1) {
     serial->begin(baud*div_cpu);
+    begun_div = div_cpu;
     reset_rx();
   }
 
@@ -48,6 +50,7 @@ public:
     serial->end();
     serial->begin(115200);
     baud = 115200;
+    begun_div = 1;
   }
 
   void set_baud(uint32_t baud){
@@ -82,31 +85,73 @@ public:
   }
 
   #define RX_OFFSET 2
+  #define WS85_FRAME_LEN 33   // 85 03 1C, 28 payload bytes, CRC
   void reset_rx(){
-    // due to deepsleep wakeup we miss the first bytes
+    // A frame that begins while the station sleeps loses its first bytes:
+    // the receiver decodes only once the clock is back. assemble() puts them
+    // back. RX_OFFSET is where the bytes go when nothing better fits.
     rx[0] = 0x85;
     rx[1] = 0x03;
     rxPos = RX_OFFSET;
+    burstLen = 0;
+  }
+
+  // Called after a standby wakeup instead of begin(). disable_sercom0_int() has
+  // the USART back on its fast clock, with the baud rate begin() set and the
+  // start-of-frame detection off, so the receiver already runs: the bytes it
+  // took since then belong to the frame and stay in the buffer. Only the parser
+  // starts over. The first bytes of the frame arrive before the clock is back
+  // and are lost; assemble() puts them back.
+  void resync(uint8_t div_cpu) {
+    // The baud register only fits the CPU clock it was computed for. After a
+    // change of the divider that needs a real begin(), once.
+    if (div_cpu != begun_div) {
+      begin(div_cpu);
+      return;
+    }
+    reset_rx();
   }
 
   void poll(uint32_t timeout) {
-    if (serial->available()) {
-      if (rxPos < sizeof(rx)) {
-        rx[rxPos] = serial->read();
-        // printf("%02X ", rx[rxPos]);
-        
-        if(rxPos > RX_OFFSET || ( (rxPos == RX_OFFSET) && (rx[rxPos] == 0x1C ))){
-          rxPos++;
-        }
-        lastByte = micros();
-      } else {
-        reset_rx();
-      }
+    while (serial->available()) {
+      const uint8_t b = (uint8_t)serial->read();
+      if (burstLen < sizeof(burst)) { burst[burstLen++] = b; }
+      lastByte = micros();
     }
-    if ((rxPos>RX_OFFSET) && (micros() - lastByte >= timeout)) {
-      parseResponse();
+    // A measurement frame is 33 bytes: parse as soon as that many are in, or once
+    // the line has been idle for the timeout, which means bytes were lost.
+    if (burstLen && (burstLen >= WS85_FRAME_LEN || (micros() - lastByte >= timeout))) {
+      assemble();
       reset_rx();
     }
+  }
+
+  // Measured after a standby wakeup: the first 2 to 4 bytes of a frame arrive
+  // before the receiver runs again. Every measurement frame starts the same -
+  // address 0x85, function 0x03, byte count 0x1C, model high byte 0x00 - so
+  // each possible number of lost bytes is tried with those put back, and the
+  // CRC decides. A burst that fits none of them is parsed as received, which
+  // reports it as short or broken.
+  void assemble() {
+    static const uint8_t head[4] = {0x85, 0x03, 0x1C, 0x00};
+    for (uint8_t lost = 0; lost <= 4; lost++) {
+      if ((uint16_t)burstLen + lost != WS85_FRAME_LEN) { continue; }
+      memcpy(rx, head, lost);
+      memcpy(rx + lost, burst, burstLen);
+      rxPos = WS85_FRAME_LEN;
+      const uint16_t rcrc = rx[rxPos - 2] | (rx[rxPos - 1] << 8);
+      if (crc16(rx, rxPos - 2) == rcrc) {
+        parseResponse();
+        return;
+      }
+    }
+    const uint8_t room = (uint8_t)(sizeof(rx) - RX_OFFSET);
+    const uint8_t n = burstLen <= room ? burstLen : room;
+    rx[0] = 0x85;
+    rx[1] = 0x03;
+    memcpy(rx + RX_OFFSET, burst, n);
+    rxPos = RX_OFFSET + n;
+    parseResponse();
   }
 
 
@@ -154,6 +199,8 @@ private:
   HardwareSerial* serial;
   uint8_t slaveAddr;
   uint8_t rx[64];
+  uint8_t burst[40];  // bytes of the current burst, as received
+  uint8_t burstLen = 0;
   size_t rxPos = 0;
   int expectedRegs = 0;
   bool readingInterval = false;
