@@ -5,7 +5,7 @@
 // Split out of main.cpp, which mixed power management, TX scheduling and the
 // Arduino entry points in one 1100 line file.
 
-#define WDT_PERIOD 2500 // ms for wdt to wait to reset mcu if not reset in time
+#define WDT_PERIOD 2000 // ms for wdt to wait to reset mcu if not reset in time (max at 8192 Hz)
 
 extern int div_cpu;                 // current CPU clock divider
 extern bool first_sleep;            // first sleep after reset, USB peripheral could still be on

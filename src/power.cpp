@@ -132,11 +132,6 @@ uint32_t sleep(bool enable_uart_interrupt){
   if(sensor_uart_armed){
     enable_sercom0_int();
   }
-  // Started before the flush, so its synchronisation wait runs while the UART is
-  // still sending. The awake time this adds to the count is taken off again after
-  // the wakeup.
-  reset_time_counter(); // start counting sleeptime from zero
-  const uint32_t counter_started_ms = millis();
   // Drain both outputs before sleeping: the SERCOM clocks stop in standby, so
   // anything still sitting in the UART TX buffer would be lost or corrupted.
   log_flush();
@@ -172,12 +167,15 @@ uint32_t sleep(bool enable_uart_interrupt){
     ws85uart.begin(div_cpu); // required to get data
   }
 
-  uint32_t t = read_time_counter();
-
-  // millis() stands still in standby, so whatever it advanced since the counter
-  // was started is awake time the counter holds as well: the flush before the
-  // sleep, the restart after it. That time is already in millis().
-  const uint32_t awake_ms = millis() - counter_started_ms;
+  // Ticks since the read at the previous wakeup: this sleep plus the wake phase
+  // in front of it. The counter is not reset any more, which saves a
+  // synchronised write before every sleep.
+  static uint32_t last_read_ms = 0;
+  uint32_t t = elapsed_time_counter();
+  // millis() stands still in standby, so whatever it advanced since that read is
+  // awake time the counter holds as well. It is already in millis().
+  const uint32_t awake_ms = millis() - last_read_ms;
+  last_read_ms = millis();
   sleeptime_cum += (t > awake_ms) ? t - awake_ms : 0;
 
   // Disable Debug uart again
@@ -415,7 +413,7 @@ void go_sleep(){
       t += sleep(false);
       service_lora_during_sleep();
     }
-    pulsecount = read_pulse_counter();
+    pulsecount = pulse_count_since_arm();
     calc_pulse_sensor(pulsecount, t);
   } 
   // UART sensor, just sleep

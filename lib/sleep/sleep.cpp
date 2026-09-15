@@ -351,11 +351,41 @@ void disable_sercom0_int() {
 
 
 
-// Config GCLK6 for WDT and External Interrup to run at 1024Hz
+// GCLK6: OSCULP32K / 4 = 8192 Hz, running in standby. It clocks the RTC, both
+// timers (TC3 pulse counter, TC4 time counter), the watchdog and the EIC.
+//
+// It used to run at 1024 Hz. Every synchronised write or read of those
+// peripherals then waited about 5 ms, and those waits made up most of a wake:
+// 69 ms per DAVIS wake even after the software had been trimmed. At 8192 Hz a
+// wait is about 0.6 ms.
+//
+// The price is sleep current. Measured on the rig, clocking the RTC or a timer
+// faster than 1024 Hz costs about 13.5 uA - the same at 8192 Hz as at
+// 32.768 kHz, and the RTC alone as much as all of them - and READREQ.RCONT on
+// a single timer at 1024 Hz costs just as much. It is one standing cost either
+// way, so the software changes in rtc_sleep_cfg(), elapsed_time_counter() and
+// pulse_count_since_arm() come along for free. At this clock rate their gain
+// is within the noise of the measurement.
+//
+// DAVIS mode, 120 s each; time above 1 mA per wake (TX included), sleep floor
+// and mean current:
+//
+//   GCLK6 at 1024 Hz                                   69 ms  83.9 uA  222 uA
+//   GCLK6 at 1024 Hz, only the software changes        53 ms  97.4 uA  226 uA
+//   RTC, TC3, TC4 on a second generator at 8192 Hz     35 ms  97.7 uA  214 uA
+//   GCLK6 at 8192 Hz                                   26 ms  98.1 uA  208 uA
+//   GCLK6 at 8192 Hz with the software changes         27 ms  97.8 uA  208 uA
+//
+// The trade pays while the station wakes more often than about every 24 s. A
+// DAVIS cycle is 12 s, and a WS85 wakes for each of its frames. A station that
+// sleeps much longer is better off at 1024 Hz without RCONT.
+//
+// 8192 Hz is the highest rate the watchdog can live with: its period counts
+// cycles of this clock and tops out at 16384 of them, which is 2 s.
 void configGCLK6(bool en_rtc){
 
   //Set Clock divider for GCLK6
-  GCLK->GENDIV.reg = GCLK_GENDIV_DIV(4) |         //Select clock divisor to divide by 32 = (2 ^ (4 + 1)) , ~1024 Hz clock
+  GCLK->GENDIV.reg = GCLK_GENDIV_DIV(1) |         //Select clock divisor: 2 ^ (1 + 1) = 4, so 8192 Hz
                      GCLK_GENDIV_ID(6);           //GCLK6
   while (GCLK->STATUS.bit.SYNCBUSY);              //Wait for the settings to be synchronized
 
@@ -372,7 +402,7 @@ if(en_rtc){
 // Connect GCLK6 output to RTC
  GCLK->CLKCTRL.reg = GCLK_CLKCTRL_GEN_GCLK6 |  // Select GCLK6
                      GCLK_CLKCTRL_ID_RTC |     // Connect to the RTC
-                     GCLK_CLKCTRL_CLKEN;       // Enable GCLK6
+                     GCLK_CLKCTRL_CLKEN;       // Enable the channel
  while (GCLK->STATUS.bit.SYNCBUSY);            // Wait for synchronization
 }
 
@@ -420,12 +450,22 @@ uint32_t rtc_sleep_cfg(uint32_t milliseconds){
   // writes instead of disable, software reset, configuration and enable.
   // COUNT goes first, so the counter cannot be past a shorter new period.
   static bool rtc_configured = false;
+  static uint16_t running_counts = 0xFFFF;
   if(rtc_configured && RTC->MODE1.CTRL.bit.ENABLE){
+    // Already counting this period: nothing to do. The RTC runs free, so its
+    // next overflow comes one period after the last one - the sleep window then
+    // starts at the wakeup rather than at the end of the wake phase, which keeps
+    // the cycle exactly periodic. Saves both synchronised writes (about 11 ms
+    // with GCLK6 at 1024 Hz).
+    if(running_counts == counts){
+      return (counts+1)*8;
+    }
     RTC->MODE1.COUNT.reg = 0;
     while (RTC->MODE1.STATUS.bit.SYNCBUSY);
     RTC->MODE1.PER.reg = RTC_MODE1_PER_PER(counts);
     while (RTC->MODE1.STATUS.bit.SYNCBUSY);
     RTC->MODE1.INTFLAG.reg = RTC_MODE1_INTFLAG_OVF; // an overflow of the old period must not end this one
+    running_counts = counts;
     return (counts+1)*8;
   }
   // RTC configuration (rtc.h)--------------------------------------------------                                              
@@ -435,7 +475,7 @@ uint32_t rtc_sleep_cfg(uint32_t milliseconds){
     RTC->MODE1.CTRL.bit.SWRST = 1;                       // Software reset the RTC
     while (RTC->MODE1.STATUS.bit.SYNCBUSY);              // Wait for synchronization
     
-    RTC->MODE1.CTRL.reg |= RTC_MODE1_CTRL_PRESCALER_DIV8 |     // Set prescaler to 1024
+    RTC->MODE1.CTRL.reg |= RTC_MODE1_CTRL_PRESCALER_DIV64 |    // 8192 Hz / 64 = 128 Hz, the rate the sleep times assume
                            RTC_MODE1_CTRL_MODE_COUNT16;           // Set RTC to mode 1, 16-bit timer                         
     RTC->MODE1.PER.reg = RTC_MODE1_PER_PER(counts);            /// Interrupt time in s: 1Hz/(seconds + 1)
     while (RTC->MODE1.STATUS.bit.SYNCBUSY);                       // Wait for synchronization
@@ -468,6 +508,7 @@ uint32_t rtc_sleep_cfg(uint32_t milliseconds){
     while (RTC->MODE1.STATUS.bit.SYNCBUSY);               // Wait for synchronization
 
     rtc_configured = true;
+    running_counts = counts;
     return (counts+1)*8;
     //return milliseconds;
   }
@@ -489,6 +530,9 @@ void wdt_disable(){
   while (WDT->STATUS.bit.SYNCBUSY){};
 }
 
+
+// Cycles per second of the clock the watchdog counts, see configGCLK6().
+static const long WDT_CLK_HZ = 8192L;
 
 int wdt_enable(int maxPeriodMS, bool isForSleep) {
     static bool wdt_initialized = false;
@@ -525,16 +569,15 @@ int wdt_enable(int maxPeriodMS, bool isForSleep) {
   while (WDT->STATUS.bit.SYNCBUSY)
     {};
 
-  // You'll see some occasional conversion here compensating between
-  // milliseconds (1000 Hz) and WDT clock cycles (~1024 Hz).  The low-
-  // power oscillator used by the WDT ostensibly runs at 32,768 Hz with
-  // a 1:32 prescale, thus 1024 Hz, though probably not super precise.
-
-  if ((maxPeriodMS >= 16000) || !maxPeriodMS) {
+  // The watchdog counts cycles of GCLK6, which runs at WDT_CLK_HZ from the
+  // low-power 32.768 kHz oscillator, so the periods are not precise. 16384
+  // cycles is the longest period the hardware offers, 2 s at 8192 Hz: anything
+  // longer is clamped to that.
+  if ((maxPeriodMS >= (16384L * 1000L) / WDT_CLK_HZ) || !maxPeriodMS) {
     cycles = 16384;
     bits = 0xB;
   } else {
-    cycles = (maxPeriodMS * 1024L + 500) / 1000; // ms -> WDT cycles
+    cycles = (maxPeriodMS * WDT_CLK_HZ + 500) / 1000; // ms -> WDT cycles
     if (cycles >= 8192) {
       cycles = 8192;
       bits = 0xA;
@@ -590,7 +633,7 @@ int wdt_enable(int maxPeriodMS, bool isForSleep) {
   while (WDT->STATUS.bit.SYNCBUSY){};
   last_period = maxPeriodMS;
   last_for_sleep = isForSleep;
-  last_result = (cycles * 1000L + 512) / 1024; // WDT cycles -> ms
+  last_result = (cycles * 1000L + WDT_CLK_HZ / 2) / WDT_CLK_HZ; // WDT cycles -> ms
   return last_result;
 }
 
@@ -692,7 +735,7 @@ void setup_pulse_counter()
 {
   uint32_t ulPin = 17;          // Arduino pin 17 = PA04 = EXTINT4
 
-  // Configure GCLK6 (32kHz derived ~1024 Hz) for low-power peripherals
+  // Configure GCLK6 (OSCULP32K / 4 = 8192 Hz) for low-power peripherals
   configGCLK6(true);
 
   /***********************************************************************
@@ -701,7 +744,7 @@ void setup_pulse_counter()
   ***********************************************************************/
   GCLK->CLKCTRL.reg =
       GCLK_CLKCTRL_CLKEN |
-      GCLK_CLKCTRL_GEN_GCLK6 |        // Use GCLK6
+      GCLK_CLKCTRL_GEN_GCLK6 |        // Use GCLK6 (8192 Hz)
       GCLK_CLKCTRL_ID_TCC2_TC3;       // Clock ID for TC3
   while (GCLK->STATUS.bit.SYNCBUSY);
 
@@ -817,14 +860,25 @@ void setup_pulse_counter()
   while (TC3->COUNT16.STATUS.bit.SYNCBUSY);
 }
 
+// Counter value at the last arm_pulse_counter(), see pulse_count_since_arm().
+static uint16_t pulse_offset = 0;
+
 // Read current 16-bit counter value
 uint16_t read_pulse_counter()
 {
-  // ADDR has to name COUNT, see read_time_counter(). The continuous read that
-  // setup_pulse_counter() enables does not survive this write.
-  TC3->COUNT16.READREQ.reg = TC_READREQ_RREQ | TC_READREQ_ADDR(TC_COUNT16_COUNT_OFFSET);
-  while (TC3->COUNT16.STATUS.bit.SYNCBUSY);
+  // setup_pulse_counter() leaves the counter in continuous read synchronisation
+  // (READREQ.RCONT), so COUNT can be read straight away. The read request this
+  // used to write cleared RCONT again and cost a synchronisation (about 6 ms
+  // with GCLK6 at 1024 Hz).
   return TC3->COUNT16.COUNT.reg;
+}
+
+// Pulses since arm_pulse_counter(). Counting from an offset instead of zeroing
+// the counter saves another synchronised write. The counter is 16 bit and wraps
+// with the subtraction; a window holds far fewer pulses than that.
+uint16_t pulse_count_since_arm()
+{
+  return (uint16_t)(read_pulse_counter() - pulse_offset);
 }
 
 // Reset counter to zero
@@ -838,7 +892,8 @@ void reset_pulse_counter()
   Function   : Prepare the pulse counter for the next integration window
 ***************************************************************************/
 // Runs at the start of every DAVIS cycle. Normally the counter is still set up
-// from the cycle before, and only the count has to be cleared.
+// from the cycle before, and only its current value has to be taken as the
+// start of the window.
 // setup_pulse_counter() rewrites GCLK6, disables and re-enables the EIC and
 // software resets TC3 - eleven synchronisation waits. It still runs on the
 // first cycle, and whenever something undid the configuration: a pinMode(),
@@ -865,10 +920,11 @@ void arm_pulse_counter()
                          (TC3->COUNT16.EVCTRL.reg & TC_EVCTRL_TCEI);
 
   if(configured && pin_ready && eic_ready && tc_ready){
-    reset_pulse_counter();
+    pulse_offset = read_pulse_counter();
     return;
   }
   setup_pulse_counter();
+  pulse_offset = read_pulse_counter();
   configured = true;
 }
 
@@ -918,7 +974,7 @@ void setup_rtc_time_counter(){
   // Generic Clock /////////////////////////////////////////////////////////////////////////
  
   GCLK->CLKCTRL.reg = GCLK_CLKCTRL_CLKEN |        // Enable the generic clock...
-                      GCLK_CLKCTRL_GEN_GCLK6 |    // On GCLK6 at 1024Hz
+                      GCLK_CLKCTRL_GEN_GCLK6 |    // On GCLK6 at 8192 Hz
                       GCLK_CLKCTRL_ID_TC4_TC5;    // Route GCLK6 to TC4 and TC5
   while (GCLK->STATUS.bit.SYNCBUSY);              // Wait for synchronization
                               
@@ -933,7 +989,7 @@ void setup_rtc_time_counter(){
 
   TC4->COUNT32.CTRLA.reg = TC_CTRLA_MODE_COUNT32 |         // Configure TC4 (if 32: together with TC5 to operate in 32-bit mode)
                            TC_CTRLA_RUNSTDBY |             // Set timer to run in standby
-                           TC_CTRLA_PRESCALER_DIV1 |       // Prescaler: GCLK_TC/1
+                           TC_CTRLA_PRESCALER_DIV8 |       // 8192 Hz / 8 = 1024 Hz, the rate callers expect (~1 tick per ms)
                            TC_CTRLA_PRESCSYNC_GCLK;        // Reload or reset the counter on next generic clock 
                       
   TC4->COUNT32.CTRLA.bit.ENABLE = 1;                       // Enable TC4
@@ -951,6 +1007,18 @@ uint32_t read_time_counter(){
   TC4->COUNT32.READREQ.reg = TC_READREQ_RREQ | TC_READREQ_ADDR(TC_COUNT32_COUNT_OFFSET);         // Request a read synchronization
   while (TC4->COUNT32.STATUS.bit.SYNCBUSY);           // Wait for read synchronization
   return TC4->COUNT32.COUNT.reg;
+}
+
+// Ticks since the last call. The counter free-runs and is never reset: keeping
+// the previous value in software saves the synchronised retrigger before every
+// sleep (about 5 ms with GCLK6 at 1024 Hz). The subtraction wraps with the
+// counter.
+uint32_t elapsed_time_counter(){
+  static uint32_t last = 0;
+  const uint32_t now = read_time_counter();
+  const uint32_t delta = now - last;
+  last = now;
+  return delta;
 }
 
 void reset_time_counter(){

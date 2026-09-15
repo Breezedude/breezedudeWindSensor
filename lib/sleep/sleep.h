@@ -40,12 +40,14 @@ void setup_PM(bool en_pulse_counter, bool en_rtc_counter);
 
 void setup_pulse_counter();
 uint16_t read_pulse_counter();
+uint16_t pulse_count_since_arm();
 void reset_pulse_counter();
 void arm_pulse_counter();
 void stop_pulse_counter();
 
 void setup_rtc_time_counter();
 uint32_t read_time_counter();
+uint32_t elapsed_time_counter();
 void reset_time_counter();
 
 #endif
