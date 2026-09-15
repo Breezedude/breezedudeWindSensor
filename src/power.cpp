@@ -132,6 +132,11 @@ uint32_t sleep(bool enable_uart_interrupt){
   if(sensor_uart_armed){
     enable_sercom0_int();
   }
+  // Started before the flush, so its synchronisation wait runs while the UART is
+  // still sending. The awake time this adds to the count is taken off again after
+  // the wakeup.
+  reset_time_counter(); // start counting sleeptime from zero
+  const uint32_t counter_started_ms = millis();
   // Drain both outputs before sleeping: the SERCOM clocks stop in standby, so
   // anything still sitting in the UART TX buffer would be lost or corrupted.
   log_flush();
@@ -139,7 +144,6 @@ uint32_t sleep(bool enable_uart_interrupt){
   // Nothing to do here for the debug console any more. It is set up once, by
   // configure_debug_uart_standby() after each DEBUGSER.begin(), and stays that
   // way through the sleep - which is precisely what stops it losing bytes.
-  reset_time_counter(); // start counting sleeptime from zero
   bool keep_usb = keep_usb_active_during_sleep();
 
   // With USB test mode active we use light sleep and ignore wakeups that do not
@@ -170,7 +174,11 @@ uint32_t sleep(bool enable_uart_interrupt){
 
   uint32_t t = read_time_counter();
 
-  sleeptime_cum += t; // add slept time to global time counter. Should be done directly after wakeup but we need every tick to get UART working first
+  // millis() stands still in standby, so whatever it advanced since the counter
+  // was started is awake time the counter holds as well: the flush before the
+  // sleep, the restart after it. That time is already in millis().
+  const uint32_t awake_ms = millis() - counter_started_ms;
+  sleeptime_cum += (t > awake_ms) ? t - awake_ms : 0;
 
   // Disable Debug uart again
   //if(debug_enabled()){
@@ -312,7 +320,9 @@ void go_sleep(){
     time_to_sleep = fwd_delay;
   }
   if(time_to_sleep == 0){ return;} // if time_to_sleep = 0, do not sleep at all
-  rtc_sleep_cfg(time_to_sleep);
+  // The RTC is set up further down, once the final sleep time is known (DAVIS
+  // integration time, the no-settings interval) - each setup costs synchronised
+  // writes.
 
   if(deep_undervoltage){
     radio_sleep();
@@ -338,6 +348,7 @@ void go_sleep(){
 
   if(undervoltage){
     radio_sleep(); // ensure radio is in PHY sleep and DIO1 interrupt is detached
+    rtc_sleep_cfg(time_to_sleep);
     log_w("Undervoltage. will sleep for ", time_to_sleep);
     log_flush();
     sleep(false); // will sleep in 30min blocks with 70µA current draw until battery recovers.
@@ -350,7 +361,6 @@ void go_sleep(){
 
   if(settings.sensor_type == s_DAVIS6410){ 
     time_to_sleep = min(time_to_sleep, settings.sensor_integration_time);  // interval for gust detection 
-    rtc_sleep_cfg(time_to_sleep);
   }
 
   // move to setup function
@@ -377,7 +387,19 @@ void go_sleep(){
   } else {
     log_d("will sleep for ms: ", time_to_sleep);
   }
-  log_flush();
+  // No log_flush() here. The RTC, radio and pulse counter setup below is mostly
+  // synchronisation waits: done while the UART is still sending, that time is
+  // shared with the drain instead of added after it. sleep() flushes right
+  // before standby.
+
+  rtc_sleep_cfg(time_to_sleep);
+  // rtc_sleep_cfg() started a new period. An RTC wakeup recorded before it - the
+  // end of an OTA offer wait or a TX-done wait, or a short period that ran out
+  // while the station was awake - belongs to the old one. Left in wakeup_source,
+  // it ended the sleep window below before it began: a DAVIS integration of 0 ms.
+  if(wakeup_source == WAKEUP_RTC){
+    wakeup_source = WAKEUP_NONE;
+  }
 
   // Ensure radio is in the correct state for the sleep window (RX if conditions
   // are met, PHY sleep otherwise). This also covers the period before the first
@@ -387,7 +409,7 @@ void go_sleep(){
 // Using TC3 for hardware pulsecounting on Falling edge on pin PA04 (D17). No interrupts needed.
   if(settings.sensor_type == s_DAVIS6410){ // pulse counting anemometer
     uint32_t t = 0;
-    setup_pulse_counter(); // need to setup GCLK6 before
+    arm_pulse_counter(); // full setup only on the first cycle, or when something undid it
 
     while(!sleep_window_over()){ // ignore other wakeups (external pin Interrupt, if configured)
       t += sleep(false);

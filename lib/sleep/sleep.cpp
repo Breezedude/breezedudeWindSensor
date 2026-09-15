@@ -401,12 +401,33 @@ if(en_rtc){
 uint32_t rtc_sleep_cfg(uint32_t milliseconds){
   uint16_t counts =  milliseconds/8;
 
-  configGCLK6(true);
+  // GCLK6 has to be routed to the RTC only once, nothing turns that routing
+  // off again. configGCLK6() rewrites the generator and three clock channels,
+  // five synchronisation waits, and this runs before every sleep.
+  static bool rtc_clock_ready = false;
+  if(!rtc_clock_ready){
+    configGCLK6(true);
+    rtc_clock_ready = true;
+  }
   // Is 16 bit counter only
   if( milliseconds/8 > 0xFFFF){
     counts = 0xFFFF;
   }
 
+  // After the first full configuration the RTC stays enabled in 16-bit counter
+  // mode, and the interrupt, NVIC and sleep settings stay in place. Only the
+  // period changes, and the count has to start from zero: two synchronised
+  // writes instead of disable, software reset, configuration and enable.
+  // COUNT goes first, so the counter cannot be past a shorter new period.
+  static bool rtc_configured = false;
+  if(rtc_configured && RTC->MODE1.CTRL.bit.ENABLE){
+    RTC->MODE1.COUNT.reg = 0;
+    while (RTC->MODE1.STATUS.bit.SYNCBUSY);
+    RTC->MODE1.PER.reg = RTC_MODE1_PER_PER(counts);
+    while (RTC->MODE1.STATUS.bit.SYNCBUSY);
+    RTC->MODE1.INTFLAG.reg = RTC_MODE1_INTFLAG_OVF; // an overflow of the old period must not end this one
+    return (counts+1)*8;
+  }
   // RTC configuration (rtc.h)--------------------------------------------------                                              
     RTC->MODE1.CTRL.bit.ENABLE = 0;                       // Disable the RTC
     while (RTC->MODE1.STATUS.bit.SYNCBUSY);               // Wait for synchronization
@@ -446,13 +467,20 @@ uint32_t rtc_sleep_cfg(uint32_t milliseconds){
     RTC->MODE1.CTRL.bit.ENABLE = 1;                       // Enable the RTC
     while (RTC->MODE1.STATUS.bit.SYNCBUSY);               // Wait for synchronization
 
+    rtc_configured = true;
     return (counts+1)*8;
     //return milliseconds;
   }
   
 
 void wdt_reset(){
-  while (WDT->STATUS.bit.SYNCBUSY){};
+  // A clear that is still being synchronised resets the counter just the same,
+  // so there is nothing to wait for. Waiting cost a full synchronisation - about
+  // 4 ms with GCLK6 at 1024 Hz - whenever two clears came close together, and
+  // loop() does one at its end and the next one at its start.
+  if(WDT->STATUS.bit.SYNCBUSY){
+    return;
+  }
   WDT->CLEAR.reg = WDT_CLEAR_CLEAR_KEY;
 }
 
@@ -476,6 +504,21 @@ int wdt_enable(int maxPeriodMS, bool isForSleep) {
   if(!wdt_initialized){
     configGCLK6(false);
     wdt_initialized = true;
+  }
+
+  // Same configuration as last time, and the WDT is off: CONFIG, the window
+  // mode and the early-warning interrupt are all still set - wdt_disable() only
+  // clears ENABLE - so clearing the counter and enabling is all that is left.
+  // That saves the disable and the configuration write, two synchronisation
+  // waits on every wakeup.
+  static int last_period = -1;
+  static bool last_for_sleep = false;
+  static int last_result = 0;
+  if(maxPeriodMS == last_period && isForSleep == last_for_sleep && !WDT->CTRL.bit.ENABLE){
+    wdt_reset();
+    WDT->CTRL.bit.ENABLE = 1; // Start watchdog now!
+    while (WDT->STATUS.bit.SYNCBUSY){};
+    return last_result;
   }
 
   WDT->CTRL.reg = 0; // Disable watchdog for config
@@ -545,7 +588,10 @@ int wdt_enable(int maxPeriodMS, bool isForSleep) {
   wdt_reset();             
   WDT->CTRL.bit.ENABLE = 1; // Start watchdog now!
   while (WDT->STATUS.bit.SYNCBUSY){};
-  return (cycles * 1000L + 512) / 1024; // WDT cycles -> ms
+  last_period = maxPeriodMS;
+  last_for_sleep = isForSleep;
+  last_result = (cycles * 1000L + 512) / 1024; // WDT cycles -> ms
+  return last_result;
 }
 
 void deepsleep(bool light) {
@@ -774,7 +820,9 @@ void setup_pulse_counter()
 // Read current 16-bit counter value
 uint16_t read_pulse_counter()
 {
-  TC3->COUNT16.READREQ.reg = TC_READREQ_RREQ;
+  // ADDR has to name COUNT, see read_time_counter(). The continuous read that
+  // setup_pulse_counter() enables does not survive this write.
+  TC3->COUNT16.READREQ.reg = TC_READREQ_RREQ | TC_READREQ_ADDR(TC_COUNT16_COUNT_OFFSET);
   while (TC3->COUNT16.STATUS.bit.SYNCBUSY);
   return TC3->COUNT16.COUNT.reg;
 }
@@ -784,6 +832,44 @@ void reset_pulse_counter()
 {
   TC3->COUNT16.COUNT.reg = 0;
   while (TC3->COUNT16.STATUS.bit.SYNCBUSY);
+}
+
+/***************************************************************************
+  Function   : Prepare the pulse counter for the next integration window
+***************************************************************************/
+// Runs at the start of every DAVIS cycle. Normally the counter is still set up
+// from the cycle before, and only the count has to be cleared.
+// setup_pulse_counter() rewrites GCLK6, disables and re-enables the EIC and
+// software resets TC3 - eleven synchronisation waits. It still runs on the
+// first cycle, and whenever something undid the configuration: a pinMode(),
+// pinDisable() or attachInterrupt() on PA04 (the analog test mode does that),
+// or the sleep quiet mask. The checks are plain register reads.
+void arm_pulse_counter()
+{
+  static bool configured = false;
+  uint32_t ulPin = 17;          // Arduino pin 17 = PA04 = EXTINT4
+  EPortType port = g_APinDescription[ulPin].ulPort;
+  uint32_t  pin  = g_APinDescription[ulPin].ulPin;
+  EExt_Interrupts in = g_APinDescription[ulPin].ulExtInt;
+  uint32_t config = (in > 7) ? 1 : 0;
+  uint32_t pos    = (in > 7) ? (in - 8) * 4 : in * 4;
+
+  const uint8_t pmux = (pin & 1) ? PORT->Group[port].PMUX[pin >> 1].bit.PMUXO
+                                 : PORT->Group[port].PMUX[pin >> 1].bit.PMUXE;
+  const bool pin_ready = PORT->Group[port].PINCFG[pin].bit.PMUXEN &&
+                         pmux == PORT_PMUX_PMUXE_A_Val;
+  const bool eic_ready = EIC->CTRL.bit.ENABLE &&
+                         (EIC->EVCTRL.reg & (1ul << in)) &&
+                         ((EIC->CONFIG[config].reg >> pos) & 0xF) == EIC_CONFIG_SENSE0_FALL_Val;
+  const bool tc_ready  = TC3->COUNT16.CTRLA.bit.ENABLE &&
+                         (TC3->COUNT16.EVCTRL.reg & TC_EVCTRL_TCEI);
+
+  if(configured && pin_ready && eic_ready && tc_ready){
+    reset_pulse_counter();
+    return;
+  }
+  setup_pulse_counter();
+  configured = true;
 }
 
 // Stop counter
@@ -860,14 +946,16 @@ void setup_rtc_time_counter(){
 }
 
 uint32_t read_time_counter(){
-  TC4->COUNT32.READREQ.reg = TC_READREQ_RREQ;         // Request a read synchronization
+  // ADDR has to name COUNT: writing RREQ alone also sets ADDR to 0, and in the
+  // TC only COUNT and CCx can be read-synchronised.
+  TC4->COUNT32.READREQ.reg = TC_READREQ_RREQ | TC_READREQ_ADDR(TC_COUNT32_COUNT_OFFSET);         // Request a read synchronization
   while (TC4->COUNT32.STATUS.bit.SYNCBUSY);           // Wait for read synchronization
   return TC4->COUNT32.COUNT.reg;
 }
 
 void reset_time_counter(){
-  TC4->COUNT32.COUNT.reg = 0x0000;                        // Output the result
-  while (TC4->COUNT32.STATUS.bit.SYNCBUSY);               // Wait for read synchronization
+  // RETRIGGER restarts an up-counter from zero on its own. The COUNT = 0 write
+  // that came before it was a second synchronisation wait for the same result.
   TC4->COUNT32.CTRLBSET.reg = TC_CTRLBSET_CMD_RETRIGGER;  // Retrigger the TC4 timer
   while (TC4->COUNT32.STATUS.bit.SYNCBUSY);               // Wait for synchronization
 }
