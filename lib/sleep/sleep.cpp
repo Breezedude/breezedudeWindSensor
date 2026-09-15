@@ -71,8 +71,35 @@ if(div != divisor){
 return false;
 }
 
+#ifdef WS85_TRACE
+// WS85_TRACE debug build only, see the overview above ws85_trace_report() in
+// src/sensors.cpp. What SERCOM0 did from enable_sercom0_int() until the report:
+// start-of-frame (RXS), receive (RXC) and error interrupts, and when each of the
+// first WS85_TRACE_RX_TIMES bytes arrived. Those arrival times are what showed
+// the watchdog holding the CPU in the middle of a frame. Taking micros() in the
+// interrupt costs time there, one more reason to keep this out of the release.
+volatile uint32_t sercom0_rxs_count = 0;
+volatile uint32_t sercom0_rxc_count = 0;
+volatile uint32_t sercom0_err_count = 0;
+volatile uint32_t sercom0_rx_us[WS85_TRACE_RX_TIMES]; // micros() at each RXC
+volatile uint8_t  sercom0_rx_n = 0;                   // entries used in sercom0_rx_us
+#endif
+
 // SERCOM0_Handler overrides the weak default from variants/itsybitsy_m0/variant.cpp
 void SERCOM0_Handler(void) {
+#ifdef WS85_TRACE
+    // Read the flags before anything clears them: RXS is cleared below, RXC and
+    // ERROR by the core's handler.
+    {
+      const uint8_t f = SERCOM0->USART.INTFLAG.reg;
+      if (f & SERCOM_USART_INTFLAG_RXS)   { sercom0_rxs_count++; }
+      if (f & SERCOM_USART_INTFLAG_RXC) {
+        sercom0_rxc_count++;
+        if (sercom0_rx_n < WS85_TRACE_RX_TIMES) { sercom0_rx_us[sercom0_rx_n++] = micros(); }
+      }
+      if (f & SERCOM_USART_INTFLAG_ERROR) { sercom0_err_count++; }
+    }
+#endif
     if (SERCOM0->USART.INTFLAG.bit.RXS) {
         SERCOM0->USART.INTFLAG.reg = SERCOM_USART_INTFLAG_RXS; // clear start bit flag
     // Mark a real UART wakeup so USB IRQs can be ignored in CDC test mode.
@@ -255,6 +282,13 @@ static uint16_t standby_baud_reg(void) {
 }
 
 void enable_sercom0_int(void) {
+#ifdef WS85_TRACE
+    // WS85_TRACE: this sleep's interrupts and byte times count from here.
+    sercom0_rxs_count = 0;
+    sercom0_rxc_count = 0;
+    sercom0_err_count = 0;
+    sercom0_rx_n = 0;
+#endif
     // 1) Make sure SERCOM0 APBC clock is enabled
     PM->APBCMASK.reg |= PM_APBCMASK_SERCOM0;
 

@@ -22,6 +22,39 @@ public:
   uint32_t lastByte = 0;
   uint32_t baud = 9600;
   uint8_t begun_div = 0;   // CPU divider the baud register was last set for
+#ifdef WS85_TRACE
+  // WS85_TRACE debug build only: what a standby wakeup does to a frame. Filled
+  // along the wake path - sleep() in power.cpp, resync(), poll(),
+  // parseResponse() - then printed and cleared by ws85_trace_report() in
+  // sensors.cpp, which documents the output. Times are micros().
+  uint16_t tr_buffered = 0;       // bytes already in the ring buffer when resync() ran
+  uint8_t  tr_seen[40];           // the first bytes poll() read in this wake cycle
+  uint8_t  tr_seen_n = 0;         // entries used in tr_seen
+  uint16_t tr_seen_total = 0;     // all bytes poll() read in this wake cycle
+  uint32_t tr_first_us = 0;       // poll() read the first of them
+  uint32_t tr_last_us = 0;        // poll() read the last of them
+  uint32_t tr_wake_us = 0;        // back from standby: time zero of the report
+  uint8_t  tr_wake_src = 0;       // wakeup_source at that moment
+  uint8_t  tr_flag = 0;           // SERCOM0 INTFLAG at that moment
+  uint16_t tr_status = 0;         // SERCOM0 STATUS at that moment
+  const char *tr_result = "none"; // why parseResponse() gave up: "short" or "crc"
+  uint32_t tr_disable_us = 0;     // disable_sercom0_int() done
+  uint32_t tr_restart_us = 0;     // resync() done
+  uint32_t tr_tc4_us = 0;         // elapsed_time_counter() done
+  uint32_t tr_wdt_us = 0;         // wdt_enable() done, only set with WDT=1
+  uint32_t tr_lora_us = 0;        // service_lora_during_sleep() done
+  uint32_t tr_poll_us = 0;        // read_ws85_uart() entered
+  uint32_t tr_ctrla = 0;          // SERCOM0 CTRLA, CTRLB, BAUD and INTENSET
+  uint32_t tr_ctrlb = 0;          // right after resync()
+  uint16_t tr_baud = 0;
+  uint8_t  tr_ie = 0;
+  uint8_t  tr_gen = 0xFF;         // GCLK generator feeding the SERCOM0 core clock
+  uint8_t  tr_clken = 0;          // and whether that clock channel is enabled
+  void tr_reset() {
+    tr_buffered = 0; tr_seen_n = 0; tr_seen_total = 0;
+    tr_first_us = 0; tr_last_us = 0; tr_result = "none";
+  }
+#endif
 
 
   WS85WindSensor(HardwareSerial* s, uint8_t addr = 0x85)
@@ -109,12 +142,22 @@ public:
       begin(div_cpu);
       return;
     }
+#ifdef WS85_TRACE
+    tr_buffered = (uint16_t)serial->available(); // WS85_TRACE: kept for the parser
+#endif
     reset_rx();
   }
 
   void poll(uint32_t timeout) {
     while (serial->available()) {
       const uint8_t b = (uint8_t)serial->read();
+#ifdef WS85_TRACE
+      // WS85_TRACE: what the parser gets, for ws85_trace_report().
+      if (tr_seen_n < sizeof(tr_seen)) { tr_seen[tr_seen_n++] = b; }
+      tr_seen_total++;
+      if (!tr_first_us) { tr_first_us = micros(); }
+      tr_last_us = micros();
+#endif
       if (burstLen < sizeof(burst)) { burst[burstLen++] = b; }
       lastByte = micros();
     }
@@ -257,6 +300,9 @@ uint16_t crc16(const uint8_t* data, size_t len) {
     measurement.valid = false;
     if (rxPos < 27) {
       log_i("WS85 UART only got: ", (uint32_t) rxPos);
+#ifdef WS85_TRACE
+      tr_result = "short";
+#endif
       return false;
     }
 
@@ -264,6 +310,9 @@ uint16_t crc16(const uint8_t* data, size_t len) {
     uint16_t ccrc = crc16(rx, rxPos - 2);
 
     if (ccrc != rcrc) {
+#ifdef WS85_TRACE
+      tr_result = "crc";
+#endif
       if (debug_enabled()) {
         log_i("WS85 CRC error\r\n");
       }

@@ -190,6 +190,11 @@ void setup(){
         // Keep the current sensor baud on boot; a forced switch here can stall
         // startup on boards that already stream correctly or are still powering up.
         ws85uart.set_baud_115200();
+#ifdef WS85_TRACE
+        // WS85_TRACE debug build only: 25 s of what the sensor really sends, with
+        // the station awake, before the first sleep. See ws85_reference_capture().
+        ws85_reference_capture(25000UL);
+#endif
         //ws85uart.setAutoSendInterval(8500);
       }
     } else if(settings.sensor_type == s_DAVIS6410){

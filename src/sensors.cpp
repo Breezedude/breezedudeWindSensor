@@ -613,11 +613,236 @@ int read_wsxx(){
 }
 
 
+#ifdef WS85_TRACE
+// =============================================================================
+// WS85_TRACE - debug firmware for the WS85 UART wake path
+// =============================================================================
+//
+// The WS85 sends one 33 byte Modbus frame (85 03 1C, 28 payload bytes, CRC)
+// every 8.3 s at 115200 baud. With SENSOR_WS85_UART the station sleeps between
+// frames, and the start bit of the next frame wakes it: enable_sercom0_int()
+// before the sleep, then disable_sercom0_int(), WS85WindSensor::resync() and
+// the parser after it. Bytes can go missing anywhere on that way. This build
+// shows where, and whether the parser still gets a measurement out of what is
+// left. It was written to find the faults now fixed in disable_sercom0_int()
+// (receive interrupt switched off, baud register in the wrong format), in
+// wdt_enable() (bus stall in the middle of a frame) and in
+// WS85WindSensor::assemble() (lost leading bytes).
+//
+// Build with -DWS85_TRACE added to the build flags, for a single build e.g.
+//   PLATFORMIO_BUILD_FLAGS=-DWS85_TRACE pio run
+// Everything is behind the flag; a build without it does not change. The
+// station needs SENSOR_WS85_UART=1, and DEBUG=1 for the log output.
+//
+// Not for the field, and not for current measurements: the reference capture
+// keeps the station awake for 25 s after every boot, the SERCOM0 interrupt
+// takes a timestamp per byte, and two extra log lines per frame lengthen every
+// wake.
+//
+// Three kinds of line, the examples recorded on the rig:
+//
+// 1) Once after boot, ws85_reference_capture(): the station stays awake with the
+//    UART on its fast clock, so nothing is lost. This is what the sensor really
+//    sends, to hold the wake path against.
+//
+//      W85 ref #3 t=18535 gap=8337 len=33 crc=ok 85 03 1C 00 85 00 04 00 85 00 ...
+//
+//    #n     burst number; a pause of more than 5 ms ends a burst
+//    t      ms since the capture started
+//    gap    ms since the previous burst, about 8335 from frame to frame
+//    len    bytes in the burst
+//    crc    ok, bad, or n/a for a fragment that does not start like a frame -
+//           the first burst after power-up can be one
+//
+// 2) Per wake cycle, ws85_trace_report(): what reached the parser. Printed only
+//    for cycles in which the sensor UART saw anything.
+//
+//      W85 q=0 src=UART fl=01 st=0000 isr=2/31/0 buf=0 seen=31[1C 00 85 00 04 ...]
+//          t1=775 t2=3026 res=ok
+//
+//    q      wake cycles without any UART activity since the previous line
+//    src    wakeup source: UART for the frame's start bit, RTC for the timer
+//    fl st  SERCOM0 INTFLAG and STATUS as the wakeup found them
+//    isr    SERCOM0 interrupts since the UART was armed: start of frame /
+//           byte received / error
+//    buf    bytes already buffered when resync() ran
+//    seen   bytes the parser read: the count, then the first 40 in hex
+//    t1 t2  us from the wakeup to the first and to the last of them
+//    res    ok     a measurement came out
+//           short  too few bytes, even with the lost leading bytes put back
+//           crc    CRC mismatch
+//           none   nothing parsed, or parseResponse() refused the frame for
+//                  another reason
+//
+//    A frame that wakes the station loses its first 2 to 4 bytes - here 85 03
+//    in front of 1C - and assemble() puts them back: seen=29 to 31 with res=ok
+//    is the healthy case. A stray byte in front of what is left, as in
+//    seen=32[E0 1C 00 85 ...], fits none of the guesses and ends in res=crc.
+//
+// 3) The timing of the same wake cycle, and the receiver's registers:
+//
+//      W85 time dis=86 rst=89 tc4=777 wdt=781 lora=784 poll=787 rx0=176 n=31
+//          gaps=[] A=40312006 B=00030000 baud=001A gen=0 en=1 ie=84
+//
+//    dis rst tc4 wdt lora
+//           us from the wakeup until disable_sercom0_int(), resync(),
+//           elapsed_time_counter(), wdt_enable() and
+//           service_lora_during_sleep() were done; wdt is stale with WDT=0
+//    poll   us until read_ws85_uart() started
+//    rx0    us until the first byte interrupt
+//    n      bytes with an arrival time, at most WS85_TRACE_RX_TIMES
+//    gaps   i@us for every pause of more than 200 us in front of byte i. A byte
+//           takes 87 us at 115200 baud and the sensor sends a frame in one go,
+//           so a pause inside a frame means the CPU was held. The watchdog
+//           stall looked like this: gaps=[6@795] in every frame, lined up
+//           with the wdt_enable() call between the tc4 and wdt marks.
+//    A B    SERCOM0 CTRLA and CTRLB after resync(). The values above are
+//           healthy: RUNSTDBY and SFDE clear, RXEN and TXEN set.
+//    baud   BAUD register. 001A is 115200 at 48 MHz in the fractional format
+//           the Arduino core uses.
+//    gen en generator and enable of the SERCOM0 core clock; healthy gen=0
+//           (48 MHz) and en=1
+//    ie     INTENSET; healthy 84, RXC and ERROR. 00 means received bytes never
+//           reach the buffer.
+// =============================================================================
+extern const char* wakeup_source_string[];
+void read_serial_cmd();
+
+// "XX XX ..." into out, as much as fits, always terminated.
+static int w85_hex(char *out, size_t len, const uint8_t *b, uint16_t n){
+  int k = 0;
+  if(len){ out[0] = 0; }
+  for(uint16_t i = 0; i < n && (size_t)k + 4 < len; i++){
+    k += snprintf(out + k, len - k, i ? " %02X" : "%02X", (unsigned)b[i]);
+  }
+  return k;
+}
+
+// Modbus CRC-16, as the WS85 frame uses it.
+static uint16_t w85_crc16(const uint8_t *d, uint16_t n){
+  uint16_t crc = 0xFFFF;
+  for(uint16_t i = 0; i < n; i++){
+    crc ^= d[i];
+    for(uint8_t b = 0; b < 8; b++){ crc = (crc & 1) ? (crc >> 1) ^ 0xA001 : (crc >> 1); }
+  }
+  return crc;
+}
+
+// Lines 2) and 3) above. read_ws85_uart() calls this once per wake cycle: with
+// "ok" when a measurement came out, with the parser's verdict otherwise. The
+// per-cycle fields are cleared afterwards.
+static void ws85_trace_report(const char *result){
+  static uint32_t quiet_cycles = 0;
+  WS85WindSensor &w = ws85uart;
+  const bool quiet = !sercom0_rxs_count && !sercom0_rxc_count && !sercom0_err_count &&
+                     !w.tr_buffered && !w.tr_seen_total;
+  if(quiet){
+    quiet_cycles++;
+  } else {
+    static char line[400];
+    char seen[130];
+    w85_hex(seen, sizeof(seen), w.tr_seen, w.tr_seen_n);
+    const uint8_t src = w.tr_wake_src < 8 ? w.tr_wake_src : 0; // wakeup_source_string[] has 8 entries
+    snprintf(line, sizeof(line),
+             "W85 q=%lu src=%s fl=%02X st=%04X isr=%lu/%lu/%lu buf=%u seen=%u[%s] t1=%lu t2=%lu res=%s",
+             (unsigned long)quiet_cycles, wakeup_source_string[src], w.tr_flag, w.tr_status,
+             (unsigned long)sercom0_rxs_count, (unsigned long)sercom0_rxc_count,
+             (unsigned long)sercom0_err_count, w.tr_buffered, w.tr_seen_total, seen,
+             (unsigned long)(w.tr_first_us ? w.tr_first_us - w.tr_wake_us : 0),
+             (unsigned long)(w.tr_last_us ? w.tr_last_us - w.tr_wake_us : 0), result);
+    log_i(line);
+    log_i("\r\n");
+
+    static char tline[420];
+    char gaps[140];
+    int g = 0;
+    gaps[0] = 0;
+    const uint8_t rn = sercom0_rx_n;
+    for(uint8_t i = 1; i < rn && g + 16 < (int)sizeof(gaps); i++){
+      const uint32_t d = sercom0_rx_us[i] - sercom0_rx_us[i - 1];
+      if(d > 200UL){
+        g += snprintf(gaps + g, sizeof(gaps) - g, "%s%u@%lu", g ? "," : "", (unsigned)i, (unsigned long)d);
+      }
+    }
+    const uint32_t w0 = w.tr_wake_us;
+    snprintf(tline, sizeof(tline),
+             "W85 time dis=%lu rst=%lu tc4=%lu wdt=%lu lora=%lu poll=%lu rx0=%lu n=%u gaps=[%s] A=%08lX B=%08lX baud=%04X gen=%u en=%u ie=%02X",
+             (unsigned long)(w.tr_disable_us - w0), (unsigned long)(w.tr_restart_us - w0), (unsigned long)(w.tr_tc4_us - w0), (unsigned long)(w.tr_wdt_us - w0), (unsigned long)(w.tr_lora_us - w0),
+             (unsigned long)(w.tr_poll_us - w0), (unsigned long)(rn ? sercom0_rx_us[0] - w0 : 0),
+             (unsigned)rn, gaps, (unsigned long)w.tr_ctrla, (unsigned long)w.tr_ctrlb,
+             (unsigned)w.tr_baud, (unsigned)w.tr_gen, (unsigned)w.tr_clken, (unsigned)w.tr_ie);
+    log_i(tline);
+    log_i("\r\n");
+    quiet_cycles = 0;
+  }
+  w.tr_reset();
+}
+
+// Line 1) above, called from setup() right after the sensor baud is set. Reads
+// Serial1 - SERCOM0, the sensor UART - with the station awake for duration_ms,
+// and prints every burst once it is over. USB and the consoles stay serviced,
+// so the station still enumerates and still takes BOOTLOADER=1 meanwhile.
+void ws85_reference_capture(uint32_t duration_ms){
+  uint8_t burst[80];
+  uint16_t n = 0;
+  uint32_t last_us = 0, prev_ms = 0, count = 0;
+  const uint32_t start = millis();
+  static char line[420];
+  log_i("W85 reference capture: station awake, UART on the fast clock\r\n");
+  while(millis() - start < duration_ms){
+    wdt_reset();
+    yield(); // keeps TinyUSB serviced: without it the station does not enumerate during the capture
+    read_serial_cmd(); // so a BOOTLOADER=1 sent during the capture is acted on at once
+    while(Serial1.available()){
+      const int b = Serial1.read();
+      if(n < sizeof(burst)){ burst[n] = (uint8_t)b; }
+      n++;
+      last_us = micros();
+    }
+    if(n && (micros() - last_us) > 5000UL){
+      const uint32_t now = millis();
+      const uint16_t stored = n < sizeof(burst) ? n : sizeof(burst);
+      // The CRC is checked on the whole frame. A burst that lost only the
+      // address and function code gets them back first, the way the parser
+      // used to handle it.
+      uint8_t frame[84];
+      uint16_t flen = 0;
+      if(stored >= 2 && burst[0] == 0x85 && burst[1] == 0x03){
+        memcpy(frame, burst, stored);
+        flen = stored;
+      } else if(stored >= 1 && burst[0] == 0x1C){
+        frame[0] = 0x85;
+        frame[1] = 0x03;
+        memcpy(frame + 2, burst, stored);
+        flen = stored + 2;
+      }
+      const char *crc = "n/a";
+      if(flen >= 5){
+        const uint16_t rcrc = frame[flen - 2] | (frame[flen - 1] << 8);
+        crc = (w85_crc16(frame, flen - 2) == rcrc) ? "ok" : "bad";
+      }
+      const int k = snprintf(line, sizeof(line), "W85 ref #%lu t=%lu gap=%lu len=%u crc=%s ",
+                             (unsigned long)++count, (unsigned long)(now - start),
+                             (unsigned long)(prev_ms ? now - prev_ms : 0), n, crc);
+      w85_hex(line + k, sizeof(line) - k, burst, stored);
+      log_i(line);
+      log_i("\r\n");
+      prev_ms = now;
+      n = 0;
+    }
+  }
+  log_i("W85 reference capture done\r\n");
+}
+#endif
+
 // read UART and process input buffer, needs to be called periodically until new block is complete (last_ws80_data = time())
 // RESP_COMPLETE 2: data complete
 // RESP_ERROR 1: error
 // RESP_OK 0: data ok, continue
 int read_ws85_uart(){
+#ifdef WS85_TRACE
+  ws85uart.tr_poll_us = micros(); // WS85_TRACE: "poll" in the timing line
+#endif
   static uint32_t serial_wait = 500;
   static int errorcount = 0;
   //uint32_t micros_start = micros();
@@ -643,6 +868,9 @@ int read_ws85_uart(){
 
       //log_i("WS85_UART data ok\r\n");
       errorcount = 0;
+#ifdef WS85_TRACE
+      ws85_trace_report("ok");
+#endif
       return RESP_COMPLETE;
     }
   }
@@ -658,6 +886,9 @@ int read_ws85_uart(){
    // ws85uart.requestAutoSendInterval();
    // delay(10);
    // ws85uart.set_baud_115200();
+#ifdef WS85_TRACE
+  ws85_trace_report(ws85uart.tr_result);
+#endif
   return RESP_OK;
 }
 

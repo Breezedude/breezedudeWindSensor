@@ -169,8 +169,33 @@ uint32_t sleep(bool enable_uart_interrupt){
   }
 
   if(sensor_uart_armed && settings.sensor_type == s_WS85_UART) {
+#ifdef WS85_TRACE
+    // WS85_TRACE: the state the wakeup finds the sensor UART in, before
+    // disable_sercom0_int() changes it. tr_wake_us is time zero of the report,
+    // see ws85_trace_report() in sensors.cpp.
+    ws85uart.tr_wake_src = (uint8_t)wakeup_source;
+    ws85uart.tr_flag = SERCOM0->USART.INTFLAG.reg;
+    ws85uart.tr_status = SERCOM0->USART.STATUS.reg;
+    ws85uart.tr_wake_us = micros();
+#endif
     disable_sercom0_int();
+#ifdef WS85_TRACE
+    ws85uart.tr_disable_us = micros();
+#endif
     ws85uart.resync((uint8_t)div_cpu); // cheaper than begin(), see WS85WindSensor::resync()
+#ifdef WS85_TRACE
+    // WS85_TRACE: the receiver as the parser will find it.
+    ws85uart.tr_restart_us = micros();
+    ws85uart.tr_ctrla = SERCOM0->USART.CTRLA.reg;
+    ws85uart.tr_ctrlb = SERCOM0->USART.CTRLB.reg;
+    ws85uart.tr_baud = SERCOM0->USART.BAUD.reg;
+    ws85uart.tr_ie = SERCOM0->USART.INTENSET.reg;
+    // CLKCTRL reads back the channel its ID field names, so an 8 bit write of
+    // just the ID selects the SERCOM0 core channel first. Routing is untouched.
+    *((uint8_t *)&GCLK->CLKCTRL.reg) = SERCOM0_GCLK_ID_CORE;
+    ws85uart.tr_gen = GCLK->CLKCTRL.bit.GEN;
+    ws85uart.tr_clken = GCLK->CLKCTRL.bit.CLKEN;
+#endif
   }
 
   // Ticks since the read at the previous wakeup: this sleep plus the wake phase
@@ -178,6 +203,9 @@ uint32_t sleep(bool enable_uart_interrupt){
   // synchronised write before every sleep.
   static uint32_t last_read_ms = 0;
   uint32_t t = elapsed_time_counter();
+#ifdef WS85_TRACE
+  ws85uart.tr_tc4_us = micros();
+#endif
   // millis() stands still in standby, so whatever it advanced since that read is
   // awake time the counter holds as well. It is already in millis().
   const uint32_t awake_ms = millis() - last_read_ms;
@@ -191,6 +219,9 @@ uint32_t sleep(bool enable_uart_interrupt){
   // re-enable wdt after sleep
   if(settings.use_wdt) {
     wdt_enable(WDT_PERIOD, false);
+#ifdef WS85_TRACE
+    ws85uart.tr_wdt_us = micros();
+#endif
   }
 
   wake_mark(WP_SLEEP_RET);
@@ -438,6 +469,9 @@ void go_sleep(){
     while(!sleep_window_over()){
       sleep(true); // sleep til UART interrupt
       service_lora_during_sleep();
+#ifdef WS85_TRACE
+      ws85uart.tr_lora_us = micros();
+#endif
 
       if(is_wsxx()){
         //led_error(1);

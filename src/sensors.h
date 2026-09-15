@@ -40,6 +40,10 @@
 #endif
 
 extern WS85WindSensor ws85uart;
+#ifdef WS85_TRACE
+// WS85_TRACE debug build only, see the overview above ws85_trace_report() in sensors.cpp.
+void ws85_reference_capture(uint32_t duration_ms);
+#endif
 #if BREEZEDUDE_ENABLE_GPS
 extern TinyGPSPlus tinyGps;
 #endif
