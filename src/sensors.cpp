@@ -627,7 +627,7 @@ int read_wsxx(){
 // left. It was written to find the faults now fixed in disable_sercom0_int()
 // (receive interrupt switched off, baud register in the wrong format), in
 // wdt_enable() (bus stall in the middle of a frame) and in
-// WS85WindSensor::assemble() (lost leading bytes).
+// WS85WindSensor::take_frame() (lost and garbled leading bytes).
 //
 // Build with -DWS85_TRACE added to the build flags, for a single build e.g.
 //   PLATFORMIO_BUILD_FLAGS=-DWS85_TRACE pio run
@@ -675,9 +675,9 @@ int read_wsxx(){
 //                  another reason
 //
 //    A frame that wakes the station loses its first 2 to 4 bytes - here 85 03
-//    in front of 1C - and assemble() puts them back: seen=29 to 31 with res=ok
-//    is the healthy case. A stray byte in front of what is left, as in
-//    seen=32[E0 1C 00 85 ...], fits none of the guesses and ends in res=crc.
+//    in front of 1C - and take_frame() puts them back: seen=29 to 31 with
+//    res=ok is the healthy case. So is seen=32[E0 1C 00 85 ...]: a byte decoded
+//    out of step in front of the rest, which take_frame() overwrites.
 //
 // 3) The timing of the same wake cycle, and the receiver's registers:
 //

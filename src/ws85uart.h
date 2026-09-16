@@ -119,14 +119,16 @@ public:
 
   #define RX_OFFSET 2
   #define WS85_FRAME_LEN 33   // 85 03 1C, 28 payload bytes, CRC
+  #define WS85_HEAD_LEN 9     // bytes every measurement frame starts with, see take_frame()
   void reset_rx(){
     // A frame that begins while the station sleeps loses its first bytes:
-    // the receiver decodes only once the clock is back. assemble() puts them
+    // the receiver decodes only once the clock is back. take_frame() puts them
     // back. RX_OFFSET is where the bytes go when nothing better fits.
     rx[0] = 0x85;
     rx[1] = 0x03;
     rxPos = RX_OFFSET;
     burstLen = 0;
+    triedLen = 0;
   }
 
   // Called after a standby wakeup instead of begin(). disable_sercom0_int() has
@@ -134,7 +136,7 @@ public:
   // start-of-frame detection off, so the receiver already runs: the bytes it
   // took since then belong to the frame and stay in the buffer. Only the parser
   // starts over. The first bytes of the frame arrive before the clock is back
-  // and are lost; assemble() puts them back.
+  // and are lost; take_frame() puts them back.
   void resync(uint8_t div_cpu) {
     // The baud register only fits the CPU clock it was computed for. After a
     // change of the divider that needs a real begin(), once.
@@ -161,33 +163,70 @@ public:
       if (burstLen < sizeof(burst)) { burst[burstLen++] = b; }
       lastByte = micros();
     }
-    // A measurement frame is 33 bytes: parse as soon as that many are in, or once
-    // the line has been idle for the timeout, which means bytes were lost.
-    if (burstLen && (burstLen >= WS85_FRAME_LEN || (micros() - lastByte >= timeout))) {
-      assemble();
+    if (!burstLen) {
+      return;
+    }
+    // With 33 bytes in, the frame can be complete: take it as soon as it checks
+    // out instead of waiting for the line to go quiet - tried once per length.
+    if (burstLen >= WS85_FRAME_LEN && burstLen != triedLen) {
+      triedLen = burstLen;
+      if (take_frame()) {
+        reset_rx();
+        return;
+      }
+    }
+    // Quiet for the timeout: the burst is over, with whatever arrived of it.
+    if (micros() - lastByte >= timeout) {
+      if (!take_frame()) {
+        parse_as_received();
+      }
       reset_rx();
     }
   }
 
-  // Measured after a standby wakeup: the first 2 to 4 bytes of a frame arrive
-  // before the receiver runs again. Every measurement frame starts the same -
-  // address 0x85, function 0x03, byte count 0x1C, model high byte 0x00 - so
-  // each possible number of lost bytes is tried with those put back, and the
-  // CRC decides. A burst that fits none of them is parsed as received, which
-  // reports it as short or broken.
-  void assemble() {
-    static const uint8_t head[4] = {0x85, 0x03, 0x1C, 0x00};
-    for (uint8_t lost = 0; lost <= 4; lost++) {
-      if ((uint16_t)burstLen + lost != WS85_FRAME_LEN) { continue; }
-      memcpy(rx, head, lost);
-      memcpy(rx + lost, burst, burstLen);
-      rxPos = WS85_FRAME_LEN;
-      const uint16_t rcrc = rx[rxPos - 2] | (rx[rxPos - 1] << 8);
-      if (crc16(rx, rxPos - 2) == rcrc) {
-        parseResponse();
-        return;
+  // Makes a 33 byte frame of the burst and parses it, if the CRC checks out.
+  //
+  // The end of a frame arrives intact. The wakeup costs its beginning, while the
+  // receiver starts up - measured on the rig: 2 to 4 bytes. So the burst is
+  // aligned to the end of a frame, and what is missing in front comes from the
+  // head every measurement frame starts with: the address, function 0x03, byte
+  // count 0x1C, then the model 0x0085, the baud rate code 0x0004 for 115200 and
+  // the address register.
+  //
+  // A receiver switched on in the middle of a byte can also decode a byte out of
+  // step, which then stands where head bytes belong - seen as E0 in front of
+  // 1C 00 85, once in 5 frames in one run and once in 8 in another. So when the
+  // frame fails the CRC, the whole head is put over the received bytes and the
+  // CRC decides again. Doing that only second leaves a frame that passes as
+  // received untouched, even one with another model or baud rate code.
+  bool take_frame() {
+    const uint8_t head[WS85_HEAD_LEN] = {slaveAddr, 0x03, 0x1C, 0x00, 0x85, 0x00, 0x04, 0x00, slaveAddr};
+    if (burstLen + WS85_HEAD_LEN < WS85_FRAME_LEN) {
+      return false;
+    }
+    const uint8_t take = (uint8_t)(burstLen < WS85_FRAME_LEN ? burstLen : WS85_FRAME_LEN);
+    const uint8_t missing = (uint8_t)(WS85_FRAME_LEN - take);
+    memcpy(rx, head, missing);
+    memcpy(rx + missing, burst + (burstLen - take), take);
+    rxPos = WS85_FRAME_LEN;
+    if (!frame_crc_ok()) {
+      memcpy(rx, head, WS85_HEAD_LEN);
+      if (!frame_crc_ok()) {
+        return false;
       }
     }
+    parseResponse();
+    return true;
+  }
+
+  bool frame_crc_ok() {
+    const uint16_t rcrc = (uint16_t)(rx[WS85_FRAME_LEN - 2] | (rx[WS85_FRAME_LEN - 1] << 8));
+    return crc16(rx, WS85_FRAME_LEN - 2) == rcrc;
+  }
+
+  // No frame in the burst: it is parsed as it came, so that parseResponse()
+  // reports why - too few bytes, or a CRC error.
+  void parse_as_received() {
     const uint8_t room = (uint8_t)(sizeof(rx) - RX_OFFSET);
     const uint8_t n = burstLen <= room ? burstLen : room;
     rx[0] = 0x85;
@@ -244,6 +283,7 @@ private:
   uint8_t rx[64];
   uint8_t burst[40];  // bytes of the current burst, as received
   uint8_t burstLen = 0;
+  uint8_t triedLen = 0;   // burst length take_frame() last tried before the line went quiet
   size_t rxPos = 0;
   int expectedRegs = 0;
   bool readingInterval = false;
@@ -282,7 +322,13 @@ uint16_t crc16(const uint8_t* data, size_t len) {
 
   void sendWrite(uint8_t id, uint8_t len, uint8_t* data) {
     
-    uint8_t frame[len + 4];
+    // Address, function, the data and the CRC. Every caller writes one register,
+    // four data bytes. A fixed buffer rather than a variable-length array, which
+    // is a compiler extension - the host test builds with MSVC.
+    uint8_t frame[4 + 4];
+    if (len > sizeof(frame) - 4) {
+      return;
+    }
     frame[0] = id;
     frame[1] = 0x06;
     for (int i = 0; i< len; i++){
