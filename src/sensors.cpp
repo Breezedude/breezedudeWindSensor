@@ -658,7 +658,7 @@ int read_wsxx(){
 //    for cycles in which the sensor UART saw anything.
 //
 //      W85 q=0 src=UART fl=01 st=0000 isr=2/31/0 buf=0 seen=31[1C 00 85 00 04 ...]
-//          t1=775 t2=3026 res=ok
+//          t1=821 t2=3034 frame=put2 res=ok
 //
 //    q      wake cycles without any UART activity since the previous line
 //    src    wakeup source: UART for the frame's start bit, RTC for the timer
@@ -668,6 +668,9 @@ int read_wsxx(){
 //    buf    bytes already buffered when resync() ran
 //    seen   bytes the parser read: the count, then the first 40 in hex
 //    t1 t2  us from the wakeup to the first and to the last of them
+//    frame  how take_frame() got the frame out of the burst: put<n> head bytes
+//           put in front, rep<n> received bytes overwritten with a different
+//           head byte, drop<n> bytes dropped in front; none if no frame came out
 //    res    ok     a measurement came out
 //           short  too few bytes, even with the lost leading bytes put back
 //           crc    CRC mismatch
@@ -675,13 +678,14 @@ int read_wsxx(){
 //                  another reason
 //
 //    A frame that wakes the station loses its first 2 to 4 bytes - here 85 03
-//    in front of 1C - and take_frame() puts them back: seen=29 to 31 with
-//    res=ok is the healthy case. So is seen=32[E0 1C 00 85 ...]: a byte decoded
-//    out of step in front of the rest, which take_frame() overwrites.
+//    in front of 1C, frame=put2 - and take_frame() puts them back. So seen=29
+//    to 31 with res=ok is the healthy case, and so is seen=32[E0 1C 00 85 ...]
+//    with frame=put1,rep1: a byte decoded out of step in front of the rest,
+//    overwritten with the head.
 //
 // 3) The timing of the same wake cycle, and the receiver's registers:
 //
-//      W85 time dis=86 rst=89 tc4=777 wdt=781 lora=784 poll=787 rx0=176 n=31
+//      W85 time dis=109 rst=113 tc4=803 wdt=807 lora=810 poll=812 rx0=301 n=31
 //          gaps=[] A=40312006 B=00030000 baud=001A gen=0 en=1 ie=84
 //
 //    dis rst tc4 wdt lora
@@ -742,14 +746,20 @@ static void ws85_trace_report(const char *result){
     static char line[400];
     char seen[130];
     w85_hex(seen, sizeof(seen), w.tr_seen, w.tr_seen_n);
+    char frame[24] = "none";
+    if(w.tr_framed){
+      int k = snprintf(frame, sizeof(frame), "put%u", (unsigned)w.tr_put);
+      if(w.tr_replaced){ k += snprintf(frame + k, sizeof(frame) - k, ",rep%u", (unsigned)w.tr_replaced); }
+      if(w.tr_dropped){ snprintf(frame + k, sizeof(frame) - k, ",drop%u", (unsigned)w.tr_dropped); }
+    }
     const uint8_t src = w.tr_wake_src < 8 ? w.tr_wake_src : 0; // wakeup_source_string[] has 8 entries
     snprintf(line, sizeof(line),
-             "W85 q=%lu src=%s fl=%02X st=%04X isr=%lu/%lu/%lu buf=%u seen=%u[%s] t1=%lu t2=%lu res=%s",
+             "W85 q=%lu src=%s fl=%02X st=%04X isr=%lu/%lu/%lu buf=%u seen=%u[%s] t1=%lu t2=%lu frame=%s res=%s",
              (unsigned long)quiet_cycles, wakeup_source_string[src], w.tr_flag, w.tr_status,
              (unsigned long)sercom0_rxs_count, (unsigned long)sercom0_rxc_count,
              (unsigned long)sercom0_err_count, w.tr_buffered, w.tr_seen_total, seen,
              (unsigned long)(w.tr_first_us ? w.tr_first_us - w.tr_wake_us : 0),
-             (unsigned long)(w.tr_last_us ? w.tr_last_us - w.tr_wake_us : 0), result);
+             (unsigned long)(w.tr_last_us ? w.tr_last_us - w.tr_wake_us : 0), frame, result);
     log_i(line);
     log_i("\r\n");
 

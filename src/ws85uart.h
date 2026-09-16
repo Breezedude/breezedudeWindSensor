@@ -24,7 +24,7 @@ public:
   uint8_t begun_div = 0;   // CPU divider the baud register was last set for
 #ifdef WS85_TRACE
   // WS85_TRACE debug build only: what a standby wakeup does to a frame. Filled
-  // along the wake path - sleep() in power.cpp, resync(), poll(),
+  // along the wake path - sleep() in power.cpp, resync(), poll(), take_frame(),
   // parseResponse() - then printed and cleared by ws85_trace_report() in
   // sensors.cpp, which documents the output. Times are micros().
   uint16_t tr_buffered = 0;       // bytes already in the ring buffer when resync() ran
@@ -50,9 +50,14 @@ public:
   uint8_t  tr_ie = 0;
   uint8_t  tr_gen = 0xFF;         // GCLK generator feeding the SERCOM0 core clock
   uint8_t  tr_clken = 0;          // and whether that clock channel is enabled
+  bool     tr_framed = false;     // take_frame() made a frame of the burst
+  uint8_t  tr_put = 0;            // head bytes it put in front of the burst
+  uint8_t  tr_replaced = 0;       // received bytes it overwrote with a different head byte
+  uint8_t  tr_dropped = 0;        // bytes it dropped in front of the frame
   void tr_reset() {
     tr_buffered = 0; tr_seen_n = 0; tr_seen_total = 0;
     tr_first_us = 0; tr_last_us = 0; tr_result = "none";
+    tr_framed = false; tr_put = 0; tr_replaced = 0; tr_dropped = 0;
   }
 #endif
 
@@ -209,12 +214,27 @@ public:
     memcpy(rx, head, missing);
     memcpy(rx + missing, burst + (burstLen - take), take);
     rxPos = WS85_FRAME_LEN;
+#ifdef WS85_TRACE
+    uint8_t replaced = 0;
+#endif
     if (!frame_crc_ok()) {
+#ifdef WS85_TRACE
+      for (uint8_t i = missing; i < WS85_HEAD_LEN; i++) {
+        if (rx[i] != head[i]) { replaced++; }
+      }
+#endif
       memcpy(rx, head, WS85_HEAD_LEN);
       if (!frame_crc_ok()) {
         return false;
       }
     }
+#ifdef WS85_TRACE
+    // WS85_TRACE: how the frame came about, frame= in ws85_trace_report().
+    tr_framed = true;
+    tr_put = missing;
+    tr_replaced = replaced;
+    tr_dropped = (uint8_t)(burstLen - take);
+#endif
     parseResponse();
     return true;
   }

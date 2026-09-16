@@ -39,8 +39,20 @@ if errorlevel 1 (
   popd
   exit /b 1
 )
+REM Once more with the trace fields compiled in.
+cl /nologo /EHsc /W3 /std:c++17 /utf-8 /I. /DWS85_TRACE test_ws85_frame.cpp /Fe:test_ws85_frame_trace.exe >nul
+if errorlevel 1 (
+  echo COMPILE FAILED with WS85_TRACE
+  popd
+  exit /b 1
+)
 REM .\ prefix: some shells set NoDefaultCurrentDirectoryInExePath
+echo release build
 .\test_ws85_frame.exe
 set RC=%ERRORLEVEL%
+echo.
+echo WS85_TRACE build
+.\test_ws85_frame_trace.exe
+if errorlevel 1 set RC=1
 popd
 exit /b %RC%
