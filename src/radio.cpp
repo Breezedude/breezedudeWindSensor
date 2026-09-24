@@ -1,5 +1,6 @@
 #include "radio.h"
 #include "sensors.h"
+#include "fanet_sched.h"
 
 LORA_MODULE lora_module = LORA_NONE;
 
@@ -172,11 +173,23 @@ bool lbt_channel_free(int max_attempts) {
   }
 }
 
+// The scheduled repeater governs the receiver itself, see fanet_sched.h - but
+// not while the battery is full and the sun is on it. There is nothing to save
+// then, and hearing everything is worth more than the milliamps.
+bool repeater_sched_active(){
+  extern bool undervoltage;
+  if(!settings.repeater || !settings.repeater_sched || undervoltage){ return false; }
+  const bool power_to_spare = sensor.batt_perc > 95 && (sensor.pv_charging || sensor.pv_done);
+  return !power_to_spare;
+}
+
 void radio_sleep(){
-  // Repeater: always-on RX except during undervoltage.
+  // Repeater: always-on RX except during undervoltage, or when the schedule
+  // says the next packet is not due yet.
   // Smart-rcv: only when battery is sufficiently charged and solar is active.
   extern bool undervoltage;
-  const bool en_rx = (settings.repeater && !undervoltage) ||
+  const bool scheduled = repeater_sched_active();
+  const bool en_rx = (settings.repeater && !undervoltage && (!scheduled || sched_rx_wanted(time()))) ||
                      (settings.lora_smart_rcv && sensor.batt_perc >= 90 && (sensor.pv_charging || sensor.pv_done));
   if(en_rx){
     en_rx_sleep();
@@ -197,6 +210,10 @@ void radio_sleep(){
 }
 
 bool fanet_rx(){
+  // When the packet arrived, as far as the station can tell. The way from the
+  // DIO1 interrupt through the wakeup to here is short and always the same, so
+  // the schedule in fanet_sched.h can measure periods with it.
+  const uint32_t t_rx = time();
   if(loraReceivedFlag) {
     loraReceivedFlag = false;
 
@@ -248,8 +265,14 @@ bool fanet_rx(){
     // to prevent cascaded forwarding). Skip if a forward is already queued or
     // we recently forwarded from this sender (dedup).
     const bool rssi_ok = settings.repeater || (rssi < FANET_FORWARD_RSSI_THRESHOLD);
+    const uint32_t sender_id = ((uint32_t)header->vendor << 16) | header->address;
+    // The schedule learns the rhythm of every weather station that asks to be
+    // forwarded, also when this packet itself is not forwarded because one is
+    // already queued or it came in too soon after the last one.
+    if (settings.repeater_sched && header->forward && header->type == FANET_PCK_TYPE_WEATHER) {
+      sched_note_weather(sender_id, t_rx);
+    }
     if (header->forward && !forward_pending && rssi_ok) { // repeater: forward all; smart_rcv: only weak signals
-      uint32_t sender_id = ((uint32_t)header->vendor << 16) | header->address;
       if (fwd_dedup_check_and_add(sender_id)) {
         byteArr[0] &= ~(1u << 6); // clear forward bit
         if (numBytes <= (int)sizeof(forward_buf)) {

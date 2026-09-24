@@ -15,6 +15,7 @@
 #include "ota_lora.h"
 #include "power.h"
 #include "scheduler.h"
+#include "fanet_sched.h"
 
 #ifndef BREEZEDUDE_DEVELOP_MODE
 #define BREEZEDUDE_DEVELOP_MODE 0
@@ -106,6 +107,7 @@ void setup(){
     if(settings.repeater && settings.sensor_type == s_invalid) {
       settings.broadcast_interval_weather = 0;
     }
+    sched_configure(settings.repeater_scan_interval, settings.repeater_scan_duration);
     if(!debug_enabled()){
       DEBUGSER.flush();
       DEBUGSER.end();

@@ -11,6 +11,7 @@
 #include "sleep.h"
 #include "tools.h"
 #include "radio.h"
+#include "fanet_sched.h"
 #include "ota_lora.h"
 #include "scheduler.h"
 
@@ -355,6 +356,16 @@ void go_sleep(){
   const uint32_t fwd_delay = fanet_forward_delay_ms();
   if(fwd_delay && fwd_delay < time_to_sleep){
     time_to_sleep = fwd_delay;
+  }
+  // The scheduled repeater has to be awake when the next packet of a station it
+  // knows is due, and may sleep through everything in between - see
+  // fanet_sched.h. Its deadlines are the edges of those windows and of the scan.
+  if(repeater_sched_active()){
+    uint32_t sched_delay = sched_next_deadline(time());
+    if(sched_delay != SCHED_NO_DEADLINE){
+      if(sched_delay < 20){ sched_delay = 20; } // a sleep of zero would skip the sleep entirely
+      if(sched_delay < time_to_sleep){ time_to_sleep = sched_delay; }
+    }
   }
   wake_mark(WP_TTS);
   if(time_to_sleep == 0){ return;} // if time_to_sleep = 0, do not sleep at all

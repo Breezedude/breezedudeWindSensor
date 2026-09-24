@@ -505,6 +505,9 @@ SETTING_FN(set_lbt_rssi,  settings.lora_rssi_threshold = atoi(v))
 SETTING_FN(set_smart_fwd, settings.lora_smart_rcv = atoi(v))
 SETTING_FN(set_fwd_data,  settings.forward_data   = atoi(v))
 SETTING_FN(set_repeater,  settings.repeater       = atoi(v))
+SETTING_FN(set_rep_sched, settings.repeater_sched = atoi(v))
+SETTING_FN(set_rep_scan_int, settings.repeater_scan_interval = seconds_to_ms(v))
+SETTING_FN(set_rep_scan_dur, settings.repeater_scan_duration = seconds_to_ms(v))
 
 // --- measurement / averaging ---
 SETTING_FN(set_heading_offset, settings.heading_offset = atoi(v))
@@ -698,6 +701,9 @@ static const SettingEntry setting_table[] = {
   {"FANET_SMART_FORWARD",        set_smart_fwd,   SETTING_CFG},
   {"FORWARD_DATA",               set_fwd_data,    SETTING_CFG},
   {"REPEATER",                   set_repeater,    SETTING_CFG},
+  {"REPEATER_SCHED",             set_rep_sched,   SETTING_CFG},
+  {"REPEATER_SCAN_INTERVAL",     set_rep_scan_int, SETTING_CFG},
+  {"REPEATER_SCAN_DURATION",     set_rep_scan_dur, SETTING_CFG},
 
   {"HEADING_OFFSET",             set_heading_offset, SETTING_CFG},
   {"GUST_AGE",                   set_gust_age,    SETTING_CFG},
@@ -783,6 +789,10 @@ void print_settings(){
     log_i("Broadcast interval name [s]: ", settings.broadcast_interval_name/1000);
     log_i("LBT: "); log_i(settings.lora_lbt ? "ON\r\n" : "OFF\r\n");
     if(settings.repeater) { log_i("Repeater mode: ON\r\n"); }
+    if(settings.repeater && settings.repeater_sched) {
+      log_i("Repeater schedule: ON, scan every [s]: ", settings.repeater_scan_interval/1000);
+      log_i("Repeater scan duration [s]: ", settings.repeater_scan_duration/1000);
+    }
     if(settings.forward_data) { log_i("Forward data: ON\r\n"); }
     if(is_wsxx()){log_i("Sensor: WSXX Auto detect\r\n");}
     if(settings.sensor_type == s_DAVIS6410){log_i("Sensor: DAVIS 6410\r\n");}

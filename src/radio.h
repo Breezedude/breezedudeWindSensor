@@ -55,3 +55,5 @@ uint32_t fanet_forward_delay_ms();
 // Returns true when transmission was started (caller should set send_active).
 bool fanet_forward_check();
 bool radio_init();
+// True while the scheduled repeater decides when the receiver runs.
+bool repeater_sched_active();
