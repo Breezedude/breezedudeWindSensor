@@ -29,6 +29,10 @@ QMC5883P qmc5883p; // GY-271
 
 
 CHIP_BARO chip_baro = BARO_NONE;
+// Attempts in a row that returned no pressure. read_baro() switches the
+// barometer off when it reaches BARO_FAIL_LIMIT, see there.
+#define BARO_FAIL_LIMIT 10
+static uint8_t baro_fails = 0;
 CHIP_IMU chip_imu = IMU_NONE;
 
 Sensors sensor;
@@ -412,11 +416,29 @@ void read_baro(){
   #endif
 
   if(data_ok){
+    baro_fails = 0;
     sensor.baro_temp = T;
     sensor.last_baro_reading = now;
     sensor.baro_pressure = apply_altitude_correction(P, T, position_alt());
     log_v("Baro: ", sensor.baro_pressure);
     log_v("Baro Temp: ", sensor.baro_temp);
+  } else if(baro_fails < BARO_FAIL_LIMIT){
+    // A barometer that answers on the bus but never returns a reading is worse
+    // than none at all: allowed_to_send_weather() waits for a pressure that
+    // never arrives, so the station stops sending weather entirely and only
+    // logs "just looping". That is what an old board carrying a chip this build
+    // does not drive looks like. After BARO_FAIL_LIMIT attempts in a row the
+    // barometer is switched off and weather goes out without the pressure
+    // field. Only the setting in RAM is changed, so the next boot tries the
+    // chip again - a loose connection is not written off for good.
+    baro_fails++;
+    log_d("Baro: no reading, attempt ", (uint32_t)baro_fails);
+    if(baro_fails >= BARO_FAIL_LIMIT){
+      log_e("Baro: no reading, barometer switched off, weather now goes out without pressure\r\n");
+      settings.use_baro = false;
+      sensor.next_baro_reading = 0;
+      return;
+    }
   }
   // Start the next conversion right away. It completes within milliseconds and
   // the sensor holds the result, so the next transmission reads it without
