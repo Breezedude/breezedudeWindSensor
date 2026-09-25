@@ -17,12 +17,49 @@
 // find stations that appeared since, and to catch the name packets that are
 // only sent every few minutes.
 //
+// HWInfo (type 0x0A) is followed as a second rhythm per station, so a station's
+// hardware and firmware report gets forwarded too and not only when it happens
+// to fall into a scan. Two differences to the weather rhythm, both because it
+// comes only every ten minutes:
+//
+//   - It is not measured before it is used. Measuring needs two packets in a
+//     row, which a repeater that sleeps between its windows would only ever get
+//     inside a scan window longer than the interval itself. The interval is not
+//     a secret though - ota_lora.cpp sends HWInfo every ten minutes - so one
+//     packet is enough to start, with a wide guard because an assumed period is
+//     only as good as the two clocks agree. The first measured gap replaces it
+//     and the guard collapses.
+//   - It is never resynced by listening: after two empty windows the rhythm is
+//     dropped and left to the next scan. Ten minutes of listening would cost
+//     more than the packet is worth.
+//
+// OTA packets are not part of this. They never carry the forward bit, so the
+// repeater does not pass them on - this mode forwards what a station reports
+// about itself, it does not carry an update session.
+#define SCHED_HW_SEED_MS       600000u  // ota_lora.cpp: OTA_HWINFO_DYNAMIC_INTERVAL_S
+#define SCHED_HW_SEED_GUARD_MS   8000u  // one per cent of clock offset over ten minutes, doubled
+//
 // Everything here works on the millisecond clock of time(), which survives
 // standby. The caller passes it in rather than the module reading it, so the
 // whole state machine can be exercised on a host.
 
 #define SCHED_MAX_STATIONS 5
 #define SCHED_NO_DEADLINE  0xFFFFFFFFu
+
+// How long a window stays open past the moment a packet is expected. A station
+// never sends early - its next send is its last send plus its interval - but it
+// is regularly late: scheduler.cpp holds every transmission back until
+// fanet_cooldown (4 s) has passed since the previous one, so a weather packet
+// that follows a name or HWInfo packet slides by that much, and listen-before-
+// talk can add more. Measured on the rig: a rhythm of 39.28 s with one packet
+// 3.5 s late, right after that station had sent its name.
+//
+// The tail is nearly free, because a window is not closed by the clock but by
+// the packet: the moment it arrives, the next one is expected a full period
+// later and the receiver goes back to sleep. Waiting nine seconds only costs
+// anything when the packet really is late or lost - which is exactly when it is
+// worth waiting.
+#define SCHED_TAIL_MS      9000u
 
 enum SchedState : uint8_t {
   SCHED_FREE = 0,   // slot unused
@@ -40,14 +77,23 @@ struct SchedInfo {
   uint16_t hits;     // packets received from this station
   uint8_t  misses;   // windows in a row that stayed empty
   uint8_t  state;    // SchedState
+  uint32_t hw_period;// the same for the HWInfo rhythm, 0 while unknown
+  uint32_t hw_next;
+  uint32_t hw_guard;
+  uint8_t  hw_state; // SchedState, but never SCHED_RESYNC
 };
 
 // Scan window parameters. A duration of 0 switches scanning off.
 void sched_configure(uint32_t scan_interval_ms, uint32_t scan_duration_ms);
 
 // Every weather packet that carries the forward bit, with the time the station
-// woke up for it.
+// woke up for it. A weather packet is what puts a station in the table.
 void sched_note_weather(uint32_t sender_id, uint32_t t_rx);
+
+// Every HWInfo packet that carries the forward bit. Only stations already in
+// the table are followed: a station that never sends weather has nothing this
+// mode would forward on a schedule.
+void sched_note_hwinfo(uint32_t sender_id, uint32_t t_rx);
 
 // Should the receiver be on at this moment?
 bool sched_rx_wanted(uint32_t now);

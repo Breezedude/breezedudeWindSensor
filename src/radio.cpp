@@ -279,11 +279,16 @@ bool fanet_rx(){
     // we recently forwarded from this sender (dedup).
     const bool rssi_ok = settings.repeater || (rssi < FANET_FORWARD_RSSI_THRESHOLD);
     const uint32_t sender_id = ((uint32_t)header->vendor << 16) | header->address;
-    // The schedule learns the rhythm of every weather station that asks to be
-    // forwarded, also when this packet itself is not forwarded because one is
-    // already queued or it came in too soon after the last one.
-    if (settings.repeater_sched && header->forward && header->type == FANET_PCK_TYPE_WEATHER) {
-      sched_note_weather(sender_id, t_rx);
+    // The schedule learns the rhythm of every station that asks to be
+    // forwarded - the weather packets it exists for, and the HWInfo report of
+    // the same station as a second rhythm. This happens even when this packet
+    // itself is not forwarded because one is already queued.
+    if (settings.repeater_sched && header->forward) {
+      if (header->type == FANET_PCK_TYPE_WEATHER) {
+        sched_note_weather(sender_id, t_rx);
+      } else if (header->type == FANET_PCK_TYPE_HWINFO) {
+        sched_note_hwinfo(sender_id, t_rx);
+      }
     }
     if (header->forward && !forward_pending && rssi_ok) { // repeater: forward all; smart_rcv: only weak signals
       if (fwd_dedup_check_and_add(sender_id, header->type)) {

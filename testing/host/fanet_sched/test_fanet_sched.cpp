@@ -52,6 +52,18 @@ static uint32_t sync_station(uint32_t id, uint32_t t0, uint32_t period) {
   return t0 + 2 * period;
 }
 
+// Keeps a synced station's weather rhythm alive up to t_end: a packet arrives
+// exactly when it is expected, every time. Returns the last moment fed.
+static uint32_t feed_weather(uint32_t id, uint32_t t_end) {
+  SchedInfo s;
+  uint32_t last = 0;
+  while (info_of(id, &s) && (int32_t)(s.next - t_end) <= 0) {
+    last = s.next;
+    sched_note_weather(id, last);
+  }
+  return last;
+}
+
 static void fresh(uint32_t scan_interval_ms, uint32_t scan_duration_ms) {
   sched_reset();
   sched_configure(scan_interval_ms, scan_duration_ms);
@@ -78,12 +90,24 @@ int main() {
   check(!sched_rx_wanted(next - guard - 1000), "quiet well before the window");
   check(sched_rx_wanted(next - guard + 10), "on just before the packet is due");
   check(sched_rx_wanted(next + 20), "on at the expected moment");
-  check(!sched_rx_wanted(next + guard + 500), "off again after the window");
+  check(sched_rx_wanted(next + SCHED_TAIL_MS - 100), "still on for a sender held back by its cooldown");
+  check(!sched_rx_wanted(next + SCHED_TAIL_MS + 1), "off again once even that is over");
   check(info_of(ID_A, &s) && s.misses == 1, "  ... that empty window counted as a miss");
+
+  printf("\na late packet keeps the rhythm, it does not restart it\n");
+  fresh(3600000, 0);
+  uint32_t t = sync_station(ID_A, 100000, T);
+  info_of(ID_A, &s);
+  const uint32_t period_before = s.period;
+  t = s.next + 3500;                 // held back by the cooldown after a name packet
+  sched_note_weather(ID_A, t);
+  check(info_of(ID_A, &s) && s.state == SCHED_SYNCED, "a packet 3.5 s late is still the same rhythm");
+  check(s.period == period_before, "  ... the period is left alone");
+  check(s.next == t + period_before, "  ... and the prediction moves with the sender");
 
   printf("\na punctual sender narrows the window\n");
   fresh(3600000, 0);
-  uint32_t t = sync_station(ID_A, 100000, T);
+  t = sync_station(ID_A, 100000, T);
   for (int i = 0; i < 6; i++) {
     info_of(ID_A, &s);
     t = s.next + 15;                 // 15 ms late every time
@@ -99,13 +123,13 @@ int main() {
   fresh(3600000, 0);
   sync_station(ID_A, 100000, T);
   info_of(ID_A, &s);
-  sched_rx_wanted(s.next + s.guard + 200);        // window passes, nothing arrives
+  sched_rx_wanted(s.next + SCHED_TAIL_MS + 1);    // window passes, nothing arrives
   check(info_of(ID_A, &s) && s.state == SCHED_SYNCED && s.misses == 1, "first empty window: schedule kept");
   check(s.guard >= 1000, "  ... window widened for the next attempt");
   check(!sched_rx_wanted(s.next - s.guard - 100), "  ... still sleeping in between");
-  sched_rx_wanted(s.next + s.guard + 200);        // second one too
+  sched_rx_wanted(s.next + SCHED_TAIL_MS + 1);    // second one too
   check(info_of(ID_A, &s) && s.state == SCHED_RESYNC, "second empty window: back to listening");
-  check(sched_rx_wanted(s.next + s.guard + 5000), "  ... receiver on regardless of the clock");
+  check(sched_rx_wanted(s.next + 5000), "  ... receiver on regardless of the clock");
 
   printf("\nfinding the sender again\n");
   uint32_t t_back = s.next + 30;                  // it turns up in the window it was due in
@@ -117,12 +141,14 @@ int main() {
   fresh(3600000, 0);
   sync_station(ID_A, 100000, T);
   info_of(ID_A, &s);
-  sched_rx_wanted(s.next + s.guard + 200);
-  sched_rx_wanted(s.next + 2 * T);                // two misses -> resync
+  sched_rx_wanted(s.next + SCHED_TAIL_MS + 1);
+  info_of(ID_A, &s);
+  uint32_t probe = s.next + SCHED_TAIL_MS + 1;
+  sched_rx_wanted(probe);                         // two misses -> resync
   check(info_of(ID_A, &s) && s.state == SCHED_RESYNC, "resyncing");
-  sched_rx_wanted(s.next + 10 * T);               // silent for far longer than the patience
+  sched_rx_wanted(probe + 4 * T);                 // silent for far longer than the patience
   check(station_count() == 0, "slot given back");
-  check(sched_rx_wanted(s.next + 11 * T), "  ... with nothing left to plan for, it listens again");
+  check(sched_rx_wanted(probe + 5 * T), "  ... with nothing left to plan for, it listens again");
 
   printf("\nnothing known yet, but a scan window\n");
   fresh(300000, 60000);
@@ -133,10 +159,17 @@ int main() {
   printf("\nthe sender changes its interval\n");
   fresh(3600000, 0);
   t = sync_station(ID_A, 100000, T);
-  sched_note_weather(ID_A, t + 3 * T + 700);      // battery low: three times the interval
-  check(info_of(ID_A, &s) && s.state == SCHED_SYNCED, "a gap of three periods still fits the rhythm");
-  sched_note_weather(ID_A, t + 3 * T + 700 + 7000);   // now something entirely different
-  check(info_of(ID_A, &s) && s.state == SCHED_CHECK && s.period == 7000, "an interval that does not fit is learned anew");
+  t += 3 * T + 700;                               // battery low: three times the interval
+  sched_note_weather(ID_A, t);
+  check(info_of(ID_A, &s) && s.state == SCHED_SYNCED && s.period == T,
+        "one gap of three periods is a lost packet, not a new interval");
+  t += 3 * T + 700;
+  sched_note_weather(ID_A, t);
+  check(info_of(ID_A, &s) && s.state == SCHED_SYNCED && s.period == 3 * T + 700,
+        "the same gap twice is the new interval, and is taken over");
+  t += 7000;                                      // now something entirely different
+  sched_note_weather(ID_A, t);
+  check(info_of(ID_A, &s) && s.state == SCHED_CHECK && s.period == 7000, "an interval that fits nothing is learned anew");
 
   printf("\nfive stations, and one too many\n");
   fresh(3600000, 0);
@@ -149,13 +182,43 @@ int main() {
   check(info_of(0x11BEFF, &s), "  ... the newcomer got in");
   check(!info_of(0x11BE00, &s), "  ... the one silent longest had to go");
 
-  printf("\nscan window\n");
-  fresh(3600000, 360000);      // every hour for six minutes
-  check(sched_rx_wanted(1000), "scanning right after boot");
-  check(sched_scanning(), "  ... and it says so");
-  check(!sched_rx_wanted(1000 + 360000 + 10), "over after six minutes");
-  check(sched_next_deadline(1000 + 360000 + 10) > 3000000, "next scan is about an hour away");
-  check(sched_rx_wanted(1000 + 3600000 + 10), "and it comes back");
+  printf("\nthe HWInfo rhythm of a station\n");
+  fresh(3600000, 0);
+  sync_station(ID_A, 100000, T);     // weather at 100000, 140000, 180000
+  uint32_t t_hw = 180000 + T / 2;    // HWInfo sits between two weather packets
+  sched_note_hwinfo(ID_A, t_hw);
+  check(info_of(ID_A, &s) && s.hw_state == SCHED_CHECK && s.hw_period == SCHED_HW_SEED_MS,
+        "one HWInfo is enough: the protocol interval is taken on trust");
+  check(!sched_rx_wanted(t_hw + 100), "  ... and the receiver goes straight back to sleep");
+  const uint32_t hw_due = s.hw_next;
+  const uint32_t hw_guard = s.hw_guard;
+  check(hw_guard > 2000, "the assumed interval gets a wide window");
+  feed_weather(ID_A, hw_due - hw_guard - 2000);
+  check(!sched_rx_wanted(hw_due - hw_guard - 2000), "asleep right up to that window");
+  check(sched_rx_wanted(hw_due - hw_guard + 100), "on early enough for two clocks that disagree");
+  check(sched_rx_wanted(hw_due), "on when the HWInfo is due");
+  sched_note_hwinfo(ID_A, hw_due + 20);
+  check(info_of(ID_A, &s) && s.hw_state == SCHED_SYNCED, "the second packet confirms the rhythm");
+  check(s.hw_period == SCHED_HW_SEED_MS + 20, "  ... the measured gap replaces the assumption");
+  check(s.hw_guard <= 500, "  ... and the window narrows to the measured case");
+  check(!sched_rx_wanted(hw_due + 2000), "  ... it closes on the packet, like any window");
+
+  printf("\nan unknown station's HWInfo is not followed\n");
+  sched_note_hwinfo(ID_B, hw_due + 3000);
+  check(!info_of(ID_B, &s), "no slot for a station that never sent weather");
+
+  printf("\na HWInfo rhythm is dropped, not resynced\n");
+  info_of(ID_A, &s);
+  probe = s.hw_next + SCHED_TAIL_MS + 1;
+  feed_weather(ID_A, probe);
+  sched_rx_wanted(probe);
+  check(info_of(ID_A, &s) && s.hw_state == SCHED_SYNCED, "first empty HWInfo window: rhythm kept");
+  check(s.hw_guard > 500, "  ... window widened for the next attempt");
+  probe = s.hw_next + SCHED_TAIL_MS + 1;
+  feed_weather(ID_A, probe);
+  sched_rx_wanted(probe);
+  check(info_of(ID_A, &s) && s.hw_state == SCHED_FREE, "second: dropped, the next scan can find it again");
+  check(s.state == SCHED_SYNCED, "  ... while the weather rhythm carries on untouched");
 
   printf("\nwhat the caller is told to wake up for\n");
   fresh(3600000, 0);
@@ -164,7 +227,7 @@ int main() {
   const uint32_t quiet = s.next - s.guard - 5000;
   check(sched_next_deadline(quiet) == 5000, "sleep until the window opens");
   const uint32_t inside = s.next - s.guard + 100;
-  check(sched_next_deadline(inside) == 2 * s.guard + 60 - 100, "inside the window: wake when it closes");
+  check(sched_next_deadline(inside) == s.guard + SCHED_TAIL_MS - 100, "inside the window: wake when it closes");
 
   printf("\nthe millisecond counter wraps\n");
   fresh(3600000, 0);
