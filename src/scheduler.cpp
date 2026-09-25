@@ -2,6 +2,7 @@
 #include <array>
 
 #include "scheduler.h"
+#include "tx_grid.h"
 #include "defines.h"
 #include "hist.h"
 #include "sensors.h"
@@ -48,6 +49,23 @@ static uint32_t timeToSend(uint32_t last, uint32_t interval) {
     return (elapsed < delay) ? (delay - elapsed) : 0;
   }
   return TTS_NEVER;
+}
+
+// The weather packet is the one message that has to keep a rhythm, so it is
+// scheduled on a fixed grid instead of "last send plus interval". The grid
+// itself lives in tx_grid.cpp; see tx_grid.h for what that buys and why the
+// other messages do not need it.
+static uint32_t weather_interval_ms(){
+  return settings.broadcast_interval_weather * broadcast_scale_factor;
+}
+
+// Milliseconds until the next weather packet is due, in the same terms as
+// timeToSend().
+static uint32_t weather_due_in_ms(){
+  if(!settings.broadcast_interval_weather){ return TTS_NEVER; }
+  tx_grid_set_interval(time(), weather_interval_ms());
+  const uint32_t due = tx_grid_due_in(time());
+  return due == TX_GRID_NEVER ? TTS_NEVER : due;
 }
 
 enum TxAttemptResult : uint8_t {
@@ -135,7 +153,7 @@ uint32_t calc_time_to_sleep(){
 
 
 
-  tts_weather = timeToSend(last_msg_weather, settings.broadcast_interval_weather);
+  tts_weather = weather_due_in_ms();   // the fixed grid, see tx_grid.h
   tts_name    = timeToSend(last_msg_name, settings.broadcast_interval_name);
   tts_info    = ota_lora_next_hwinfo_due_ms();
 
@@ -414,6 +432,8 @@ typedef struct {
   void           (*on_deferred)(uint32_t retry_delay); // nullptr -> defer_next_send()
   void           (*on_none)();    // nullptr -> nothing
   bool            fresh_readings; // refresh battery and barometer before sending
+  void           (*on_sent)();    // nullptr -> only last_msg is stamped
+  bool            keeps_slot;     // owns a fixed slot, the others give way to it
 } TxJob;
 
 static bool tx_name_ready(){
@@ -458,10 +478,25 @@ static bool tx_weather_ready(){
 }
 
 static void tx_weather_none(){
-  // no valid wind data yet, retry in 10 seconds
-  last_msg_weather = time() - (settings.broadcast_interval_weather * broadcast_scale_factor) + 10000;
+  // No valid wind data yet. The packet waits ten seconds; the grid does not
+  // move, so the rhythm picks up again with the next slot.
+  tx_grid_retry(time(), 10000);
   sleep_allowed = time() + 1;
   log_w("Weather TX skipped, retry in 10s\r\n");
+}
+
+static void tx_weather_deferred(uint32_t retry_delay){
+  // The channel was busy. Try again shortly, but leave the grid where it is:
+  // this packet is late, the next one need not be.
+  tx_grid_retry(time(), retry_delay);
+  next_tx_time = time() + retry_delay;
+  sleep_allowed = time() + 1;
+  log_d("LBT: defer weather TX by ms: ", retry_delay);
+  log_d("\r\n");
+}
+
+static void tx_weather_sent(){
+  tx_grid_sent(time());
 }
 
 static TxAttemptResult tx_send_info(){
@@ -479,14 +514,35 @@ static void tx_info_deferred(uint32_t retry_delay){
   log_d("\r\n");
 }
 
+// Weather first, and it is the one job that keeps its slot: when several are
+// due in the same wakeup it goes out first and the others wait out the cooldown
+// behind it. The other way round - which is what the old order did - pushed the
+// weather packet four seconds off its rhythm.
 static const TxJob tx_jobs[] = {
+  {"weather", &last_msg_weather, &settings.broadcast_interval_weather, weather_due_in_ms,
+   tx_weather_ready, send_msg_weather, tx_weather_deferred, tx_weather_none, true,
+   tx_weather_sent, true},
   {"name",    &last_msg_name,    &settings.broadcast_interval_name,    nullptr,
-   tx_name_ready,    tx_send_name,     nullptr,          nullptr,         false},
-  {"weather", &last_msg_weather, &settings.broadcast_interval_weather, nullptr,
-   tx_weather_ready, send_msg_weather, nullptr,          tx_weather_none, true},
+   tx_name_ready,    tx_send_name,     nullptr,          nullptr,         false,
+   nullptr,         false},
   {"info",    &last_msg_info,    nullptr, ota_lora_next_hwinfo_due_ms,
-   nullptr,          tx_send_info,     tx_info_deferred, nullptr,         true},
+   nullptr,          tx_send_info,     tx_info_deferred, nullptr,         true,
+   nullptr,         false},
 };
+
+// Nothing may go out in the cooldown that runs up to the weather slot: a
+// transmission started there holds the weather packet back past its grid, which
+// is the very thing the grid exists to prevent. Name and HWInfo have no rhythm
+// to keep and simply follow it.
+static bool would_push_weather(const TxJob &job){
+  if(job.keeps_slot){ return false; }
+  const uint32_t tts = weather_due_in_ms();
+  // Only the run-up to the slot is kept clear. A weather packet that is due
+  // right now has already had its turn in this pass - it is first in the table,
+  // so it either went out or could not go out at all, for want of wind data -
+  // and holding the others back on that would silence the station completely.
+  return tts != TTS_NEVER && tts > 0 && tts <= fanet_cooldown;
+}
 
 static bool tx_job_due(const TxJob &job){
   if(job.due_in_ms){
@@ -524,6 +580,7 @@ static void refresh_tx_readings(){
 void tx_run_jobs(){
   for(const TxJob &job : tx_jobs){
     if(ota_lora_busy() || !fanet_cooldown_ok()) continue;
+    if(would_push_weather(job)) continue;
     if(!tx_job_due(job)) continue;
     // Before ready(): the weather gate checks how old the barometer reading is.
     if(job.fresh_readings) refresh_tx_readings();
@@ -534,6 +591,7 @@ void tx_run_jobs(){
       last_fnet_send = time();
       *job.last_msg  = time();
       send_active    = time();
+      if(job.on_sent) job.on_sent();
     } else if(result == TX_ATTEMPT_DEFERRED_LBT){
       if(job.on_deferred){
         job.on_deferred(next_lbt_retry_delay());
