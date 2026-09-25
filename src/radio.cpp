@@ -13,26 +13,39 @@ static uint32_t forward_after_time = 0;
 
 #define FANET_FORWARD_RSSI_THRESHOLD -92 // dBm, only forward packets with weaker signal to extend range of distant nodes
 
-// Dedup cache: suppress re-forwarding from the same sender within TTL
-#define FWD_DEDUP_LEN 8
+// Dedup cache: suppress re-forwarding the same packet within TTL. The key is
+// the sender together with the packet type. Keyed on the sender alone it threw
+// away everything a station sent after its first packet: scheduler.cpp holds
+// each of a station's own transmissions apart by fanet_cooldown (4 s), so its
+// name, weather and HWInfo packets arrive within the TTL of each other, and
+// only the first of them was passed on. Measured on the rig: name at 191.8 s
+// forwarded, weather 4.5 s later dropped, HWInfo 3.9 s after that dropped.
+#define FWD_DEDUP_LEN 16
 #define FWD_DEDUP_TTL 10000u  // ms
-struct FwdCacheEntry { uint32_t sender_id; uint32_t last_seen; };
+struct FwdCacheEntry { uint32_t key; uint32_t last_seen; };
 static FwdCacheEntry fwd_cache[FWD_DEDUP_LEN] = {};
 static uint8_t fwd_cache_idx = 0;
+
+// A FANET sender id is 24 bits (vendor << 16 | address), so the packet type
+// fits above it and the entry stays two words.
+static inline uint32_t fwd_key(uint32_t sender_id, uint8_t type) {
+  return (sender_id & 0x00FFFFFFu) | ((uint32_t)type << 24);
+}
 
 // Runtime counters, reset on boot, exposed via HW Info debug type 3
 uint16_t fanet_forward_counter = 0;
 uint16_t fanet_rx_counter      = 0;
 
-static bool fwd_dedup_check_and_add(uint32_t sender_id) {
+static bool fwd_dedup_check_and_add(uint32_t sender_id, uint8_t type) {
+  const uint32_t key = fwd_key(sender_id, type);
   uint32_t now = time();
   for (int i = 0; i < FWD_DEDUP_LEN; i++) {
-    if (fwd_cache[i].sender_id == sender_id &&
+    if (fwd_cache[i].key == key &&
         (now - fwd_cache[i].last_seen) < FWD_DEDUP_TTL) {
-      return false; // already forwarded recently
+      return false; // this packet was already forwarded
     }
   }
-  fwd_cache[fwd_cache_idx] = {sender_id, now};
+  fwd_cache[fwd_cache_idx] = {key, now};
   fwd_cache_idx = (fwd_cache_idx + 1) % FWD_DEDUP_LEN;
   return true;
 }
@@ -273,7 +286,7 @@ bool fanet_rx(){
       sched_note_weather(sender_id, t_rx);
     }
     if (header->forward && !forward_pending && rssi_ok) { // repeater: forward all; smart_rcv: only weak signals
-      if (fwd_dedup_check_and_add(sender_id)) {
+      if (fwd_dedup_check_and_add(sender_id, header->type)) {
         byteArr[0] &= ~(1u << 6); // clear forward bit
         if (numBytes <= (int)sizeof(forward_buf)) {
           memcpy(forward_buf, byteArr, numBytes);
