@@ -147,6 +147,8 @@ bool parse_file(char * filename){
 // Assembles lines from one console and dispatches them. Each port needs its own
 // buffer and index: interleaving bytes from two sources into one buffer would
 // splice their lines together.
+static bool run_bare_command(char *line, int len);
+
 static void read_console(Stream &stream, char *buffer, int &co, bool is_usb){
   while (stream.available()){
     if(is_usb){
@@ -165,7 +167,14 @@ static void read_console(Stream &stream, char *buffer, int &co, bool is_usb){
       // process_line() would swallow a second '=' and strip the spaces out of
       // a value like "SET NAME=Wendelstein Nord".
       if(!settings_edit_handle_line(buffer, co)){
-        process_line(buffer, co, &apply_setting); // Line complete
+        // A bare command word - "REBOOT", "STATUS" - used to be ignored,
+        // because process_line() only dispatches a KEY=VALUE pair. The web
+        // analyser sends exactly that bare word to restart a station after a
+        // configuration change, and nothing happened. Commands take no value
+        // worth typing, so a lone known command word counts as "=1".
+        if(!run_bare_command(buffer, co)){
+          process_line(buffer, co, &apply_setting); // Line complete
+        }
       }
       co=-1; // against +1 below
     }
@@ -775,6 +784,24 @@ bool apply_setting(char* settingName,  char* settingValue){
     return false;
   }
   return entry->apply(settingValue);
+}
+
+// A line that is only a command word, no '=': "REBOOT", "STATUS". Runs it as
+// if "=1" had been typed. Keys that take a value are left to process_line().
+static bool run_bare_command(char *line, int len){
+  int start = 0;
+  while(start < len && line[start] == ' ') start++;
+  int end = start;
+  while(end < len && line[end] != ' ' && line[end] != '\r' && line[end] != '\n' && line[end] != '=') end++;
+  if(end == start || (end < len && line[end] == '=')) return false;
+  const char saved = line[end];
+  line[end] = '\0';
+  const SettingEntry *cmd = setting_lookup(line + start);
+  line[end] = saved;
+  if(!cmd || cmd->kind != SETTING_CMD) return false;
+  char one[] = "1";
+  cmd->apply(one);
+  return true;
 }
 
 // Known key that is safe to store in settings.txt (i.e. not a console command).
