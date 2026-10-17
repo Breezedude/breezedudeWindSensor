@@ -101,8 +101,11 @@ static TxAttemptResult start_lbt_transmit(const uint8_t *data, size_t len) {
   return TX_ATTEMPT_STARTED;
 }
 
+// 200 to 2000 ms. The lower bound matters: a delay of 0 left the packet due
+// at once, the loop tried again and again on a channel that was still busy,
+// and the "just looping" fallback was what finally put the station to sleep.
 static uint32_t next_lbt_retry_delay() {
-  return (millis() ^ (time() << 1) ^ get_fanet_id()) % 2001;
+  return 200u + (millis() ^ (time() << 1) ^ get_fanet_id()) % 1801u;
 }
 
 static void defer_next_send(uint32_t &last_msg, uint32_t interval, const char *label) {

@@ -441,6 +441,7 @@ void go_sleep(){
 
   //if(!time_to_sleep){ return;} // if time_to_sleep = 0, do not sleep at all
 
+  log_v("awake ms: ", (uint32_t)(millis() - wake_started_ms));
   if(time_to_sleep > 200000UL) {
     log_v("will sleep for s: ", time_to_sleep / 1000);
   } else {

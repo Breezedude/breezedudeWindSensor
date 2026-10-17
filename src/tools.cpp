@@ -168,7 +168,12 @@ static void read_console(Stream &stream, char *buffer, int &co, bool is_usb){
       co = 0;
     }
     buffer[co] = stream.read();
-    if(buffer[co] == '\n'){
+    // A line ends with either CR or LF. A sender that terminates with CR
+    // alone - terminal programs do, and the web analyser - never got a line
+    // evaluated; its bytes piled up across wakeups until "Serial cmd too long"
+    // threw them away. The LF that may follow a CR is then an empty line.
+    if(buffer[co] == '\n' || buffer[co] == '\r'){
+      if(co == 0){ continue; }
       // Settings-editor commands (SET/SAVE/DUMP/...) get the raw line first:
       // process_line() would swallow a second '=' and strip the spaces out of
       // a value like "SET NAME=Wendelstein Nord".
