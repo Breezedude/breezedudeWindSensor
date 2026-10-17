@@ -521,6 +521,7 @@ SETTING_FN(set_bc_name,    settings.broadcast_interval_name    = seconds_to_ms(v
 
 // --- sensor selection ---
 SETTING_FN(set_baro,        settings.use_baro = atoi(v))
+SETTING_FN(set_hw_revision, hw_force(atoi(v)))   // 24 or 25 pins the pin map, see hw.h
 SETTING_FN(set_davis6410,   if(atoi(v)){ settings.sensor_type = s_DAVIS6410; })
 SETTING_FN(set_ws80,        if(atoi(v)){ settings.sensor_type = s_WS80; })       // WSXX auto detection
 SETTING_FN(set_ws85,        if(atoi(v)){ settings.sensor_type = s_WS85; })
@@ -714,6 +715,7 @@ static const SettingEntry setting_table[] = {
   {"BROADCAST_INTERVAL_NAME",    set_bc_name,     SETTING_CFG},
 
   {"SENSOR_BARO",                set_baro,        SETTING_CFG},
+  {"HW_REVISION",                set_hw_revision, SETTING_CFG},
   {"SENSOR_DAVIS6410",           set_davis6410,   SETTING_CFG},
   {"SENSOR_WSXX",                set_ws80,        SETTING_CFG},   // auto detection
   {"SENSOR_WS80",                set_ws80,        SETTING_CFG},   // kept for old settings files

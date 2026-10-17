@@ -84,6 +84,11 @@ void setup(){
   log_i("Version: ");  log_i(VERSION); log_i("\r\n");
   log_i("Bootloader: "); log_i(get_bootloader_version()); log_i("\r\n");
   log_i("Hardware: "); log_i(hw_name()); log_i(" (id "); log_write((uint32_t)hw_id_code()); log_i(")\r\n");
+  log_d("Hardware: battery divider on the 2.4 pin [V]: ", hw_divider_v24());
+  log_d("Hardware: battery divider on the 2.5 pin [V]: ", hw_divider_v25());
+  if(hw_id_overruled()){
+    log_e("Hardware: the ID pin and the battery divider disagree - going by the divider\r\n");
+  }
   if(hw_id_unknown()){
     log_w("Hardware: ID code not known to this firmware, using the 2.5 pin map\r\n");
   }
@@ -115,6 +120,9 @@ void setup(){
       settings.broadcast_interval_weather = 0;
     }
     sched_configure(settings.repeater_scan_interval, settings.repeater_scan_duration);
+    if(hw_forced()){
+      log_w("Hardware: pin map pinned by HW_REVISION to "); log_w(hw_name()); log_w("\r\n");
+    }
     if(!debug_enabled()){
       DEBUGSER.flush();
       DEBUGSER.end();

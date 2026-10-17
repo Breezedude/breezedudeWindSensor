@@ -145,6 +145,33 @@ uint8_t battery_soc_percent(float v) {
   return 100;
 }
 
+// One battery sample on a given ADC pin, with the divider switched on exactly
+// as read_batt_perc() does it. hw_detect() uses it on both candidate pins to
+// see where the divider really is - the ID pin says which revision, the
+// divider shows where it sits, and the two have to agree.
+float batt_sample(uint8_t pin, float *spread){
+  analogReference(AR_INTERNAL1V0);
+  analogReadResolution(10);
+  pinMode(pin, INPUT);
+  pinMode(PIN_V_READ_TRIGGER, OUTPUT);
+  digitalWrite(PIN_V_READ_TRIGGER, 1);
+  digitalWrite(PIN_V_READ_TRIGGER, 0);
+  delayMicroseconds(50);
+  uint16_t vmin = 1023, vmax = 0;
+  uint32_t sum = 0;
+  for(int i = 0; i < 7; i++){
+    const uint16_t s = analogRead(pin);
+    sum += s;
+    if(s < vmin) vmin = s;
+    if(s > vmax) vmax = s;
+  }
+  digitalWrite(PIN_V_READ_TRIGGER, 1);
+  pinDisable(pin);
+  const float scale = 0.0040925f; // 100k/330k, 1.0 V reference - as below
+  if(spread){ *spread = (float)(vmax - vmin) * scale; }
+  return ((float)sum / 7.0f) * scale;
+}
+
 // Trigger ADC and calc battery value in percent and volts
 void read_batt_perc(){
   static uint32_t last_battery_reading=0;
