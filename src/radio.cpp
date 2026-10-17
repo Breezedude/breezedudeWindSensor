@@ -243,7 +243,18 @@ bool fanet_rx(){
     // readData() leaves the radio in standby; caller must re-arm RX when safe.
 
     if (state == RADIOLIB_ERR_CRC_MISMATCH) {
-      log_w("FANET RX: CRC error\r\n");
+      // One line a minute, not one per packet: a noisy band produced three of
+      // these a second, and a log full of them says no more than one with a
+      // count. The first error of a quiet minute is reported at once, the rest
+      // of that minute is summed up with the next one.
+      static uint32_t crc_window = 0, crc_count = 0;
+      crc_count++;
+      if(!crc_window || (time() - crc_window) >= 60000u){
+        if(crc_count > 1){ log_w("FANET RX: CRC errors since the last line: ", crc_count - 1); }
+        log_w("FANET RX: CRC error\r\n");
+        crc_window = time();
+        crc_count = 1;
+      }
       return true; // packet consumed, re-arm is caller's responsibility
     } else if (state != RADIOLIB_ERR_NONE) {
       log_w("FANET RX: read failed, code=", state);
@@ -382,7 +393,8 @@ bool radio_init(){
   #endif
 
   #if BREEZEDUDE_RADIO_LLCC68
-  if(radio_llcc68.begin(settings.lora_freq, settings.lora_bw, settings.lora_sf, settings.lora_cr, LORA_SYNCWORD, 10, 12) == RADIOLIB_ERR_NONE){
+  const int llcc68_state = radio_llcc68.begin(settings.lora_freq, settings.lora_bw, settings.lora_sf, settings.lora_cr, LORA_SYNCWORD, 10, 12);
+  if(llcc68_state == RADIOLIB_ERR_NONE){
     radio_phy = (PhysicalLayer*)&radio_llcc68;
     log_i("Radio: LoRa LLCC68\r\n");
     lora_module = LORA_LLCC68;
@@ -404,6 +416,11 @@ bool radio_init(){
   }
   #endif
 
+  // The code tells a missing chip (-2) from a refused parameter, such as a
+  // bandwidth the module does not have (-12). "Not found" alone hid that.
+  #if BREEZEDUDE_RADIO_LLCC68
+  log_w("Radio: LLCC68 begin() code=", llcc68_state);
+  #endif
   log_e("Radio: No LoRa found\r\n");
   return false;
 }

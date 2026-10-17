@@ -213,6 +213,9 @@ void setup(){
       if(settings.repeater) {
         setup_rtc_time_counter(); // repeater without sensor still needs RTC for sleep
       } else {
+        // The red LED alone said nothing about which of the mandatory settings
+        // was missing.
+        log_e("No sensor configured (no SENSOR_* key), nothing to measure\r\n");
         led_error(1);
       }
     }

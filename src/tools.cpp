@@ -765,9 +765,14 @@ static const SettingEntry* setting_lookup(const char *key){
 }
 
 bool apply_setting(char* settingName,  char* settingValue){
-  //if(debug_enabled()){printf("Setting: %s = %s\r\n",settingName, settingValue); log_flush();}
   const SettingEntry *entry = setting_lookup(settingName);
-  return entry ? entry->apply(settingValue) : false;
+  if(!entry){
+    // A typo in settings.txt used to vanish without a trace: the line was
+    // skipped and the station ran on the default. Once per line is enough.
+    log_w("Unknown setting: "); log_w(settingName); log_w("\r\n");
+    return false;
+  }
+  return entry->apply(settingValue);
 }
 
 // Known key that is safe to store in settings.txt (i.e. not a console command).

@@ -72,6 +72,7 @@ enum TxAttemptResult : uint8_t {
   TX_ATTEMPT_NONE = 0,
   TX_ATTEMPT_STARTED,
   TX_ATTEMPT_DEFERRED_LBT,
+  TX_ATTEMPT_FAILED,        // the radio refused the packet; retried like a deferral
 };
 
 // LBT (Listen Before Talk) checks whether the LoRa channel is free before TX.
@@ -85,15 +86,18 @@ static TxAttemptResult start_lbt_transmit(const uint8_t *data, size_t len) {
   // Arm TX-done callback here (not in dis_rx_sleep) to avoid re-arming DIO1
   // while the radio is in the sleep path, which causes spurious IRQ on LLCC68.
   radio_phy->setPacketSentAction(set_fanet_send_flag);
-  if(!settings.lora_lbt) {
-    radio_phy->startTransmit(data, len);
-    return TX_ATTEMPT_STARTED;
-  }
-  if(!lbt_channel_free()) {
+  if(settings.lora_lbt && !lbt_channel_free()) {
     radio_sleep();
     return TX_ATTEMPT_DEFERRED_LBT;
   }
-  radio_phy->startTransmit(data, len);
+  const int state = radio_phy->startTransmit(data, len);
+  if(state != RADIOLIB_ERR_NONE){
+    // Taken for a sent packet, this waited 3.5 s for a TX-done that never
+    // comes and left nothing in the log but "Send timed out".
+    log_w("TX start failed, code=", state);
+    radio_sleep();
+    return TX_ATTEMPT_FAILED;
+  }
   return TX_ATTEMPT_STARTED;
 }
 
@@ -228,7 +232,7 @@ static TxAttemptResult send_msg_weather(){
   
   WindSample current_wind = get_wind_from_hist(settings.wind_age);
   if(!current_wind.valid){
-    log_w("No valid wind data\r\n");
+    log_w("No wind sample in the last [s]: ", settings.wind_age / 1000u);
     return TX_ATTEMPT_NONE;
   }
   led_status(1);
@@ -607,7 +611,7 @@ void tx_run_jobs(){
       *job.last_msg  = time();
       send_active    = time();
       if(job.on_sent) job.on_sent();
-    } else if(result == TX_ATTEMPT_DEFERRED_LBT){
+    } else if(result == TX_ATTEMPT_DEFERRED_LBT || result == TX_ATTEMPT_FAILED){
       if(job.on_deferred){
         job.on_deferred(next_lbt_retry_delay());
       } else {

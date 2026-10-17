@@ -262,7 +262,7 @@ bool init_imu(){
       // add other IMU models here
 
     settings.use_imu = false;
-    log_w("IMU not found");
+    log_w("IMU not found\r\n");
     return false;
 }
 
@@ -1020,6 +1020,9 @@ int read_ws85_uart(){
   if(errorcount == 20){ // try a single baud resync after repeated failed reads
     log_w("Trying WS85 baud sync\r\n");
     ws85uart.set_baud_115200();
+  }
+  if(errorcount == 1000){
+    log_w("WS85: no valid frame in 1000 reads\r\n");
   }
   if(errorcount > 1000){
     led_error(1);
