@@ -23,6 +23,8 @@ bool first_sleep = true; // first sleep after reset, USB perephial could still b
 
 uint32_t sleep_allowed = 0; // time() when is is ok so enter deepsleep
 uint32_t loopcounter = 0;
+static uint32_t wake_started_ms = 0;   // millis() at wakeup(), for the awake time in the compact log
+static int last_wake_source = 0;
 bool reduced_interval = false; // reduced interval active
 bool undervoltage = false;
 bool deep_undervoltage = false; // set after 3 consecutive voltage readings < 2.9V; triggers extended sleep for solar charging
@@ -239,8 +241,10 @@ uint32_t sleep(bool enable_uart_interrupt){
 void wakeup(){
   // USB->DEVICE.CTRLA.reg |= USB_CTRLA_ENABLE; // Re-enable USB, no need, not working?
   loopcounter = 0;
-  log_i("\r\n########\r\n");
-  log_i("Wakeup: ", time()); 
+  wake_started_ms = millis();
+  last_wake_source = wakeup_source;
+  log_v("\r\n########\r\n");
+  log_v("Wakeup: ", time());
   log_v("Wakeup source: "); log_v(wakeup_source_string[wakeup_source]);log_v("\r\n");
   if(settings.uart_wake){
     // What was this wakeup, really? See the note above SERCOM1_Handler: rxs
@@ -438,10 +442,17 @@ void go_sleep(){
   //if(!time_to_sleep){ return;} // if time_to_sleep = 0, do not sleep at all
 
   if(time_to_sleep > 200000UL) {
-    log_d("will sleep for s: ", time_to_sleep / 1000);
+    log_v("will sleep for s: ", time_to_sleep / 1000);
   } else {
-    log_d("will sleep for ms: ", time_to_sleep);
+    log_v("will sleep for ms: ", time_to_sleep);
   }
+  // The compact log says the same in one line: what woke the station, what the
+  // sensor window brought, how long it was awake, how long it sleeps.
+  log_s("wake "); log_write(wakeup_source_string[last_wake_source]);
+  log_write(" at "); log_write((uint32_t)time());
+  log_sensor_window_fragment();
+  log_write(" | awake "); log_write((uint32_t)(millis() - wake_started_ms));
+  log_write(" ms, sleep "); log_write((uint32_t)time_to_sleep); log_write("\r\n");
   // No log_flush() here. The RTC, radio and pulse counter setup below is mostly
   // synchronisation waits: done while the UART is still sending, that time is
   // shared with the drain instead of added after it. sleep() flushes right

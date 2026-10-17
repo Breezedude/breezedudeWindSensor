@@ -156,15 +156,15 @@ bool lbt_channel_free(int max_attempts) {
       
       radio_phy->standby();  // Back to standby
       
-      log_d("LBT: attempt ");
+      log_v("LBT: attempt ");
       log_write(i + 1);
-      log_d("/");
+      log_v("/");
       log_write(max_attempts);
-      log_d(" RSSI avg ");
+      log_v(" RSSI avg ");
       log_write(rssi_avg);
-      log_d(" dBm (threshold ");
+      log_v(" dBm (threshold ");
       log_write(settings.lora_rssi_threshold);
-      log_d(" dBm)\r\n");
+      log_v(" dBm)\r\n");
       
       if (rssi_avg < settings.lora_rssi_threshold) {
         led_error(0);

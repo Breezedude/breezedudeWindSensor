@@ -44,15 +44,19 @@ bool errors_en = false;
 #define LOG_WARN   'W'
 #define LOG_INFO   'I'
 // Extra detail. Two levels share the D marker because they say the same thing
-// to a reader; they differ only in who gets to see them over USB. log_d() goes
-// wherever log_i() goes, log_v() only to a USB reader who asked for verbose
-// output. Marker and gate are deliberately separate: sorting a message into
-// E/W/I/D is a statement about its content, and must not quietly change which
-// port it comes out of.
+// to a reader; they differ in when they are printed. log_d() goes wherever
+// log_i() goes. log_v() is the detailed running log - every wakeup, window,
+// reading and sleep as its own line - and only comes out while USB_VERBOSE is
+// set, on both ports. That is what to switch on when a station has to be
+// watched step by step. Marker and gate are deliberately separate: sorting a
+// message into E/W/I/D is a statement about its content, and must not quietly
+// change whether it comes out.
 #define LOG_DETAIL  'D'
 #define LOG_VERBOSE 'V'
-// Simple status for the non-verbose USB reader. Own gate, but it reads as
-// ordinary information, so it carries the I marker.
+// The compact running log: one line per wakeup and per transmission, printed
+// only while USB_VERBOSE is off - the normal state of a station in the field,
+// where every byte on the debug UART is awake time. It reads as ordinary
+// information, so it carries the I marker.
 #define LOG_STATUS 'S'
 // Machine readable payload - the body of a DUMP is the settings file itself
 // and has to come out byte for byte, so it gets no marker. Gated like I.
@@ -80,9 +84,10 @@ static char resolve(char level){
 }
 
 static bool ds_allows(char level){
-  if(level == LOG_STATUS) return false;               // USB only
   if(level == LOG_ERROR || level == LOG_WARN) return errors_en;
-  return debug_en;                                    // I, D, V and R
+  if(level == LOG_VERBOSE) return debug_en && settings.verbose_usb;
+  if(level == LOG_STATUS)  return debug_en && !settings.verbose_usb;
+  return debug_en;                                    // I, D and R
 }
 
 static bool usb_allows(char level){

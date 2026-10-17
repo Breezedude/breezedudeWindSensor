@@ -14,6 +14,7 @@ Uart Serial2;
 Serial_ Serial;
 int div_cpu = 1;
 bool usb_connected = false;
+void configure_debug_uart_standby(bool) {}
 HostSettings settings = { false };
 
 static bool display_da = false;
@@ -123,11 +124,15 @@ int main() {
          "NAME=Teststation\nALT=466\n"
          "I| DUMP END\r\n");
 
-  // log_v traegt die D-Marke, geht ueber USB aber nur an den, der verbose will.
+  // log_v is the detailed running log: it carries the D marker and comes out
+  // on neither port unless USB_VERBOSE is set - on both once it is.
   neu(true, true, true, false);
   log_v("LBT: RSSI scan not supported\r\n");
-  pruefe("log_v auf dem UART", DS, "D| LBT: RSSI scan not supported\r\n");
+  pruefe("log_v not on the UART without verbose", DS, "");
   pruefe("log_v nicht auf USB ohne verbose", USB, "");
+  neu(true, true, true, true);
+  log_v("LBT: RSSI scan not supported\r\n");
+  pruefe("log_v on the UART with verbose", DS, "D| LBT: RSSI scan not supported\r\n");
 
   neu(true, true, true, true);
   log_v("LBT: RSSI scan not supported\r\n");
@@ -139,19 +144,24 @@ int main() {
   log_d("Wakeup detail\r\n");
   pruefe("log_d erreicht USB wie log_i", USB, "D| Wakeup detail\r\n");
 
-  // log_s ist der schlichte Statuskanal fuer den nicht-verbosen USB-Leser und
-  // liest sich als gewoehnliche Information.
+  // log_s is the compact running log: the I marker, both ports, and only
+  // while USB_VERBOSE is off - with verbose on, log_v has taken its place.
   neu(true, true, true, false);
   log_s("OTA: ", (uint32_t)42, "%");
   pruefe("log_s traegt die I-Marke", USB, "I| OTA: 42%\r\n");
-  pruefe("log_s geht nicht auf den UART", DS, "");
+  pruefe("log_s on the UART without verbose", DS, "I| OTA: 42%\r\n");
+  neu(true, true, true, true);
+  log_s("OTA: ", (uint32_t)42, "%");
+  pruefe("log_s not on the UART with verbose", DS, "");
+  pruefe("log_s not on USB with verbose", USB, "");
 
   // Jeder Strom fuehrt seinen eigenen Zeilenstand. Eine Zeile, die nur der
   // UART sieht, darf die Marke der naechsten USB-Zeile nicht verschlucken.
-  neu(true, true, true, false);
-  log_v("nur UART\r\n");
+  neu(true, true, false, false);        // USB not connected: the UART alone sees this line
+  log_i("nur UART\r\n");
+  usb_connected = true;
   log_i("beide\r\n");
-  pruefe("getrennte Zeilenstaende, UART", DS, "D| nur UART\r\nI| beide\r\n");
+  pruefe("getrennte Zeilenstaende, UART", DS, "I| nur UART\r\nI| beide\r\n");
   pruefe("getrennte Zeilenstaende, USB", USB, "I| beide\r\n");
 
   // Eine Zahl, die eine Zeile eroeffnet, gilt als Information.

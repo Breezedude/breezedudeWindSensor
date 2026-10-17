@@ -149,6 +149,12 @@ bool parse_file(char * filename){
 // splice their lines together.
 static bool run_bare_command(char *line, int len);
 
+// USB_VERBOSE switched on from the USB console is switched off again when that
+// host goes away, so a station does not keep talking at length to nobody.
+// Switched on from the debug UART - the test rig, a long-term monitor - it
+// stays on.
+static bool verbose_from_usb = false;
+
 static void read_console(Stream &stream, char *buffer, int &co, bool is_usb){
   while (stream.available()){
     if(is_usb){
@@ -166,6 +172,7 @@ static void read_console(Stream &stream, char *buffer, int &co, bool is_usb){
       // Settings-editor commands (SET/SAVE/DUMP/...) get the raw line first:
       // process_line() would swallow a second '=' and strip the spaces out of
       // a value like "SET NAME=Wendelstein Nord".
+      const bool verbose_before = settings.verbose_usb;
       if(!settings_edit_handle_line(buffer, co)){
         // A bare command word - "REBOOT", "STATUS" - used to be ignored,
         // because process_line() only dispatches a KEY=VALUE pair. The web
@@ -175,6 +182,9 @@ static void read_console(Stream &stream, char *buffer, int &co, bool is_usb){
         if(!run_bare_command(buffer, co)){
           process_line(buffer, co, &apply_setting); // Line complete
         }
+      }
+      if(settings.verbose_usb != verbose_before){
+        verbose_from_usb = is_usb && settings.verbose_usb;
       }
       co=-1; // against +1 below
     }
@@ -288,6 +298,10 @@ void handle_usb_link_watchdog(){
       usb_detach_event = false;
       usb_ignore_detach_event = false;
     } else {
+      if(verbose_from_usb){
+        settings.verbose_usb = false;
+        verbose_from_usb = false;
+      }
       log_i("USB disconnected\r\n");
       usb_detach_event = false;
       usb_last_activity_ms = 0;

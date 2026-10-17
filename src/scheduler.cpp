@@ -202,33 +202,44 @@ uint32_t calc_time_to_sleep(){
   return tts;
 }
 
+// The detailed log of what went into the packet, one value per line; the
+// compact log says the same in the TX line below.
 static void print_data(){
   if((debug_enabled())){
-    log_d("\r\nmillis: ", millis()); 
-    log_d("time: ", time()); 
-    //log_i("Wind dir_raw: ", wind_dir_raw);
-    log_d("Wind Heading: ", sensor.wind_heading);
-    log_d("Wind Speed: ", sensor.wind_speed);
-    log_d("Wind Gust: ", sensor.wind_gust);
-    log_d("Temp: ", sensor.temperature);
-    //log_i("Humd: ", humidity);
+    log_v("\r\nmillis: ", millis());
+    log_v("time: ", time());
+    log_v("Wind Heading: ", sensor.wind_heading);
+    log_v("Wind Speed: ", sensor.wind_speed);
+    log_v("Wind Gust: ", sensor.wind_gust);
+    log_v("Temp: ", sensor.temperature);
     if(baro_fresh()){
-      log_d("Baro: ", sensor.baro_pressure);
-      log_d("PCB_Temp: ", sensor.baro_temp);
+      log_v("Baro: ", sensor.baro_pressure);
+      log_v("PCB_Temp: ", sensor.baro_temp);
     } else if(settings.use_baro){
-      log_d("Baro: no reading\r\n");
+      log_v("Baro: no reading\r\n");
     }
     if(is_wsxx()) {
-      log_d("VCC: ", sensor.wsxx_vcc);
-      //log_i("LUX: ", light_lux);
-      //log_i("UV: ", uv_level);
+      log_v("VCC: ", sensor.wsxx_vcc);
     }
-    log_d("\r\n");
-    log_d("V_Bat: ", sensor.batt_volt);
-    log_d("Bat_perc: ", sensor.batt_perc);
-    log_d("PV_charge: ", sensor.pv_charging);
-    log_d("PV_done: ", sensor.pv_done);
+    log_v("\r\n");
+    log_v("V_Bat: ", sensor.batt_volt);
+    log_v("Bat_perc: ", sensor.batt_perc);
+    log_v("PV_charge: ", sensor.pv_charging);
+    log_v("PV_done: ", sensor.pv_done);
   }
+}
+
+static uint16_t tx_packets = 0;   // transmissions started since boot, for the name line
+
+// One line for the weather packet that just went out.
+static void log_tx_weather(){
+  log_s("TX weather: "); log_write(sensor.wind_heading); log_write(" deg, ");
+  log_write(sensor.wind_speed); log_write(" km/h (gust "); log_write(sensor.wind_gust); log_write("), ");
+  log_write(sensor.temperature); log_write(" C");
+  if(baro_fresh()){ log_write(", "); log_write(sensor.baro_pressure); log_write(" hPa"); }
+  log_write(", bat "); log_write(sensor.batt_volt); log_write(" V "); log_write((uint32_t)sensor.batt_perc); log_write(" %");
+  if(sensor.pv_charging){ log_write(", PV charging"); }
+  log_write("\r\n");
 }
 
 // Send ----------------------------------------------------------------------------------------------------------------------
@@ -302,7 +313,7 @@ static TxAttemptResult send_msg_weather(){
     log_w("\r\nTESTMODE - Fake values\r\n");
   }
 
-  log_i("\r\nSending Weather\r\n");
+  log_v("\r\nSending Weather\r\n");
 
   std::array<uint8_t, sizeof(fanet_packet_t4)> buffer = {0};
   size_t msgSize = pack_weatherdata(&wd, buffer.data());
@@ -317,6 +328,7 @@ static TxAttemptResult send_msg_weather(){
   }
 
   print_data();
+  log_tx_weather();
   led_status(0);
   return tx_result;
 }
@@ -462,7 +474,15 @@ static TxAttemptResult tx_send_name(){
   led_status(1);
   TxAttemptResult result = send_msg_name(settings.station_name, strlen(settings.station_name));
   if(result == TX_ATTEMPT_STARTED) {
-    log_i("Send name: "); log_i(settings.station_name); log_i("\r\n");
+    log_v("Send name: "); log_v(settings.station_name); log_v("\r\n");
+    // The name goes out every five minutes: a good moment for the counters
+    // that say how the station is doing.
+    log_s("TX name: "); log_write(settings.station_name);
+    log_write(" | sent "); log_write((uint32_t)tx_packets);
+    log_write(" rx "); log_write((uint32_t)fanet_rx_counter);
+    log_write(" fwd "); log_write((uint32_t)fanet_forward_counter);
+    log_write(" lbt "); log_write((uint32_t)state.lbt_counter);
+    log_write(" | next weather in "); log_write(weather_due_in_ms() / 1000u); log_write(" s\r\n");
   }
   led_status(0);
   return result;
@@ -615,6 +635,7 @@ void tx_run_jobs(){
 
     const TxAttemptResult result = job.send();
     if(result == TX_ATTEMPT_STARTED){
+      tx_packets++;
       last_fnet_send = time();
       *job.last_msg  = time();
       send_active    = time();

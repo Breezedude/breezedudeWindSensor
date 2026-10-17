@@ -4,5 +4,6 @@
 
 struct HostSettings {
   bool verbose_usb;
+  bool uart_wake = false;   // read by log_ser_begin()
 };
 extern HostSettings settings;

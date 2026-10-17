@@ -237,8 +237,8 @@ void read_batt_perc(){
 
     battery_update_power_state(sensor.batt_volt);
     sensor.batt_perc = battery_soc_percent(sensor.batt_volt);
-    log_d("V_Bat: ", sensor.batt_volt);
-    log_d("Bat_perc: ", sensor.batt_perc);
+    log_v("V_Bat: ", sensor.batt_volt);
+    log_v("Bat_perc: ", sensor.batt_perc);
   }
 }
 
@@ -1161,9 +1161,14 @@ return val;
 }
 
 
+static uint32_t last_window_ms = 0;      // the sensor window the compact log reports
+static uint32_t last_window_pulses = 0;
+
 void calc_pulse_sensor(uint32_t pulses, uint32_t dmillis){
-  log_d("delta_t: ", dmillis);
-  log_d("pulses: ", pulses); 
+  last_window_ms = dmillis;
+  last_window_pulses = pulses;
+  log_v("delta_t: ", dmillis);
+  log_v("pulses: ", pulses); 
   sensor.wind_dir_raw = read_wind_dir();
   add_wind_history_dir(sensor.wind_dir_raw);
   
@@ -1174,8 +1179,23 @@ void calc_pulse_sensor(uint32_t pulses, uint32_t dmillis){
   // ... other analog sensors
   add_wind_history_wind(sensor.wind_speed);
   add_wind_history_gust(sensor.wind_speed);
-  log_d("wind speed: ", sensor.wind_speed); 
-  log_d("wind dir (raw): ", sensor.wind_dir_raw); 
+  log_v("wind speed: ", sensor.wind_speed);
+  log_v("wind dir (raw): ", sensor.wind_dir_raw);
+}
+
+// What the last sensor window brought, as the continuation of an open compact
+// log line: pulses, speed and direction for the DAVIS, speed and direction
+// from the last block for a UART sensor.
+void log_sensor_window_fragment(){
+  if(settings.sensor_type == s_DAVIS6410){
+    log_write(" | window "); log_write(last_window_ms); log_write(" ms: ");
+    log_write(last_window_pulses); log_write(" pulses = "); log_write(sensor.wind_speed);
+    log_write(" km/h, dir "); log_write(sensor.wind_dir_raw); log_write(" raw = ");
+    log_write((uint32_t)dir_raw_to_degrees(sensor.wind_dir_raw)); log_write(" deg");
+  } else if(sensor.last_data){
+    log_write(" | wind "); log_write(sensor.wind_speed); log_write(" km/h, dir ");
+    log_write(sensor.wind_dir_raw); log_write(" deg");
+  }
 }
 
 
@@ -1187,6 +1207,16 @@ void get_solar_charger_state(){
   sensor.pv_charging = !digitalRead(PIN_PV_CHARGE);
   pinDisable(PIN_PV_CHARGE);
   pinDisable(PIN_PV_DONE);
+  // Said when it changes, not on every wakeup: the charger state stays the
+  // same for hours at a time.
+  static int8_t prev = -1;
+  const int8_t cur = (sensor.pv_charging ? 1 : 0) | (sensor.pv_done ? 2 : 0);
+  if(cur != prev){
+    if(prev >= 0){
+      log_i((cur & 2) ? "PV: charge done\r\n" : (cur & 1) ? "PV: charging\r\n" : "PV: not charging\r\n");
+    }
+    prev = cur;
+  }
 }
 
 // GPS ----------------------------------------------------------------------------------------------------------------------

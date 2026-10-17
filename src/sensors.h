@@ -147,6 +147,10 @@ const char *baro_state_text();
 
 int read_windnerd();
 int read_wind_dir();
+// Raw direction count to degrees, without the heading offset.
+int dir_raw_to_degrees(int d);
+// Continues an open compact log line with what the last sensor window brought.
+void log_sensor_window_fragment();
 
 void calc_pulse_sensor(uint32_t pulses, uint32_t dmillis);
 void get_solar_charger_state();
