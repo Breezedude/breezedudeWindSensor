@@ -60,6 +60,7 @@ static uint32_t scan_duration_ms = 360000u;
 static uint32_t scan_next = 0;     // due right after boot, so a fresh station learns at once
 static uint32_t scan_until = 0;
 static bool scanning = false;
+static bool dropped = false;       // a station made room for another since the last report
 
 // time() is a 32 bit millisecond counter and wraps after 49.7 days, so every
 // comparison is made on the difference.
@@ -133,8 +134,14 @@ static Station *slot_for(void) {
     if (tab[i].state == SCHED_FREE) return &tab[i];
     if (!worst || (int32_t)(tab[i].last_rx - worst->last_rx) < 0) worst = &tab[i];
   }
-  if (worst) say("drops", worst);
+  if (worst) { say("drops", worst); dropped = true; }
   return worst;
+}
+
+bool sched_dropped_take(void) {
+  const bool was = dropped;
+  dropped = false;
+  return was;
 }
 
 static void forget(Station *s) {

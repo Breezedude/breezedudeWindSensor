@@ -83,6 +83,10 @@ void hw_force(int revision) {
 bool hw_forced(void) { return forced; }
 
 HW_Version hw_version(void) { return version; }
+uint8_t hw_rev_code(void) {
+  return (uint8_t)(((uint8_t)version & 0x0Fu) | (forced ? 0x10u : 0u) | (overruled ? 0x20u : 0u) |
+                   ((id_code & 0x03u) << 6));
+}
 uint8_t hw_id_code(void)    { return id_code; }
 bool hw_id_unknown(void)    { return unknown; }
 bool hw_id_overruled(void)  { return overruled; }

@@ -102,23 +102,49 @@
   } __attribute__((packed)) hwinfo_builddate_t;
 
   enum {
-    HWINFO_DEBUG_DYNAMIC = 0x01,
-    HWINFO_DEBUG_OTA     = 0x02,
-    HWINFO_DEBUG_STATIC  = 0x03,
+    HWINFO_DEBUG_DYNAMIC  = 0x01,
+    HWINFO_DEBUG_OTA      = 0x02,
+    HWINFO_DEBUG_STATIC   = 0x03,
+    HWINFO_DEBUG_REPEATER = 0x04,
   };
 
   // Debug data appended after HW Info payload.
   // First byte is the decode type selecting one of the grouped payloads below.
+  // The byte layout is the contract with the decoders, see doc/hwinfo-protocol.md.
+
+  // The cause of the last reset, 3 bits in hwinfo_debug_t1::resets. POR is a
+  // code of its own so the decoder can tell a power cycle (count back to 0,
+  // cause POR) from the count wrapping (count back to 0, any other cause).
+  enum {
+    HWINFO_RESET_POR     = 0,
+    HWINFO_RESET_WDT     = 1,
+    HWINFO_RESET_SYST    = 2,  // software reset: REBOOT, OTA, config update
+    HWINFO_RESET_BOD     = 3,
+    HWINFO_RESET_EXT     = 4,
+    HWINFO_RESET_SEVERAL = 5,  // more than one of the above set at once
+    HWINFO_RESET_UNKNOWN = 6,
+  };
+
+  // Awake duty since the previous dynamic report, 2 bits in
+  // hwinfo_debug_t1::flags. A station that only wakes to measure and send sits
+  // around a tenth of a per cent; anything above a few per cent is a sensor or
+  // UART path that keeps the CPU busy.
+  enum {
+    HWINFO_AWAKE_BELOW_1_PCT  = 0,
+    HWINFO_AWAKE_BELOW_5_PCT  = 1,
+    HWINFO_AWAKE_BELOW_20_PCT = 2,
+    HWINFO_AWAKE_20_PCT_UP    = 3,
+  };
 
   // Debug data decode type 0x01: fast-changing runtime data
   typedef struct {
     uint16_t vbatt_mv;       // battery voltage in mV
     uint8_t  batt_perc;      // battery state-of-charge 0-100 %
-    uint8_t  pv_state;       // bit0: charging active, bit1: charge done
+    uint8_t  flags;          // bit0: charging active, bit1: charge done, bit2-3: awake duty class
     uint16_t rx_count;       // total FANET packets received since boot
     uint16_t forward_count;  // total FANET packets forwarded since boot
     uint8_t  lbt_counter;    // LBT retry counter, resets on boot
-    uint8_t  reserved;       // reserved for future dynamic counters
+    uint8_t  resets;         // bit0-4: resets since power-on mod 32, bit5-7: last cause (HWINFO_RESET_*)
   } __attribute__((packed)) hwinfo_debug_t1;
 
   // Debug data decode type 0x02: OTA / update-relevant data
@@ -132,14 +158,53 @@
 
   // Debug data decode type 0x03: static / slowly changing configuration
   typedef struct {
-    unsigned int sensor_type  :5;   // wind sensor type (maps to Sensor enum: 0=invalid,1=WS80,2=WS85,3=WS85_UART,4=DAVIS6410,5=WINDNERD)
-    unsigned int use_baro     :1;   // barometer enabled
-    unsigned int uv_triggered :1;   // undervoltage triggered
-    unsigned int lbt          :1;   // LBT enabled
+    uint8_t  sensor_type  :5;       // wind sensor type (maps to Sensor enum: 0=invalid,1=WS80,2=WS85,3=WS85_UART,4=DAVIS6410,5=WINDNERD)
+    uint8_t  use_baro     :1;       // barometer enabled
+    uint8_t  uv_triggered :1;       // undervoltage triggered
+    uint8_t  lbt          :1;       // LBT enabled
     uint8_t  lora_rssi_threshold;   // inverted RSSI threshold, e.g. 104 for -104 dBm
     uint8_t  sensor_integ_s;        // sensor integration time in seconds
     uint8_t  reduce_interval_voltage; // threshold encoded as voltage*100 - 200 (e.g. 141 = 3.41 V)
+    // Which board the firmware decided it runs on, not the board itself: two
+    // ID pins cannot name every revision, but a wrong pin map is what breaks a
+    // station, and that is what this byte shows. hw.h.
+    uint8_t  hw_rev;                // bit0-3: pin map (0 = up to 2.4, 1 = 2.5), bit4: forced by HW_REVISION,
+                                    // bit5: ID pin overruled by the divider, bit6-7: raw ID pins
+    uint16_t bl_version;            // bootloader: major << 12 | minor << 6 | patch (4/6/6 bit), 0 = unknown
   } __attribute__((packed)) hwinfo_debug_t3;
+
+  // Debug data decode type 0x04: repeater state. Only stations with the
+  // repeater on send it. The header is followed by one entry per station
+  // the repeater follows, at most HWINFO_REPEATER_MAX_STATIONS per packet;
+  // the decoder gets the count from the packet length.
+  enum {
+    HWINFO_REPEATER_OFF        = 0,  // repeater off (never sent)
+    HWINFO_REPEATER_CLASSIC    = 1,  // listens continuously
+    HWINFO_REPEATER_SCHED_FULL = 2,  // scheduled, but listening continuously: battery full and charging
+    HWINFO_REPEATER_SCHED      = 3,  // scheduled, the receiver follows the learned rhythms
+  };
+  #define HWINFO_REPEATER_MAX_STATIONS 4
+  typedef struct {
+    uint8_t  flags;      // bit0-1: mode (HWINFO_REPEATER_*), bit2: scan window open, bit3-5: stations in
+                         // the table, bit6: a station was dropped since the previous report to make
+                         // room for another, bit7: receiver off because of undervoltage
+    uint8_t  rx_duty;    // per cent of the time the receiver was on since the previous report
+    uint8_t  forwarded;  // packets forwarded since the previous report, capped at 255
+  } __attribute__((packed)) hwinfo_debug_t4;
+  typedef struct {
+    uint8_t  vendor;     // FANET address of the followed station
+    uint16_t address;
+    uint8_t  period_s;   // learned weather period in seconds, 0 while unknown
+    uint8_t  status;     // bit0-2: weather state (SchedState), bit3-4: empty windows in a row, capped at 3,
+                         // bit5-6: HWInfo state (SchedState, never RESYNC), bit7: reserved
+  } __attribute__((packed)) hwinfo_repeater_station_t;
+
+  // The sizes the decoders count on, see doc/hwinfo-protocol.md.
+  static_assert(sizeof(hwinfo_debug_t1) == 10, "HWInfo type 1 layout changed");
+  static_assert(sizeof(hwinfo_debug_t2) == 10, "HWInfo type 2 layout changed");
+  static_assert(sizeof(hwinfo_debug_t3) == 7,  "HWInfo type 3 layout changed");
+  static_assert(sizeof(hwinfo_debug_t4) == 3,  "HWInfo type 4 layout changed");
+  static_assert(sizeof(hwinfo_repeater_station_t) == 5, "HWInfo type 4 station entry changed");
 
   // Input data passed to pack_hwinfo()
   typedef struct {
@@ -158,11 +223,14 @@
     bool     bUptime;
     uint16_t uptime_min;    // uptime in minutes
 
-    // debug data: debug_type selects one grouped payload (dynamic / ota / static)
+    // debug data: debug_type selects one grouped payload (dynamic / ota / static / repeater)
     uint8_t         debug_type;
     hwinfo_debug_t1 debug_dynamic;
     hwinfo_debug_t2 debug_ota;
     hwinfo_debug_t3 debug_static;
+    hwinfo_debug_t4 debug_repeater;
+    uint8_t         repeater_station_count;
+    hwinfo_repeater_station_t repeater_stations[HWINFO_REPEATER_MAX_STATIONS];
   } hwInfoData;
 
 

@@ -57,3 +57,14 @@ bool fanet_forward_check();
 bool radio_init();
 // True while the scheduled repeater decides when the receiver runs.
 bool repeater_sched_active();
+
+// Receiver on-time and elapsed ms since the last reset of the two, booked in
+// radio_sleep(); the rx_duty of the repeater report.
+void radio_rx_duty_get(uint32_t *rx_ms, uint32_t *total_ms);
+void radio_rx_duty_reset();
+
+// Channel noise, dBm, from every RSSI the station measures anyway: the LBT
+// check before a transmission, and the idle receiver of a repeater at each
+// wakeup. Nothing is switched on for it. false while there is no sample.
+void noise_note(int16_t rssi_dbm);
+bool noise_stats(int16_t *min_dbm, int16_t *avg_dbm, int16_t *max_dbm, uint32_t *samples);

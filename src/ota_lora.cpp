@@ -7,6 +7,9 @@
 #include "sensors.h"
 #include "tools.h"
 #include "sleep.h"
+#include "power.h"
+#include "hw.h"
+#include "fanet_sched.h"
 #include <ArduinoUniqueID.h>
 #include <uECC.h>
 
@@ -136,18 +139,23 @@ static bool s_last_hwinfo_was_ota = false;
 static uint32_t s_hwinfo_last_dynamic_ts = 0;
 static uint32_t s_hwinfo_last_ota_ts = 0;
 static uint32_t s_hwinfo_last_static_ts = 0;
+static uint32_t s_hwinfo_last_repeater_ts = 0;
+static uint16_t s_forwarded_at_last_report = 0;  // fanet_forward_counter when the last repeater report went out
+static uint8_t  s_repeater_rotation = 0;         // first table entry of the next report, when not all fit
 static uint32_t s_hwinfo_retry_not_before_ms = 0;
 
 static constexpr uint32_t OTA_HWINFO_DYNAMIC_INTERVAL_S = 10u * 60u;
 static constexpr uint32_t OTA_HWINFO_DYNAMIC_LOW_BATT_INTERVAL_S = 30u * 60u;
 static constexpr uint32_t OTA_HWINFO_OTA_INTERVAL_S = 60u * 60u; // 1h
 static constexpr uint32_t OTA_HWINFO_STATIC_INTERVAL_S = 60u * 60u;
+static constexpr uint32_t OTA_HWINFO_REPEATER_INTERVAL_S = 15u * 60u;
 
 // Boot delays: first hwinfo sends are staggered after reset
 static constexpr uint32_t OTA_HWINFO_BOOT_DELAY_DYNAMIC_MS = 1u * 60u * 1000u;   // 1 min
 static constexpr uint32_t OTA_HWINFO_BOOT_DELAY_OTA_MS     = 10u * 60u * 1000u;  // 10 min
 static constexpr uint32_t OTA_HWINFO_BOOT_DELAY_OTA_FAST_MS = 20u * 1000u;       // 20 sec (OTA_FAST)
 static constexpr uint32_t OTA_HWINFO_BOOT_DELAY_STATIC_MS  = 10u * 60u * 1000u;  // 10 min
+static constexpr uint32_t OTA_HWINFO_BOOT_DELAY_REPEATER_MS = 5u * 60u * 1000u;  // 5 min, between two dynamic reports
 
 static uint16_t ota_version_bcd() {
   uint8_t digits[3] = {0, 0, 0};
@@ -1145,9 +1153,67 @@ void ota_lora_begin() {
   if(!s_hwinfo_last_ota_ts) s_hwinfo_last_ota_ts = 1u;
   s_hwinfo_last_static_ts  = now - (OTA_HWINFO_STATIC_INTERVAL_S  * 1000u) + OTA_HWINFO_BOOT_DELAY_STATIC_MS;
   if(!s_hwinfo_last_static_ts) s_hwinfo_last_static_ts = 1u;
+  s_hwinfo_last_repeater_ts = now - (OTA_HWINFO_REPEATER_INTERVAL_S * 1000u) + OTA_HWINFO_BOOT_DELAY_REPEATER_MS;
+  if(!s_hwinfo_last_repeater_ts) s_hwinfo_last_repeater_ts = 1u;
 
   s_hwinfo_retry_not_before_ms = 0;
   ota_reset_state(OTA_STATE_IDLE);
+}
+
+// Awake duty since the previous dynamic report as the two bit class of
+// hwinfo_debug_t1::flags.
+static uint8_t awake_duty_class() {
+  uint32_t awake_ms = 0, total_ms = 0;
+  power_duty_get(&awake_ms, &total_ms);
+  power_duty_reset();
+  if(!total_ms) return HWINFO_AWAKE_BELOW_1_PCT;
+  const uint32_t permille = (uint32_t)(((uint64_t)awake_ms * 1000u) / total_ms);
+  if(permille < 10u)  return HWINFO_AWAKE_BELOW_1_PCT;
+  if(permille < 50u)  return HWINFO_AWAKE_BELOW_5_PCT;
+  if(permille < 200u) return HWINFO_AWAKE_BELOW_20_PCT;
+  return HWINFO_AWAKE_20_PCT_UP;
+}
+
+// The repeater report: how the receiver is run and what the schedule knows
+// about each station it follows. Up to HWINFO_REPEATER_MAX_STATIONS entries
+// per packet; when the table holds more, each report continues where the
+// previous one stopped.
+static void fill_repeater_report(hwInfoData &info) {
+  hwinfo_debug_t4 &r = info.debug_repeater;
+  uint8_t mode = HWINFO_REPEATER_CLASSIC;
+  if(settings.repeater_sched) {
+    mode = repeater_sched_active() ? HWINFO_REPEATER_SCHED : HWINFO_REPEATER_SCHED_FULL;
+  }
+  SchedInfo table[SCHED_MAX_STATIONS];
+  const uint8_t n = sched_snapshot(table, SCHED_MAX_STATIONS);
+  r.flags = (uint8_t)((mode & 0x03u) |
+                      (sched_scanning() ? 0x04u : 0u) |
+                      ((n & 0x07u) << 3) |
+                      (sched_dropped_take() ? 0x40u : 0u) |
+                      (undervoltage ? 0x80u : 0u));
+
+  uint32_t rx_ms = 0, total_ms = 0;
+  radio_rx_duty_get(&rx_ms, &total_ms);
+  radio_rx_duty_reset();
+  r.rx_duty = total_ms ? (uint8_t)min((uint64_t)100u, ((uint64_t)rx_ms * 100u) / total_ms) : 0u;
+
+  const uint16_t forwarded = (uint16_t)(fanet_forward_counter - s_forwarded_at_last_report);
+  s_forwarded_at_last_report = fanet_forward_counter;
+  r.forwarded = forwarded > 255u ? 255u : (uint8_t)forwarded;
+
+  const uint8_t count = n < HWINFO_REPEATER_MAX_STATIONS ? n : HWINFO_REPEATER_MAX_STATIONS;
+  for(uint8_t i = 0; i < count; i++) {
+    const SchedInfo &s = table[(s_repeater_rotation + i) % n];
+    hwinfo_repeater_station_t &e = info.repeater_stations[i];
+    e.vendor   = (uint8_t)(s.id >> 16);
+    e.address  = (uint16_t)(s.id & 0xFFFFu);
+    const uint32_t period_s = (s.period + 500u) / 1000u;
+    e.period_s = period_s > 255u ? 255u : (uint8_t)period_s;
+    const uint8_t misses = s.misses > 3u ? 3u : s.misses;
+    e.status   = (uint8_t)((s.state & 0x07u) | (misses << 3) | ((s.hw_state & 0x03u) << 5));
+  }
+  info.repeater_station_count = count;
+  s_repeater_rotation = (n > HWINFO_REPEATER_MAX_STATIONS) ? (uint8_t)((s_repeater_rotation + count) % n) : 0u;
 }
 
 void ota_lora_prepare_hwinfo(hwInfoData &info) {
@@ -1155,6 +1221,9 @@ void ota_lora_prepare_hwinfo(hwInfoData &info) {
   memset(&info.debug_dynamic, 0, sizeof(info.debug_dynamic));
   memset(&info.debug_ota, 0, sizeof(info.debug_ota));
   memset(&info.debug_static, 0, sizeof(info.debug_static));
+  memset(&info.debug_repeater, 0, sizeof(info.debug_repeater));
+  memset(info.repeater_stations, 0, sizeof(info.repeater_stations));
+  info.repeater_station_count = 0;
   s_last_hwinfo_was_ota = false;
   info.debug_type = 0u;
 
@@ -1166,16 +1235,19 @@ void ota_lora_prepare_hwinfo(hwInfoData &info) {
                        !ota_no_update_cooldown_active() &&
                        ota_hwinfo_due(now_ms, s_hwinfo_last_ota_ts, OTA_HWINFO_OTA_INTERVAL_S * 1000u);
   const bool static_due = ota_hwinfo_due(now_ms, s_hwinfo_last_static_ts, OTA_HWINFO_STATIC_INTERVAL_S * 1000u);
+  const bool repeater_due = settings.repeater &&
+                            ota_hwinfo_due(now_ms, s_hwinfo_last_repeater_ts, OTA_HWINFO_REPEATER_INTERVAL_S * 1000u);
 
   if(dynamic_due) {
     info.debug_type = HWINFO_DEBUG_DYNAMIC;
     info.debug_dynamic.vbatt_mv = (uint16_t)constrain(lroundf(sensor.batt_volt * 1000.0f), 0L, 65535L);
     info.debug_dynamic.batt_perc = (uint8_t)constrain(sensor.batt_perc, 0, 100);
-    info.debug_dynamic.pv_state = (sensor.pv_charging ? 0x01u : 0x00u) | (sensor.pv_done ? 0x02u : 0x00u);
+    info.debug_dynamic.flags = (uint8_t)((sensor.pv_charging ? 0x01u : 0x00u) | (sensor.pv_done ? 0x02u : 0x00u) |
+                                         (awake_duty_class() << 2));
     info.debug_dynamic.rx_count = fanet_rx_counter;
     info.debug_dynamic.forward_count = fanet_forward_counter;
     info.debug_dynamic.lbt_counter = state.lbt_counter;
-    info.debug_dynamic.reserved = 0u;
+    info.debug_dynamic.resets = reset_history_code();
     s_hwinfo_last_dynamic_ts = now_ms;
   } else if(ota_due) {
     info.debug_type = HWINFO_DEBUG_OTA;
@@ -1199,7 +1271,13 @@ void ota_lora_prepare_hwinfo(hwInfoData &info) {
     info.debug_static.lora_rssi_threshold = (uint8_t)constrain(-settings.lora_rssi_threshold, 0, 255);
     info.debug_static.sensor_integ_s = (uint8_t)constrain((int)(settings.sensor_integration_time / 1000u), 0, 255);
     info.debug_static.reduce_interval_voltage = (uint8_t)constrain((int)lroundf((settings.reduce_interval_voltage * 100.0f) - 200.0f), 0, 255);
+    info.debug_static.hw_rev = hw_rev_code();
+    info.debug_static.bl_version = get_bootloader_version_code();
     s_hwinfo_last_static_ts = now_ms;
+  } else if(repeater_due) {
+    info.debug_type = HWINFO_DEBUG_REPEATER;
+    fill_repeater_report(info);
+    s_hwinfo_last_repeater_ts = now_ms;
   }
 }
 
@@ -1215,6 +1293,9 @@ uint32_t ota_lora_next_hwinfo_due_ms() {
   }
 
   due_ms = min(due_ms, ota_hwinfo_due_in_ms(now_ms, s_hwinfo_last_static_ts, OTA_HWINFO_STATIC_INTERVAL_S * 1000u));
+  if(settings.repeater) {
+    due_ms = min(due_ms, ota_hwinfo_due_in_ms(now_ms, s_hwinfo_last_repeater_ts, OTA_HWINFO_REPEATER_INTERVAL_S * 1000u));
+  }
 
   if(s_hwinfo_retry_not_before_ms && (int32_t)(now_ms - s_hwinfo_retry_not_before_ms) < 0) {
     const uint32_t retry_wait_ms = (uint32_t)(s_hwinfo_retry_not_before_ms - now_ms);

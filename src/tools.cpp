@@ -1,5 +1,6 @@
 #include "tools.h"
 #include "defines.h"
+#include "fanet.h"
 #include "logging.h"
 #include "sleep.h"
 #include "ota_ab.h"
@@ -78,6 +79,23 @@ void reset_history_note(){
 
 uint8_t reset_history_count(){ return g_resets.magic == RESET_HISTORY_MAGIC ? g_resets.resets : 0; }
 uint8_t reset_history_last_cause(){ return g_resets.magic == RESET_HISTORY_MAGIC ? g_resets.last_cause : 0; }
+
+// POR first: a power-on sets the brown-out bits along with it on this chip.
+uint8_t reset_cause_code(uint8_t rcause){
+  if(rcause & PM_RCAUSE_POR) return HWINFO_RESET_POR;
+  uint8_t code = HWINFO_RESET_UNKNOWN, hits = 0;
+  if(rcause & PM_RCAUSE_WDT)  { code = HWINFO_RESET_WDT;  hits++; }
+  if(rcause & PM_RCAUSE_SYST) { code = HWINFO_RESET_SYST; hits++; }
+  if(rcause & (PM_RCAUSE_BOD33 | PM_RCAUSE_BOD12)) { code = HWINFO_RESET_BOD; hits++; }
+  if(rcause & PM_RCAUSE_EXT)  { code = HWINFO_RESET_EXT;  hits++; }
+  return hits > 1 ? HWINFO_RESET_SEVERAL : code;
+}
+
+// The count wraps rather than saturating: the backend counts on from the
+// previous report, and a wrap is told from a power cycle by the cause bits.
+uint8_t reset_history_code(){
+  return (uint8_t)((reset_history_count() & 0x1Fu) | (reset_cause_code(reset_history_last_cause()) << 5));
+}
 
 // "3 (WDT 2, SYST 1)" - or "0" after a clean power-on.
 const char *reset_history_text(){
@@ -425,6 +443,17 @@ const char* get_bootloader_version(){
 
 // Copies the bootloader version into dst, cut off at the "-0-g<sha>" git
 // suffix and at the first space.
+// "UF2 Bootloader v4.2.1-0-g..." -> 4/6/6 bit. Anything that does not start
+// with a version number, or does not fit the fields, reports as unknown.
+uint16_t get_bootloader_version_code(){
+  const char *s = get_bootloader_version();
+  if(*s == 'v' || *s == 'V') s++;
+  unsigned major = 0, minor = 0, patch = 0;
+  if(sscanf(s, "%u.%u.%u", &major, &minor, &patch) != 3) return 0;
+  if(major > 15u || minor > 63u || patch > 63u) return 0;
+  return (uint16_t)((major << 12) | (minor << 6) | patch);
+}
+
 static void get_bootloader_version_for_version_text(char *dst, size_t dst_len){
 #ifdef BOOTLOADER_VERSION_TXT_OVERRIDE
   snprintf(dst, dst_len, "%s", BOOTLOADER_VERSION_TXT_OVERRIDE);

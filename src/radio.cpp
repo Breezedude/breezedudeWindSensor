@@ -36,6 +36,53 @@ static inline uint32_t fwd_key(uint32_t sender_id, uint8_t type) {
 uint16_t fanet_forward_counter = 0;
 uint16_t fanet_rx_counter      = 0;
 
+// Receiver bookkeeping for the repeater report: whether RX was left on at the
+// last radio_sleep(), since when, and how much of the time since the last
+// reset it has been on. rx_armed says the chip is in RX right now, which is
+// when its instantaneous RSSI reads the channel.
+static bool rx_on = false;
+static bool rx_armed = false;
+static uint32_t rx_on_since = 0;
+static uint32_t rx_on_ms = 0;
+static uint32_t rx_duty_since = 0;
+
+static void rx_account(uint32_t now){
+  if(rx_on) rx_on_ms += now - rx_on_since;
+  rx_on_since = now;
+}
+void radio_rx_duty_get(uint32_t *rx_ms, uint32_t *total_ms){
+  const uint32_t now = time();
+  rx_account(now);
+  *rx_ms = rx_on_ms;
+  *total_ms = now - rx_duty_since;
+}
+void radio_rx_duty_reset(){
+  const uint32_t now = time();
+  rx_account(now);
+  rx_on_ms = 0;
+  rx_duty_since = now;
+}
+
+static int16_t noise_min = 0, noise_max = 0;
+static int32_t noise_sum = 0;
+static uint32_t noise_n = 0;
+void noise_note(int16_t rssi_dbm){
+  if(rssi_dbm > -20 || rssi_dbm < -150) return;   // not a reading of the channel
+  if(!noise_n || rssi_dbm < noise_min) noise_min = rssi_dbm;
+  if(!noise_n || rssi_dbm > noise_max) noise_max = rssi_dbm;
+  if(noise_n == 0xFFFFFFu){ noise_sum = 0; noise_n = 0; }  // long before the sum could overflow
+  noise_sum += rssi_dbm;
+  noise_n++;
+}
+bool noise_stats(int16_t *min_dbm, int16_t *avg_dbm, int16_t *max_dbm, uint32_t *samples){
+  if(!noise_n) return false;
+  *min_dbm = noise_min;
+  *max_dbm = noise_max;
+  *avg_dbm = (int16_t)(noise_sum / (int32_t)noise_n);
+  *samples = noise_n;
+  return true;
+}
+
 static bool fwd_dedup_check_and_add(uint32_t sender_id, uint8_t type) {
   const uint32_t key = fwd_key(sender_id, type);
   uint32_t now = time();
@@ -90,6 +137,7 @@ void en_rx_sleep(){
         }
         static_cast<SX126x*>(radio_phy)->clearDio1Action();
         attachInterruptWakeup(PIN_LORA_DIO1, irq_lora_rec, RISING, false);
+        rx_armed = true;
         //log_i("Radio: RX mode active (LLCC68/SX1262)\r\n");
     } else if(lora_module == LORA_SX1276){
         int err = radio_phy->startReceive();
@@ -113,6 +161,7 @@ void dis_rx_sleep(){
     detachInterrupt(PIN_LORA_DIO1);
   }
   radio_phy->standby();
+  rx_armed = false;
   // NOTE: setPacketSentAction() is NOT called here. Calling it here re-arms
   // the DIO1 MCU interrupt right before sleep(), which is the root cause of
   // the 6mA drain bug: a pending LLCC68 IRQ fires immediately after attach,
@@ -153,6 +202,7 @@ bool lbt_channel_free(int max_attempts) {
         delayMicroseconds(100);  // 0.1ms between samples
       }
       int16_t rssi_avg = (int16_t)(rssi_sum / num_samples);
+      noise_note(rssi_avg);
       
       radio_phy->standby();  // Back to standby
       
@@ -201,9 +251,17 @@ void radio_sleep(){
   // says the next packet is not due yet.
   // Smart-rcv: only when battery is sufficiently charged and solar is active.
   extern bool undervoltage;
+  const uint32_t now = time();
+  rx_account(now);
+  // A receiver that sat in RX through the sleep reads the channel as it is
+  // between packets - one free noise sample per wakeup.
+  if(rx_armed && ((lora_module == LORA_SX1262) || (lora_module == LORA_LLCC68))){
+    noise_note((int16_t)static_cast<SX126x*>(radio_phy)->getRSSI(false));
+  }
   const bool scheduled = repeater_sched_active();
-  const bool en_rx = (settings.repeater && !undervoltage && (!scheduled || sched_rx_wanted(time()))) ||
+  const bool en_rx = (settings.repeater && !undervoltage && (!scheduled || sched_rx_wanted(now))) ||
                      (settings.lora_smart_rcv && sensor.batt_perc >= 90 && (sensor.pv_charging || sensor.pv_done));
+  rx_on = en_rx;
   if(en_rx){
     en_rx_sleep();
   } else {
@@ -241,6 +299,7 @@ bool fanet_rx(){
     uint8_t byteArr[sizeof(forward_buf)];
     int state = radio_phy->readData(byteArr, numBytes);
     // readData() leaves the radio in standby; caller must re-arm RX when safe.
+    rx_armed = false;
 
     if (state == RADIOLIB_ERR_CRC_MISMATCH) {
       // One line a minute, not one per packet: a noisy band produced three of
@@ -293,8 +352,11 @@ bool fanet_rx(){
     // The schedule learns the rhythm of every station that asks to be
     // forwarded - the weather packets it exists for, and the HWInfo report of
     // the same station as a second rhythm. This happens even when this packet
-    // itself is not forwarded because one is already queued.
-    if (settings.repeater_sched && header->forward) {
+    // itself is not forwarded because one is already queued. The classic
+    // repeater learns too, without acting on it: its repeater report then
+    // shows the periods and misses per station, and whether the rhythms are
+    // stable enough to switch to REPEATER_SCHED.
+    if (settings.repeater && header->forward) {
       if (header->type == FANET_PCK_TYPE_WEATHER) {
         sched_note_weather(sender_id, t_rx);
       } else if (header->type == FANET_PCK_TYPE_HWINFO) {

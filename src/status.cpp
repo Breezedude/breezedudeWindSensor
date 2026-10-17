@@ -9,6 +9,8 @@
 #include "sensors.h"
 #include "power.h"
 #include "ota_ab.h"
+#include "radio.h"
+#include "hw.h"
 
 extern LORA_MODULE lora_module;
 extern CHIP_BARO chip_baro;
@@ -98,6 +100,22 @@ size_t status_build_json(char *out, size_t out_len){
   const int32_t  wind_dkmh = (int32_t)(sensor.wind_speed * 10.0f);    // deci-km/h
   const int32_t  gust_dkmh = (int32_t)(sensor.wind_gust * 10.0f);
 
+  // Duty figures in per mille of the time since the last HWInfo report took
+  // them; the report itself only carries a class of the awake duty.
+  uint32_t awake_ms = 0, awake_total_ms = 0, rx_ms = 0, rx_total_ms = 0;
+  power_duty_get(&awake_ms, &awake_total_ms);
+  radio_rx_duty_get(&rx_ms, &rx_total_ms);
+  const unsigned long awake_pm = awake_total_ms ? (unsigned long)(((uint64_t)awake_ms * 1000u) / awake_total_ms) : 0UL;
+  const unsigned long rx_pm    = rx_total_ms    ? (unsigned long)(((uint64_t)rx_ms    * 1000u) / rx_total_ms)    : 0UL;
+
+  // Channel noise as [min, avg, max] dBm, null until something was measured.
+  char noise[40] = "null";
+  int16_t n_min = 0, n_avg = 0, n_max = 0;
+  uint32_t n_samples = 0;
+  if(noise_stats(&n_min, &n_avg, &n_max, &n_samples)){
+    snprintf(noise, sizeof(noise), "[%d,%d,%d]", (int)n_min, (int)n_avg, (int)n_max);
+  }
+
   const int n = snprintf(out, out_len,
     "{\"fw\":\"%s\""
     ",\"build\":\"%s %s\""
@@ -111,6 +129,9 @@ size_t status_build_json(char *out, size_t out_len){
     ",\"uptime_s\":%lu"
     ",\"rcause\":%u"
     ",\"reset\":\"%s\""
+    ",\"resets\":%u"
+    ",\"reset_last\":\"%s\""
+    ",\"hw\":\"%s\""
     ",\"vbat_mv\":%lu"
     ",\"soc\":%d"
     ",\"uv\":%d"
@@ -126,6 +147,10 @@ size_t status_build_json(char *out, size_t out_len){
     ",\"hum\":%d"
     ",\"baro_pa\":%ld"
     ",\"lbt_cnt\":%u"
+    ",\"awake_pm\":%lu"
+    ",\"rx_pm\":%lu"
+    ",\"noise_dbm\":%s"
+    ",\"noise_n\":%lu"
     ",\"slot\":%u"
     ",\"free_ram\":%d"
     "}",
@@ -141,6 +166,9 @@ size_t status_build_json(char *out, size_t out_len){
     (unsigned long)(now / 1000UL),
     (unsigned)rcause,
     reset_cause_name(rcause),
+    (unsigned)reset_history_count(),
+    reset_cause_name(reset_history_last_cause()),
+    hw_name(),
     (unsigned long)vbat_mv,
     sensor.batt_perc,
     undervoltage ? 1 : 0,
@@ -156,6 +184,10 @@ size_t status_build_json(char *out, size_t out_len){
     sensor.humidity,
     (long)baro_pa,
     (unsigned)state.lbt_counter,
+    awake_pm,
+    rx_pm,
+    noise,
+    (unsigned long)n_samples,
     (unsigned)ota_ab_current_slot(),
     free_ram());
 
@@ -173,7 +205,7 @@ void status_print_json(){
   // name in which every character needs escaping, plus the longest bootloader
   // string. 520 was not enough - it fit the typical 450 byte document and
   // truncated on a long name.
-  char buf[768];
+  char buf[896];
   status_build_json(buf, sizeof(buf));
   log_raw(buf);
   log_raw("\r\n");

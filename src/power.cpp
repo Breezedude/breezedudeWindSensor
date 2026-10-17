@@ -24,6 +24,20 @@ bool first_sleep = true; // first sleep after reset, USB perephial could still b
 uint32_t sleep_allowed = 0; // time() when is is ok so enter deepsleep
 uint32_t loopcounter = 0;
 static uint32_t wake_started_ms = 0;   // millis() at wakeup(), for the awake time in the compact log
+
+// Awake and elapsed time since the last power_duty_reset(), the awake duty
+// the HWInfo dynamic report carries. Booked in sleep(), where both are
+// measured anyway; time spent before the first sleep does not count.
+static uint32_t duty_awake_ms = 0;
+static uint32_t duty_total_ms = 0;
+void power_duty_get(uint32_t *awake_ms, uint32_t *total_ms){
+  *awake_ms = duty_awake_ms;
+  *total_ms = duty_total_ms;
+}
+void power_duty_reset(){
+  duty_awake_ms = 0;
+  duty_total_ms = 0;
+}
 static int last_wake_source = 0;
 bool reduced_interval = false; // reduced interval active
 bool undervoltage = false;
@@ -220,6 +234,8 @@ uint32_t sleep(bool enable_uart_interrupt){
   const uint32_t awake_ms = millis() - last_read_ms;
   last_read_ms = millis();
   sleeptime_cum += (t > awake_ms) ? t - awake_ms : 0;
+  duty_awake_ms += awake_ms;
+  duty_total_ms += t;
 
   // Disable Debug uart again
   //if(debug_enabled()){

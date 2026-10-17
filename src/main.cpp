@@ -128,7 +128,10 @@ void setup(){
     if(settings.repeater && settings.sensor_type == s_invalid) {
       settings.broadcast_interval_weather = 0;
     }
-    sched_configure(settings.repeater_scan_interval, settings.repeater_scan_duration);
+    // The classic repeater keeps the table too, for its repeater report, but
+    // has no use for scan windows: it listens all the time anyway.
+    sched_configure(settings.repeater_scan_interval,
+                    settings.repeater_sched ? settings.repeater_scan_duration : 0);
     if(hw_forced()){
       log_w("Hardware: pin map pinned by HW_REVISION to "); log_w(hw_name()); log_w("\r\n");
     }

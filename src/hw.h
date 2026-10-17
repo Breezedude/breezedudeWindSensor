@@ -34,6 +34,7 @@ void hw_force(int revision);
 bool hw_forced(void);
 
 HW_Version hw_version(void);
+uint8_t hw_rev_code(void);     // the byte hwinfo_debug_t3::hw_rev carries, see fanet.h
 const char *hw_name(void);     // for the boot log
 uint8_t hw_id_code(void);      // the raw two bits, PA28 high, PA27 low
 bool hw_id_unknown(void);      // a code this firmware has no pin map for

@@ -138,6 +138,15 @@ size_t pack_hwinfo(const hwInfoData *data, uint8_t *buffer) {
   } else if (data->debug_type == HWINFO_DEBUG_STATIC) {
     memcpy(&buffer[pos], &data->debug_static, sizeof(hwinfo_debug_t3));
     pos += sizeof(hwinfo_debug_t3);
+  } else if (data->debug_type == HWINFO_DEBUG_REPEATER) {
+    memcpy(&buffer[pos], &data->debug_repeater, sizeof(hwinfo_debug_t4));
+    pos += sizeof(hwinfo_debug_t4);
+    uint8_t n = data->repeater_station_count;
+    if (n > HWINFO_REPEATER_MAX_STATIONS) n = HWINFO_REPEATER_MAX_STATIONS;
+    for (uint8_t i = 0; i < n; i++) {
+      memcpy(&buffer[pos], &data->repeater_stations[i], sizeof(hwinfo_repeater_station_t));
+      pos += sizeof(hwinfo_repeater_station_t);
+    }
   }
 
   log_d("Sending HW Info type: ", (uint8_t)data->debug_type);

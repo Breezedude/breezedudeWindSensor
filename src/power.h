@@ -22,6 +22,9 @@ uint32_t sleep(bool enable_uart_interrupt);
 
 // Re-arm peripherals after a sleep window and refresh battery/charger state.
 void wakeup();
+// Awake and elapsed ms since the last reset of the two, for the awake duty.
+void power_duty_get(uint32_t *awake_ms, uint32_t *total_ms);
+void power_duty_reset();
 // Pin groups released for the duration of the standby only; see power.cpp.
 // Runtime only, so a reset always returns the station to normal behaviour.
 void set_sleep_quiet_mask(uint32_t mask);

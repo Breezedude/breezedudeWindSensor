@@ -129,6 +129,11 @@ void reset_history_note();
 uint8_t reset_history_count();
 uint8_t reset_history_last_cause();
 const char *reset_history_text();
+// The byte hwinfo_debug_t1::resets carries: count mod 32, last cause as HWINFO_RESET_*.
+uint8_t reset_history_code();
+uint8_t reset_cause_code(uint8_t rcause);
+// Bootloader version packed as hwinfo_debug_t3::bl_version, 0 when unknown.
+uint16_t get_bootloader_version_code();
 uint32_t time();
 
 // Wrap-safe deadline test.  time() is a free-running uint32_t millisecond

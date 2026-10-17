@@ -108,4 +108,6 @@ void sched_log_status(uint32_t now);
 // For the host test and for diagnostics.
 uint8_t sched_snapshot(SchedInfo *out, uint8_t max);
 bool sched_scanning(void);
+// True once since the last call when a station was dropped to make room.
+bool sched_dropped_take(void);
 void sched_reset(void);

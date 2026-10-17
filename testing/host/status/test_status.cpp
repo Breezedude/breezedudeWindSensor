@@ -35,6 +35,22 @@ uint16_t get_fanet_id() { return 0x1234; }
 static const char *g_bl = "v4.1.5-0-gd7161e0";
 const char *get_bootloader_version() { return g_bl; }
 uint8_t ota_ab_current_slot() { return 1; }
+static uint8_t g_resets = 0, g_reset_last = 0;
+uint8_t reset_history_count() { return g_resets; }
+uint8_t reset_history_last_cause() { return g_reset_last; }
+static uint32_t g_awake_ms = 0, g_awake_total = 0, g_rx_ms = 0, g_rx_total = 0;
+void power_duty_get(uint32_t *a, uint32_t *t) { *a = g_awake_ms; *t = g_awake_total; }
+void radio_rx_duty_get(uint32_t *r, uint32_t *t) { *r = g_rx_ms; *t = g_rx_total; }
+static bool g_noise = false;
+static int16_t g_noise_min = 0, g_noise_avg = 0, g_noise_max = 0;
+static uint32_t g_noise_n = 0;
+bool noise_stats(int16_t *mn, int16_t *av, int16_t *mx, uint32_t *n) {
+  if (!g_noise) return false;
+  *mn = g_noise_min; *av = g_noise_avg; *mx = g_noise_max; *n = g_noise_n;
+  return true;
+}
+static const char *g_hw = "2.4 or earlier";
+const char *hw_name() { return g_hw; }
 
 static std::string g_out;
 void log_i(const char *msg) { g_out += msg; }
@@ -87,7 +103,7 @@ static void check(bool cond, const char *what) {
 }
 
 int main() {
-  char buf[768]; // same size status_print_json() uses
+  char buf[896]; // same size status_print_json() uses
 
   printf("typical device\n");
   snprintf(settings.station_name, sizeof(settings.station_name), "Teststation (456m)");
@@ -104,6 +120,8 @@ int main() {
   sensor.last_baro_reading = g_now - 800;
   state.lbt_counter = 3;
   PM->RCAUSE.reg = PM_RCAUSE_POR;
+  g_awake_ms = 1234; g_awake_total = 600000;   // 2 per mille
+  g_rx_ms = 0; g_rx_total = 0;                 // never measured
 
   size_t n = status_build_json(buf, sizeof(buf));
   std::string out(buf);
@@ -115,7 +133,8 @@ int main() {
                         "settings_ok","uptime_s","rcause","reset","vbat_mv","soc",
                         "uv","deep_uv","uv_seen","reduced","wind_age_ms","baro_age_ms",
                         "wind_dkmh","gust_dkmh","dir","temp_dc","hum","baro_pa",
-                        "lbt_cnt","slot","free_ram"}) {
+                        "lbt_cnt","slot","free_ram","resets","reset_last","hw",
+                        "awake_pm","rx_pm","noise_dbm","noise_n"}) {
     if (!has_key(out, k)) { printf("  missing key: %s\n", k); g_fail++; }
   }
   check(out.find("\"vbat_mv\":3812") != std::string::npos, "voltage as integer mV");
@@ -124,6 +143,10 @@ int main() {
   check(out.find("\"uptime_s\":1234") != std::string::npos, "uptime in seconds");
   check(out.find("\"reset\":\"POR\"") != std::string::npos, "reset cause decoded");
   check(out.find("\"wind_age_ms\":1200") != std::string::npos, "data age computed");
+  check(out.find("\"awake_pm\":2,") != std::string::npos, "awake duty in per mille");
+  check(out.find("\"rx_pm\":0,") != std::string::npos, "rx duty zero without a measurement");
+  check(out.find("\"noise_dbm\":null") != std::string::npos, "noise null without samples");
+  check(out.find("\"resets\":0,") != std::string::npos, "no resets after power-on");
   printf("      %u bytes used of %u\n", (unsigned)n, (unsigned)sizeof(buf));
 
   printf("\nworst case lengths\n");
@@ -144,6 +167,11 @@ int main() {
   sensor.last_baro_reading = 1;
   state.lbt_counter = 255;
   PM->RCAUSE.reg = 0x00;           // unknown
+  g_resets = 255; g_reset_last = 0x00;
+  g_hw = "2.4 or earlier";
+  g_awake_ms = 4000000000u; g_awake_total = 4000000000u;
+  g_rx_ms = 4000000000u; g_rx_total = 4000000000u;
+  g_noise = true; g_noise_min = -150; g_noise_avg = -100; g_noise_max = -20; g_noise_n = 4294967295u;
 
   n = status_build_json(buf, sizeof(buf));
   out.assign(buf);
@@ -154,6 +182,8 @@ int main() {
   if (!why.empty()) printf("      -> %s\n", why.c_str());
   check(out.find("\\\"") != std::string::npos, "quotes in the name are escaped");
   check(out.find("\"reset\":\"unknown\"") != std::string::npos, "unknown reset cause handled");
+  check(out.find("\"awake_pm\":1000,") != std::string::npos, "awake duty saturates at 1000 per mille");
+  check(out.find("\"noise_dbm\":[-150,-100,-20]") != std::string::npos, "noise as a JSON array");
 
   printf("\ntruncation behaviour\n");
   char tiny[64];

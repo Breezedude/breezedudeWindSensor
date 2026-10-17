@@ -26,3 +26,5 @@ extern bool settings_ok;
 uint32_t time();
 uint16_t get_fanet_id();
 const char* get_bootloader_version();
+uint8_t reset_history_count();
+uint8_t reset_history_last_cause();
