@@ -1026,6 +1026,28 @@ uint16_t get_fanet_id(){
   return UniqueID[0] + ((UniqueID[1])<<8);
 }
 
+// Frees an I2C bus whose slave was caught mid-transfer by a reset and holds
+// SDA low: up to nine clocks on SCL let it finish the byte it was sending, then
+// a STOP. Plain GPIO, before Wire.begin(). SAMD pins have no open-drain mode,
+// so "low" is driving low and "high" is letting the pull-up have the line.
+bool i2c_bus_recover(){
+  pinMode(PIN_SDA, INPUT_PULLUP);
+  pinMode(PIN_SCL, INPUT_PULLUP);
+  delayMicroseconds(10);
+  if(digitalRead(PIN_SDA) == HIGH){ return false; }   // idle, nothing to do
+  for(int i = 0; i < 9 && digitalRead(PIN_SDA) == LOW; i++){
+    pinMode(PIN_SCL, OUTPUT); digitalWrite(PIN_SCL, LOW); delayMicroseconds(5);
+    pinMode(PIN_SCL, INPUT_PULLUP); delayMicroseconds(5);
+  }
+  pinMode(PIN_SDA, OUTPUT); digitalWrite(PIN_SDA, LOW); delayMicroseconds(5); // STOP: SDA rises while SCL is high
+  pinMode(PIN_SCL, INPUT_PULLUP); delayMicroseconds(5);
+  pinMode(PIN_SDA, INPUT_PULLUP); delayMicroseconds(10);
+  const bool freed = digitalRead(PIN_SDA) == HIGH;
+  log_w(freed ? "I2C: a slave held the bus, clocked it free\r\n"
+              : "I2C: a slave holds the bus and does not let go - sensors will not answer\r\n");
+  return freed;
+}
+
 // sets gpio in low power unconnected floating state
 void pinDisable( uint32_t ulPin){
   EPortType port = g_APinDescription[ulPin].ulPort;

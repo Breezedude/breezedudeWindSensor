@@ -122,6 +122,8 @@ static inline bool sensor_tracks_last_data(){
   return is_wsxx() || settings.sensor_type == s_WS85_UART;
 }
 bool process_line(char * in, int len, bool (*cb)(char*, char*));
+// Clocks a stuck I2C slave free before Wire.begin(); true when it had to.
+bool i2c_bus_recover();
 uint32_t time();
 
 // Wrap-safe deadline test.  time() is a free-running uint32_t millisecond

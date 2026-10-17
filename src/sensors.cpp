@@ -344,39 +344,17 @@ const char *baro_state_text(){
   return text;
 }
 
-static bool i2c_read_reg(uint8_t addr, uint8_t reg, uint8_t *val){
-  Wire.beginTransmission(addr);
-  Wire.write(reg);
-  if(Wire.endTransmission(false) != 0){ return false; }
-  if(Wire.requestFrom(addr, (uint8_t)1) != 1){ return false; }
-  *val = Wire.read();
-  return true;
-}
-
-// Who is really on the bus? The other chips carry an ID register, the HP203B
-// has none - so this runs only once a read has come back empty, and the
-// command bytes it sends are harmless to a chip that is already not answering.
+// Said once, after the first read that came back empty. This used to probe the
+// bus for the ID registers of the other chips, with repeated-start reads the
+// chip at 0x76 did not expect; one board answered by holding the bus, and the
+// SAMD Wire library has no timeout - the station hung, and after a reset it
+// hung again in init_baro(), because a slave caught mid-transfer survives an
+// MCU reset. The bus is no place for guesswork, so this only says what is
+// known without touching it.
 static void baro_identify_stranger(){
-  const uint8_t addrs[2] = {0x76, 0x77};
-  for(uint8_t i = 0; i < 2; i++){
-    const uint8_t addr = addrs[i];
-    uint8_t id = 0;
-    const char *who = nullptr;
-    const char *flag = nullptr;
-    if(i2c_read_reg(addr, 0xD0, &id) && (id == 0x58 || id == 0x60)){
-      who = (id == 0x58) ? "BMP280" : "BME280"; flag = "BREEZEDUDE_BARO_BMP280";
-    } else if(i2c_read_reg(addr, 0x00, &id) && (id == 0x50 || id == 0x60)){
-      who = "BMP388/BMP390"; flag = "BREEZEDUDE_BARO_BMP3XX";
-    } else if(i2c_read_reg(addr, 0x0D, &id) && id == 0x10){
-      who = "SPL06"; flag = "BREEZEDUDE_BARO_SPL06";
-    }
-    if(who){
-      log_w("Baro: the chip at 0x"); log_write_hex(addr, 2); log_w(" answers as "); log_w(who);
-      log_w(" (id 0x"); log_write_hex(id, 2); log_w(") - this build does not drive it, see "); log_w(flag); log_w("=0\r\n");
-      return;
-    }
-  }
-  log_w("Baro: nothing at 0x76/0x77 identifies as BMP280, BMP3xx or SPL06\r\n");
+  log_w("Baro: a chip answers at the HP203B address but returns no reading - "
+        "most likely a BMP280, BMP3xx or SPL06 on the same address, which this "
+        "build does not drive (BREEZEDUDE_BARO_* flags)\r\n");
 }
 
 bool init_baro(){

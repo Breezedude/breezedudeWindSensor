@@ -105,6 +105,12 @@ void setup(){
   //printf("flash_start: %p\n", my_internal_storage.get_flash_address());
   //printf("flash_size: %lu\n", my_internal_storage.get_flash_size());
 
+  // An I2C slave caught in the middle of a transfer by a reset keeps SDA low
+  // until it sees nine clocks, and the Wire library then waits for the bus for
+  // ever: that is a station that hangs right after "Radio:" on every boot
+  // until it is powered down. Clocking the bus free as a plain GPIO before
+  // Wire.begin() costs nothing when it is idle.
+  i2c_bus_recover();
   Wire.begin();
   i2c_scan();
 
