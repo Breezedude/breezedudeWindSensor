@@ -200,9 +200,11 @@ static void print_data(){
     log_d("Wind Gust: ", sensor.wind_gust);
     log_d("Temp: ", sensor.temperature);
     //log_i("Humd: ", humidity);
-    if(settings.use_baro){
-    log_d("Baro: ", sensor.baro_pressure);
-    log_d("PCB_Temp: ", sensor.baro_temp);
+    if(baro_fresh()){
+      log_d("Baro: ", sensor.baro_pressure);
+      log_d("PCB_Temp: ", sensor.baro_temp);
+    } else if(settings.use_baro){
+      log_d("Baro: no reading\r\n");
     }
     if(is_wsxx()) {
       log_d("VCC: ", sensor.wsxx_vcc);
@@ -254,7 +256,9 @@ static TxAttemptResult send_msg_weather(){
   wd.wHeading = sensor.wind_heading;
   wd.wSpeed = sensor.wind_speed;
   wd.wGust = sensor.wind_gust;      
-  wd.bTemp = true;
+  // A DAVIS station has no thermometer but the barometer's; without a reading
+  // the packet carries no temperature rather than 0 degrees.
+  wd.bTemp = !(settings.sensor_type == s_DAVIS6410 && !baro_fresh());
   wd.temp = sensor.temperature;
 
   if(is_wsxx() && sensor.humidity > 0){
@@ -265,7 +269,7 @@ static TxAttemptResult send_msg_weather(){
     wd.Humidity = -1;
   }
 
-  if(settings.use_baro){
+  if(baro_fresh()){
     wd.bBaro = true;
     wd.Baro = sensor.baro_pressure;  
   } else {
@@ -312,11 +316,14 @@ static bool allowed_to_send_weather(){
   // used to say nothing at all when the sensor keeps no data timestamp - with a
   // DAVIS anemometer the only trace of a barometer that never answers was
   // "just looping, will sleep" on every wakeup, and that line does not say why.
+  //
+  // The barometer is not on this list: a packet is never held back for
+  // pressure. The wind is what the packet is for, and a reading that is not
+  // there is left out of it - see baro_fresh() in send_msg_weather(). Holding
+  // the packet made a barometer that never answers silence the station.
   const char *why = nullptr;
   if(!settings_ok){
     why = "no settings";
-  } else if(settings.use_baro && (time() - sensor.last_baro_reading) >= 40000){
-    why = "no pressure reading in the last 40 s";   // one from the previous cycle is accepted
   } else if(sensor_tracks_last_data() && !sensor.last_data && !settings.testmode){
     why = "no wind data yet";
   #if BREEZEDUDE_ENABLE_GPS

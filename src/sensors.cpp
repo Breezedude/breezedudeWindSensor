@@ -29,10 +29,6 @@ QMC5883P qmc5883p; // GY-271
 
 
 CHIP_BARO chip_baro = BARO_NONE;
-// Attempts in a row that returned no pressure. read_baro() switches the
-// barometer off when it reaches BARO_FAIL_LIMIT, see there.
-#define BARO_FAIL_LIMIT 10
-static uint8_t baro_fails = 0;
 CHIP_IMU chip_imu = IMU_NONE;
 
 Sensors sensor;
@@ -277,6 +273,85 @@ void get_imu(){
 }
 
 
+// Barometer state beyond the chip itself.
+//
+// A barometer that answers on the bus but never returns a reading used to hold
+// every weather packet back, and the HP203B driver makes that easy to get: its
+// begin() reads one byte with command 0x8F and takes anything but zero for the
+// real thing, so a BMP280 at the same address - which hands it a calibration
+// byte - counts as found, and from then on every command comes back as zeros.
+// That is the "Baro: 0.00" of a board carrying a chip this build was not made
+// for. Now the packet goes out without pressure (see baro_fresh()), the first
+// failed reads are logged in detail, the bus is asked who is really there, and
+// after BARO_FAIL_LIMIT attempts in a row the chip is given a rest of
+// BARO_REST_MS before the next single attempt - so a sensor that comes back,
+// or was only loose at boot, is picked up again without a reboot.
+#define BARO_FAIL_LIMIT 10
+#define BARO_REST_MS (10u * 60u * 1000u)
+static uint8_t  baro_fails = 0;        // reads in a row that returned nothing, capped
+static bool     baro_resting = false;  // nothing is asked of the chip until baro_rest_until
+static uint32_t baro_rest_until = 0;
+static uint32_t baro_started_at = 0;   // when the pending conversion was started
+
+static void baro_rest(uint32_t now){
+  baro_resting = true;
+  baro_rest_until = now + BARO_REST_MS;
+  sensor.next_baro_reading = 0;
+}
+
+bool baro_fresh(){
+  return settings.use_baro && sensor.last_baro_reading && (time() - sensor.last_baro_reading) < 40000u;
+}
+
+const char *baro_state_text(){
+  static char text[40];
+  if(!settings.use_baro){ return "off"; }
+  if(chip_baro == BARO_NONE){ return baro_resting ? "not found, retrying" : "not found"; }
+  const char *name = "unknown";
+  if(chip_baro == BARO_BMP280) { name = "BMP280"; }
+  if(chip_baro == BARO_BMP3xx) { name = "BMP3xx"; }
+  if(chip_baro == BARO_SPL06)  { name = "SPL06"; }
+  if(chip_baro == BARO_HP203B) { name = "HP203B"; }
+  const char *state = baro_resting ? ", no reading, resting" : (baro_fails ? ", no reading" : "");
+  snprintf(text, sizeof(text), "%s%s", name, state);
+  return text;
+}
+
+static bool i2c_read_reg(uint8_t addr, uint8_t reg, uint8_t *val){
+  Wire.beginTransmission(addr);
+  Wire.write(reg);
+  if(Wire.endTransmission(false) != 0){ return false; }
+  if(Wire.requestFrom(addr, (uint8_t)1) != 1){ return false; }
+  *val = Wire.read();
+  return true;
+}
+
+// Who is really on the bus? The other chips carry an ID register, the HP203B
+// has none - so this runs only once a read has come back empty, and the
+// command bytes it sends are harmless to a chip that is already not answering.
+static void baro_identify_stranger(){
+  const uint8_t addrs[2] = {0x76, 0x77};
+  for(uint8_t i = 0; i < 2; i++){
+    const uint8_t addr = addrs[i];
+    uint8_t id = 0;
+    const char *who = nullptr;
+    const char *flag = nullptr;
+    if(i2c_read_reg(addr, 0xD0, &id) && (id == 0x58 || id == 0x60)){
+      who = (id == 0x58) ? "BMP280" : "BME280"; flag = "BREEZEDUDE_BARO_BMP280";
+    } else if(i2c_read_reg(addr, 0x00, &id) && (id == 0x50 || id == 0x60)){
+      who = "BMP388/BMP390"; flag = "BREEZEDUDE_BARO_BMP3XX";
+    } else if(i2c_read_reg(addr, 0x0D, &id) && id == 0x10){
+      who = "SPL06"; flag = "BREEZEDUDE_BARO_SPL06";
+    }
+    if(who){
+      log_w("Baro: the chip at 0x"); log_write_hex(addr, 2); log_w(" answers as "); log_w(who);
+      log_w(" (id 0x"); log_write_hex(id, 2); log_w(") - this build does not drive it, see "); log_w(flag); log_w("=0\r\n");
+      return;
+    }
+  }
+  log_w("Baro: nothing at 0x76/0x77 identifies as BMP280, BMP3xx or SPL06\r\n");
+}
+
 bool init_baro(){
     // ToDo: Crashes with HP203B installed when checking for bmp3xx
 
@@ -314,18 +389,29 @@ bool init_baro(){
     }
     #endif
 
-    log_w("Baro: not found\r\n");
-    settings.use_baro = false;
+    // Not switched off for good: a connector that was loose at boot, or a
+    // sensor that powers up late, gets another look every ten minutes. The
+    // red LED at boot stays as the hint that something is wrong.
+    log_w("Baro: not found, next try in 10 min\r\n");
+    chip_baro = BARO_NONE;
+    baro_rest(time());
     return false; 
 }
 
 
 // request baro sampling & conversion
 void baro_start_reading(){
-  //sercom3.resetWIRE();
-  //Wire.begin();
+  if(chip_baro == BARO_NONE || baro_resting){ return; }
   uint32_t now = time();
-  if(!sensor.next_baro_reading){
+  if(sensor.next_baro_reading){
+    // One is running - or one was due and never read. The second case used to
+    // be zeroed here and then nobody started another, which left the
+    // barometer silent for good. Start over instead.
+    if(!time_reached(sensor.next_baro_reading + 200)){ return; }
+    sensor.next_baro_reading = 0;
+  }
+  baro_started_at = now;
+  {
     #if BREEZEDUDE_BARO_BMP280
     if(chip_baro == BARO_BMP280){ 
       sensor.next_baro_reading = now + bmp280.startMeasurment();
@@ -350,10 +436,6 @@ void baro_start_reading(){
       sensor.next_baro_reading = now + 25; // OSR512
     }
     #endif
-  } else {
-    if(time_reached(sensor.next_baro_reading + 200)){
-      sensor.next_baro_reading = 0;
-    }
   }
 }
 
@@ -364,6 +446,27 @@ void read_baro(){
   // soft-float library. Only the BMP280 driver API needs doubles (see below).
   float T = 0, P = 0;
   uint32_t now = time();
+
+  if(baro_resting){
+    if(!time_reached(baro_rest_until)){ return; }
+    // The rest is over: one more try. A chip that was never found is looked
+    // for again, one that stopped answering gets a fresh conversion. The
+    // reading itself happens on the next call, once that has had its time.
+    baro_resting = false;
+    if(chip_baro == BARO_NONE && !init_baro()){ return; }   // init_baro() rests it again
+    log_d("Baro: trying again after the rest\r\n");
+    baro_start_reading();
+    return;
+  }
+  if(chip_baro == BARO_NONE){ return; }
+  if(!sensor.next_baro_reading){
+    // Nothing to read because nothing was started. This used to return in
+    // silence, and a barometer that had lost its conversion was never asked
+    // again.
+    log_d("Baro: no conversion pending, starting one\r\n");
+    baro_start_reading();
+    return;
+  }
 
   #if BREEZEDUDE_BARO_BMP280
   if(chip_baro == BARO_BMP280){
@@ -422,21 +525,28 @@ void read_baro(){
     sensor.baro_pressure = apply_altitude_correction(P, T, position_alt());
     log_v("Baro: ", sensor.baro_pressure);
     log_v("Baro Temp: ", sensor.baro_temp);
-  } else if(baro_fails < BARO_FAIL_LIMIT){
-    // A barometer that answers on the bus but never returns a reading is worse
-    // than none at all: allowed_to_send_weather() waits for a pressure that
-    // never arrives, so the station stops sending weather entirely and only
-    // logs "just looping". That is what an old board carrying a chip this build
-    // does not drive looks like. After BARO_FAIL_LIMIT attempts in a row the
-    // barometer is switched off and weather goes out without the pressure
-    // field. Only the setting in RAM is changed, so the next boot tries the
-    // chip again - a loose connection is not written off for good.
-    baro_fails++;
-    log_d("Baro: no reading, attempt ", (uint32_t)baro_fails);
+  } else {
+    if(baro_fails < 255){ baro_fails++; }
+    if(baro_fails <= 3){
+      // The first few in detail: how long after the start it was read and what
+      // came back. Zeros from a chip that was "found" at boot are the
+      // signature of a chip the driver does not actually drive.
+      log_d("Baro: no data, attempt ", (uint32_t)baro_fails);
+      log_d("Baro: ms since the conversion was started: ", (uint32_t)(now - baro_started_at));
+      log_d("Baro: raw pressure ", P);
+      log_d("Baro: raw temperature ", T);
+      if(baro_fails == 1){ baro_identify_stranger(); }
+    }
     if(baro_fails >= BARO_FAIL_LIMIT){
-      log_e("Baro: no reading, barometer switched off, weather now goes out without pressure\r\n");
-      settings.use_baro = false;
-      sensor.next_baro_reading = 0;
+      // Ten in a row - a few minutes at one attempt per transmission - and the
+      // chip gets a rest. Weather goes out without pressure meanwhile; after
+      // the rest it gets one more attempt, see the top of this function.
+      if(baro_fails == BARO_FAIL_LIMIT){
+        log_e("Baro: no reading in 10 attempts, resting it for 10 min, weather goes out without pressure\r\n");
+      } else {
+        log_w("Baro: still no reading, next try in 10 min\r\n");
+      }
+      baro_rest(now);
       return;
     }
   }

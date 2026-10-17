@@ -778,7 +778,7 @@ bool setting_key_persistable(const char *key){
 
 void print_settings(){
   if(debug_enabled()){
-    if(!settings.use_baro){log_i("Baro: OFF\r\n");}
+    log_i("Baro: "); log_i(baro_state_text()); log_i("\r\n");
     log_i("Name: "); log_i(settings.station_name); log_i("\r\n");
     //log_i("Lon: ", pos_lon);
     //log_i("Lat: ", pos_lat);
@@ -1093,11 +1093,7 @@ static size_t build_version_text(char *out, size_t out_len){
   if(lora_module == LORA_SX1262) { lora_name = "SX1262"; }
   if(lora_module == LORA_LLCC68) { lora_name = "LLCC68"; }
 
-  const char *baro_name = "UNKNOWN";
-  if(chip_baro == BARO_BMP280) { baro_name = "BMP280"; }
-  if(chip_baro == BARO_BMP3xx) { baro_name = "BMP3xx"; }
-  if(chip_baro == BARO_SPL06) { baro_name = "SPL06"; }
-  if(chip_baro == BARO_HP203B) { baro_name = "HP203B"; }
+  const char *baro_name = baro_state_text();
 
   int n = snprintf(out, out_len,
     "Firmware: %s\r\n"

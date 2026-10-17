@@ -135,6 +135,12 @@ bool init_baro();
 void read_baro();
 // True while a barometer conversion runs and its result is not due yet.
 bool baro_conversion_running();
+// A pressure reading from this or the previous send cycle is in hand. What the
+// weather packet and the log go by - never settings.use_baro alone.
+bool baro_fresh();
+// "HP203B", "HP203B, no reading", "not found, retrying", "off": for STATUS,
+// the boot log and print_settings().
+const char *baro_state_text();
 
 int read_windnerd();
 int read_wind_dir();
