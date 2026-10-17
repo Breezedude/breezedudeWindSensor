@@ -89,6 +89,11 @@ bool HP203B::begin(uint8_t i2cAddress, hpOSR_t osr)
 {
     hp_i2cAddress = i2cAddress;
     hp_osr = osr;
+    // Only getAddr_HP203B() used to set this, and nothing calls it: the delay
+    // after the soft reset below was 0, the first conversion requested right
+    // after it was lost in the reset, and the first reading of every boot came
+    // back empty. Every later request worked, which is how it went unnoticed.
+    hp_conversionDelay = HP203B_CONVERSIONDELAY;
     //Wire.begin();
     
      //Reset();

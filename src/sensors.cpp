@@ -367,9 +367,10 @@ bool init_baro(){
     sensor.next_baro_reading = 0;
 
     #if BREEZEDUDE_BARO_BMP280
+    // The chip found is named by print_settings(), through baro_state_text(),
+    // together with its state - a line here as well printed it twice.
     if(bmp280.begin()){
       chip_baro = BARO_BMP280;
-      log_i("Baro: BMP280\r\n");
       bmp280.setOversampling(4);
       return true;
     }
@@ -378,7 +379,6 @@ bool init_baro(){
     #if BREEZEDUDE_BARO_SPL06
     if(spl.begin(0x77)){
       chip_baro = BARO_SPL06;
-      log_i("Baro: SPL06\r\n");
       return true;
     }
     #endif
@@ -386,7 +386,6 @@ bool init_baro(){
     #if BREEZEDUDE_BARO_BMP3XX
     if(bmp3xx.begin_I2C(0x76)){
       chip_baro = BARO_BMP3xx;
-      log_i("Baro: BMP3XX\r\n");
       return true;
     }
     #endif
@@ -395,7 +394,6 @@ bool init_baro(){
     if(hp.begin(0x76, OSR_2048)){
       chip_baro = BARO_HP203B;
       hp.setOSR(OSR_512); // 16.4ms conversion time
-      log_i("Baro: HP203B\r\n");
       return true;
     }
     #endif
