@@ -308,39 +308,38 @@ static TxAttemptResult send_msg_weather(){
 
 // check if everything is ok to send the wather data now
 static bool allowed_to_send_weather(){
-  bool ok = settings_ok;
-  
-
-  if (ok){
-    if(settings.use_baro){ok &= ((time() - sensor.last_baro_reading) < 40000 );} // accept baro reading from last cacle. this reduces cp
-    if(sensor_tracks_last_data()) { ok &= (sensor.last_data || settings.testmode); } // only send if weather data is up to date or testmode is enabled // && (time()- last_ws80_data < 9000))
-    #if BREEZEDUDE_ENABLE_GPS
-    if(settings.use_gps)  { ok &= (tinyGps.location.isValid()); } // only send if position is valid
-    #endif
-    if(undervoltage) { ok = false;} // if undervoltage, do not send at all
+  // The first thing in the way, named. A station that holds its weather back
+  // used to say nothing at all when the sensor keeps no data timestamp - with a
+  // DAVIS anemometer the only trace of a barometer that never answers was
+  // "just looping, will sleep" on every wakeup, and that line does not say why.
+  const char *why = nullptr;
+  if(!settings_ok){
+    why = "no settings";
+  } else if(settings.use_baro && (time() - sensor.last_baro_reading) >= 40000){
+    why = "no pressure reading in the last 40 s";   // one from the previous cycle is accepted
+  } else if(sensor_tracks_last_data() && !sensor.last_data && !settings.testmode){
+    why = "no wind data yet";
+  #if BREEZEDUDE_ENABLE_GPS
+  } else if(settings.use_gps && !tinyGps.location.isValid()){
+    why = "no GPS fix";
+  #endif
+  } else if(undervoltage){
+    why = "undervoltage";
   }
+  if(!why){ return true; }
 
- // if(next_baro_reading){
- //   log_i("next_baro_reading: ", next_baro_reading);
- // }
-
- // Print reasons for not beeing ready
-  if(!ok){
+  // Once per retry, not once per loop iteration: the scheduler asks again on
+  // every pass until the packet goes out.
+  static uint32_t last_said = 0;
+  if(!last_said || (time() - last_said) > 5000u){
+    last_said = time();
+    log_w("Weather TX held back: "); log_w(why); log_w("\r\n");
     if(sensor.last_data && !baro_conversion_running() && !undervoltage){ // ever got some sensor data and baro currently not waiting for data
       log_d("Wind Sensor data age: ", time()- sensor.last_data);
       log_d("Baro data age: ", time()- sensor.last_baro_reading);
     }
-    #if BREEZEDUDE_ENABLE_GPS
-    if(settings.use_gps){
-      if(time()-sensor.last_gps_valid > 3000){
-        log_w("No GPS fix");
-      }
-    }
-    #endif
   }
-
-
-  return ok;
+  return false;
 }
 
 // check if last fanet package want sent recenctly
@@ -474,6 +473,15 @@ static bool tx_weather_ready(){
     return true;
   }
   handle_stale_wind_data();
+  if(!sensor_tracks_last_data()){
+    // A pulse-counting sensor has nothing to wait for but its next window, and
+    // handle_stale_wind_data() above does not apply to it. Without this the
+    // packet stayed due, the loop ran 25 times to the "just looping" fallback
+    // in calc_time_to_sleep(), and only that put the station to sleep. Ask
+    // again in ten seconds instead; the slot itself stays where it is.
+    tx_grid_retry(time(), 10000);
+    sleep_allowed = time() + 1;
+  }
   return false;
 }
 
