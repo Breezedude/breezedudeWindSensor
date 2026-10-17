@@ -578,6 +578,13 @@ bool baro_conversion_running(){
 static volatile bool davis_speed_pulse = false;
 static void davis_speed_isr() { davis_speed_pulse = true; }
 
+// Raw 10 bit ADC reading of the direction potentiometer to degrees, without
+// the heading offset. Used by the measurement and by the analog test alike, so
+// what the test prints is what the station would send.
+int dir_raw_to_degrees(int d){
+  return (int)(360.0f / 1023.0f * (float)d);
+}
+
 void forward_analog_test_serial(){
   static bool isr_attached = false;
 
@@ -609,7 +616,12 @@ void forward_analog_test_serial(){
       log_d(pulse ? "-" : "o");
       log_d("\t");
       log_write(d);
-      log_d("\r\n");
+      // The degrees next to the raw value show whether the whole range is
+      // covered: an ADC input damaged by a strike has answered with half the
+      // range before, and that is invisible in a raw count alone.
+      log_d("\t");
+      log_write((uint32_t)dir_raw_to_degrees(d));
+      log_d(" deg\r\n");
     }
     
   } else {
@@ -1135,7 +1147,7 @@ pinDisable(PIN_DAVIS_DIR);
 
 if(settings.sensor_type == s_DAVIS6410){
   // Variable resistance 0 - 20KΩ; 10KΩ = south, 180°)
-  val = (int)(360.0f/1023.0f * (float)d);
+  val = dir_raw_to_degrees(d);
 }
 
 #if 0
