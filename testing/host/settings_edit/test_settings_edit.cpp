@@ -9,6 +9,7 @@
 // ---- captured console output ----
 static std::string g_out;
 void log_i(const char *msg){ g_out += msg; }
+void log_raw(const char *msg){ g_out += msg; }
 void log_write(uint32_t n){ char b[16]; snprintf(b, sizeof(b), "%u", (unsigned)n); g_out += b; }
 void log_flush(){}
 

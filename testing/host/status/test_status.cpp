@@ -38,6 +38,7 @@ uint8_t ota_ab_current_slot() { return 1; }
 
 static std::string g_out;
 void log_i(const char *msg) { g_out += msg; }
+void log_raw(const char *msg) { g_out += msg; }
 void log_flush() {}
 
 // newlib's sbrk does not exist on the host; free_ram() only needs it to return
