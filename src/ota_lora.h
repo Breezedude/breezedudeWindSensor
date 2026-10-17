@@ -31,7 +31,7 @@
 // watchdog paused - so it keeps the generous value: shortening it saves nothing
 // measurable and risks aborting a real update.
 #ifndef OTA_LORA_START_WAIT_MS
-  #define OTA_LORA_START_WAIT_MS 15000UL
+  #define OTA_LORA_START_WAIT_MS 10000UL   // the updater sends START right after its ACK; 15 s was more than it needs
 #endif
 #ifndef OTA_LORA_SESSION_TIMEOUT_MS
   #define OTA_LORA_SESSION_TIMEOUT_MS 900000UL
@@ -88,3 +88,6 @@ bool ota_lora_busy();
 bool ota_lora_offer_waiting();
 // Milliseconds left in that wait, 0 once the window has closed.
 uint32_t ota_lora_offer_ms_left();
+// Offer nonce or session START pending, with nothing to do but listen.
+bool ota_lora_rx_waiting();
+uint32_t ota_lora_rx_wait_ms_left();

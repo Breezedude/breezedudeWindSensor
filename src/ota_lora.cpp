@@ -1263,6 +1263,21 @@ uint32_t ota_lora_offer_ms_left() {
   return s_ota.deadline - (uint32_t)time();
 }
 
+// Waiting for a packet with nothing else to do: the nonce after an offer, or
+// the START of a session the updater has just acknowledged. loop() spends
+// both asleep with the radio listening instead of spinning - the START wait
+// used to cost 15 s at 17 mA after every acknowledged offer.
+bool ota_lora_rx_waiting() {
+  return ota_lora_offer_waiting() || (s_ota.active && s_ota.status == OTA_STATE_WAIT);
+}
+
+uint32_t ota_lora_rx_wait_ms_left() {
+  if(!ota_lora_rx_waiting() || time_reached(s_ota.deadline)) {
+    return 0;
+  }
+  return s_ota.deadline - (uint32_t)time();
+}
+
 bool ota_lora_poll() {
   ota_chunk_led_update();
   if(!ota_lora_busy()) {
@@ -1381,5 +1396,7 @@ bool ota_lora_poll() { return false; }
 bool ota_lora_busy() { return false; }
 bool ota_lora_offer_waiting() { return false; }
 uint32_t ota_lora_offer_ms_left() { return 0; }
+bool ota_lora_rx_waiting() { return false; }
+uint32_t ota_lora_rx_wait_ms_left() { return 0; }
 
 #endif

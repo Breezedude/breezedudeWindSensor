@@ -43,6 +43,56 @@ bool setup_flash(){
   return true;
 }
 
+// Reset history, in RAM that survives a reset but not a power cycle: how often
+// the station came up again since it last had power, and why. Stations in the
+// field reset now and then with nobody watching; this is what the boot log,
+// STATUS and the HWInfo payload can show afterwards. A power cycle starts the
+// count over, which is right - that is a different kind of event.
+#define RESET_HISTORY_MAGIC 0x52535448UL   // 'RSTH'
+typedef struct {
+  uint32_t magic;
+  uint8_t  resets;       // since power-on, capped
+  uint8_t  wdt, syst, bod, ext;
+  uint8_t  last_cause;   // PM->RCAUSE of the latest reset
+} reset_history_t;
+static reset_history_t g_resets __attribute__((section(".noinit")));
+
+void reset_history_note(){
+  const uint8_t cause = PM->RCAUSE.reg;
+  if((cause & PM_RCAUSE_POR) || g_resets.magic != RESET_HISTORY_MAGIC){
+    memset(&g_resets, 0, sizeof(g_resets));
+    g_resets.magic = RESET_HISTORY_MAGIC;
+  }
+  if(!(cause & PM_RCAUSE_POR)){
+    if(g_resets.resets < 255) g_resets.resets++;
+    if((cause & PM_RCAUSE_WDT) && g_resets.wdt < 255)  g_resets.wdt++;
+    if((cause & PM_RCAUSE_SYST) && g_resets.syst < 255) g_resets.syst++;
+    if((cause & (PM_RCAUSE_BOD33 | PM_RCAUSE_BOD12)) && g_resets.bod < 255) g_resets.bod++;
+    if((cause & PM_RCAUSE_EXT) && g_resets.ext < 255)  g_resets.ext++;
+  }
+  g_resets.last_cause = cause;
+  if(g_resets.resets){
+    log_w("Resets since power-on: "); log_w(reset_history_text()); log_w("\r\n");
+  }
+}
+
+uint8_t reset_history_count(){ return g_resets.magic == RESET_HISTORY_MAGIC ? g_resets.resets : 0; }
+uint8_t reset_history_last_cause(){ return g_resets.magic == RESET_HISTORY_MAGIC ? g_resets.last_cause : 0; }
+
+// "3 (WDT 2, SYST 1)" - or "0" after a clean power-on.
+const char *reset_history_text(){
+  static char text[48];
+  if(g_resets.magic != RESET_HISTORY_MAGIC || !g_resets.resets){ return "0"; }
+  int n = snprintf(text, sizeof(text), "%u (", (unsigned)g_resets.resets);
+  const char *sep = "";
+  if(g_resets.wdt)  { n += snprintf(text + n, sizeof(text) - n, "%sWDT %u",  sep, (unsigned)g_resets.wdt);  sep = ", "; }
+  if(g_resets.syst) { n += snprintf(text + n, sizeof(text) - n, "%sSYST %u", sep, (unsigned)g_resets.syst); sep = ", "; }
+  if(g_resets.bod)  { n += snprintf(text + n, sizeof(text) - n, "%sBOD %u",  sep, (unsigned)g_resets.bod);  sep = ", "; }
+  if(g_resets.ext)  { n += snprintf(text + n, sizeof(text) - n, "%sEXT %u",  sep, (unsigned)g_resets.ext);  sep = ", "; }
+  snprintf(text + n, sizeof(text) - n, ")");
+  return text;
+}
+
 void log_reset_cause(){
   const uint8_t cause = PM->RCAUSE.reg;
   log_write("Reset cause: 0x");
@@ -762,7 +812,10 @@ static const SettingEntry setting_table[] = {
   {"USB_VERBOSE",                set_usb_verbose, SETTING_CFG},
   {"UART_WAKE",                  set_uart_wake,   SETTING_CFG},
   {"TESTMODE",                   set_testmode,    SETTING_CFG},
-  {"WDT",                        set_wdt,         SETTING_CFG},
+  // A command, not a setting: it is not stored and does not appear in a DUMP.
+  // A station in the field always runs with the watchdog; this exists for the
+  // test rig. (A WDT=0 that is still in an old settings file is honoured.)
+  {"WDT",                        set_wdt,         SETTING_CMD},
   {"DIV_CPU_SLOW",               set_div_cpu_slow, SETTING_CFG},
 
   {"OTA_ENABLE",                 set_ota_enable,  SETTING_CFG},
@@ -1177,6 +1230,7 @@ static size_t build_version_text(char *out, size_t out_len){
     "FANET ID: %02X%04X\r\n"
     "LoRa Module: %s\r\n"
     "Barometer: %s\r\n"
+    "Resets since power-on: %s\r\n"
     "Chip-ID: %02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X\r\n",
     VERSION,
     __DATE__, __TIME__,
@@ -1184,6 +1238,7 @@ static size_t build_version_text(char *out, size_t out_len){
     FANET_VENDOR_ID, get_fanet_id(),
     lora_name,
     baro_name,
+    reset_history_text(),
     UniqueID[0],  UniqueID[1],  UniqueID[2],  UniqueID[3],
     UniqueID[4],  UniqueID[5],  UniqueID[6],  UniqueID[7],
     UniqueID[8],  UniqueID[9],  UniqueID[10], UniqueID[11],

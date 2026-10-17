@@ -81,6 +81,7 @@ void setup(){
 
   log_i("\r\n--------------- RESET -------------------\r\n");
   log_reset_cause();
+  reset_history_note();
   log_i("Version: ");  log_i(VERSION); log_i("\r\n");
   log_i("Bootloader: "); log_i(get_bootloader_version()); log_i("\r\n");
   log_i("Hardware: "); log_i(hw_name()); log_i(" (id "); log_write((uint32_t)hw_id_code()); log_i(")\r\n");
@@ -274,6 +275,8 @@ void setup(){
     wdt_enable(WDT_PERIOD,false);
     log_i("WDT runtime: ON\r\n");
     log_flush();
+  } else if(settings_ok){
+    log_w("WDT: OFF - a test setting, a station in the field always runs with the watchdog\r\n");
   }
 }
 
@@ -372,8 +375,10 @@ loopcounter++;
   //
   // loraReceivedFlag is checked once more right before sleep(): a packet that
   // arrives while the RTC is being set up would otherwise wait for the deadline.
-  if(!tx_send_in_progress() && ota_lora_offer_waiting() && !loraReceivedFlag){
-    const uint32_t left = ota_lora_offer_ms_left();
+  // The same holds for the START of a session that was just acknowledged:
+  // nothing to do but listen, so sleep with the radio on.
+  if(!tx_send_in_progress() && ota_lora_rx_waiting() && !loraReceivedFlag){
+    const uint32_t left = ota_lora_rx_wait_ms_left();
     if(left >= OTA_OFFER_SLEEP_MIN_MS){
       rtc_sleep_cfg(left);
       if(!loraReceivedFlag){

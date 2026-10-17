@@ -124,6 +124,11 @@ static inline bool sensor_tracks_last_data(){
 bool process_line(char * in, int len, bool (*cb)(char*, char*));
 // Clocks a stuck I2C slave free before Wire.begin(); true when it had to.
 bool i2c_bus_recover();
+// Resets since power-on, kept across resets in .noinit RAM. Call at boot.
+void reset_history_note();
+uint8_t reset_history_count();
+uint8_t reset_history_last_cause();
+const char *reset_history_text();
 uint32_t time();
 
 // Wrap-safe deadline test.  time() is a free-running uint32_t millisecond
