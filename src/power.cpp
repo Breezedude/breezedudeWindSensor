@@ -94,7 +94,10 @@ static void quiet_pins_for_standby(){
   }
   if(sleep_quiet_mask & 0x02){ pinDisable(PIN_LORA_MISO); }
   if(sleep_quiet_mask & 0x04){
-    pinDisable(PIN_LORA_DIO0); pinDisable(PIN_LORA_DIO1); pinDisable(PIN_LORA_DIO2);
+    #if BREEZEDUDE_RADIO_SX1276
+    pinDisable(PIN_LORA_DIO0);   // only that radio has a DIO0; on hardware 2.5 the pin is the red LED
+    #endif
+    pinDisable(PIN_LORA_DIO1); pinDisable(PIN_LORA_DIO2);
   }
   if(sleep_quiet_mask & 0x08){ pinDisable(PIN_SDA); pinDisable(PIN_SCL); }
 }
@@ -106,7 +109,10 @@ static void restore_pins_after_standby(){
   }
   if(sleep_quiet_mask & 0x02){ pin_restore(PIN_LORA_MISO); }
   if(sleep_quiet_mask & 0x04){
-    pin_restore(PIN_LORA_DIO0); pin_restore(PIN_LORA_DIO1); pin_restore(PIN_LORA_DIO2);
+    #if BREEZEDUDE_RADIO_SX1276
+    pin_restore(PIN_LORA_DIO0);
+    #endif
+    pin_restore(PIN_LORA_DIO1); pin_restore(PIN_LORA_DIO2);
   }
   if(sleep_quiet_mask & 0x08){ pin_restore(PIN_SDA); pin_restore(PIN_SCL); }
 }

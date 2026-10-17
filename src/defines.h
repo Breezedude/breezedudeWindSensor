@@ -62,9 +62,20 @@
 #define PIN_TX 1 // A7 PA10
 
 #define PIN_STATUSLED 13 // PA17 // blue, 1.2mA @ 2.77V = 470Ohm
-#define PIN_ERRORLED 4 //D4/A8 PA08 // red 2.9mA @ 2.16V = 390Ohm
+// Two pins moved with hardware 2.5. The firmware tells the revisions apart at
+// boot (hw.cpp) and picks the pin at run time through hw_pin_led_error() and
+// hw_pin_v_read(); the old pads are free on 2.5.
+#define PIN_ERRORLED_HW24 4   // D4/A8 PA08 - red 2.9mA @ 2.16V = 390Ohm, up to hardware 2.4
+#define PIN_ERRORLED_HW25 11  // D11 PA16 - red LED from hardware 2.5 on. The SX1276 build
+                              // uses this pin as DIO0; no 2.x board carries that radio.
 #define PIN_V_READ_TRIGGER A2 // D16 PB09
-#define PIN_V_READ A1 // D15 PB08 - { PORTB,  8, PIO_ANALOG, (PIN_ATTR_PWM|PIN_ATTR_TIMER), ADC_Channel2, PWM4_CH0, TC4_CH0, EXTERNAL_INT_8 }, // ADC/AIN[2]
+#define PIN_V_READ_HW24 A1    // D15 PB08 ADC/AIN[2] - battery divider up to hardware 2.4
+#define PIN_V_READ_HW25 A5    // D19 PB02 ADC/AIN[10] - battery divider from hardware 2.5 on
+// Hardware identification, from 2.5 on: read against the internal pull-up at
+// boot, a revision pulls its pin to ground through 4.7k, boards before 2.5
+// leave both open. Both are the unpopulated SPI flash pads of the ItsyBitsy M0.
+#define PIN_HW_ID0 39 // PA27 - 4.7k to ground on 2.5
+#define PIN_HW_ID1 32 // PA28 - open so far, reserved for the next revision
 
 #define VERSIONFILE (char*) "version.txt"
 #define SETTINGSFILE (char*) "settings.txt"

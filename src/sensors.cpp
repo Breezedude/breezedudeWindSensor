@@ -157,7 +157,7 @@ void read_batt_perc(){
     last_battery_reading = time();
     analogReference(AR_INTERNAL1V0);
     analogReadResolution(10);
-    pinMode(PIN_V_READ, INPUT);
+    pinMode(hw_pin_v_read(), INPUT);
 
     // Extend ADC sampling phase via SAMPCTRL instead of software delays between reads.
     // ADC clock = 48 MHz / 512 ~= 94 kHz  ->  half-cycle ~= 5.3 us.
@@ -180,7 +180,7 @@ void read_batt_perc(){
     digitalWrite(PIN_V_READ_TRIGGER,0);
     delayMicroseconds(50); // allow divider to settle
     for (int i = 0; i < N_SAMPLES; i++) {
-      samples[i] = analogRead(PIN_V_READ);
+      samples[i] = analogRead(hw_pin_v_read());
     }
     digitalWrite(PIN_V_READ_TRIGGER,1);
 
@@ -197,7 +197,7 @@ void read_batt_perc(){
     }
     float val = (float)(vsum - vmin - vmax) / (float)(N_SAMPLES - 2);
 
-    pinDisable(PIN_V_READ);
+    pinDisable(hw_pin_v_read());
     val *= 0.0040925f; // 100k/330k 1.0V Vref
 
     // Moving average over last 5 readings to suppress short voltage dips

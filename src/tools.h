@@ -3,12 +3,7 @@
 #include <Wire.h>
 #include <ArduinoUniqueID.h>
 #include "defines.h"
-
-typedef enum {
-  HW_unknown,
-  HW_1_3,
-  HW_2_0
-} HW_Version;
+#include "hw.h"
 
 typedef enum {
   s_invalid,

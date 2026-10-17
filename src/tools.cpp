@@ -1026,14 +1026,14 @@ bool led_error(bool s){
 static bool state = false;
 bool ret = false;
   if(s){
-    pinMode(PIN_ERRORLED,OUTPUT);
-    digitalWrite(PIN_ERRORLED, 1);
+    pinMode(hw_pin_led_error(),OUTPUT);
+    digitalWrite(hw_pin_led_error(), 1);
     if(state){ret = true;} // was on before
     state = true;
   } else {
     state = false;;
-    digitalWrite(PIN_ERRORLED, 0);
-    pinDisable(PIN_ERRORLED);
+    digitalWrite(hw_pin_led_error(), 0);
+    pinDisable(hw_pin_led_error());
   }
   return ret;
 }

@@ -68,6 +68,9 @@ void setup(){
   // disables the UART TX leakage path and cuts sensor power before the
   // normal UV-sleep loop takes over.
   setup_BOD33_interrupt();
+  // Before anything touches the red LED or the battery divider: both sit on
+  // different pins from hardware 2.5 on, see hw.h.
+  hw_detect();
 
   log_set_debug(true);
   log_set_error(true);
@@ -80,6 +83,10 @@ void setup(){
   log_reset_cause();
   log_i("Version: ");  log_i(VERSION); log_i("\r\n");
   log_i("Bootloader: "); log_i(get_bootloader_version()); log_i("\r\n");
+  log_i("Hardware: "); log_i(hw_name()); log_i(" (id "); log_write((uint32_t)hw_id_code()); log_i(")\r\n");
+  if(hw_id_unknown()){
+    log_w("Hardware: ID code not known to this firmware, using the 2.5 pin map\r\n");
+  }
   log_i("FW Build Time: ");  log_i(__DATE__); log_i(" "); log_i(__TIME__); log_i("\r\n");
   log_i("FANET ID: ");
   log_write_hex(FANET_VENDOR_ID, 2);
