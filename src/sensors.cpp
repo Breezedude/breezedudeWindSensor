@@ -359,6 +359,12 @@ static void baro_identify_stranger(){
 
 bool init_baro(){
     // ToDo: Crashes with HP203B installed when checking for bmp3xx
+    // A fresh start for the chip is a fresh start for the bookkeeping too -
+    // after a soft reset (RESET re-runs setup()) the statics would otherwise
+    // still say "no reading" from the previous run.
+    baro_fails = 0;
+    baro_resting = false;
+    sensor.next_baro_reading = 0;
 
     #if BREEZEDUDE_BARO_BMP280
     if(bmp280.begin()){

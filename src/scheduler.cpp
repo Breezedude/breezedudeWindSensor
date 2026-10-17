@@ -183,6 +183,14 @@ uint32_t calc_time_to_sleep(){
     tts = 12000;
   }
 
+  // While an OTA offer or session runs, tx_run_jobs() starts nothing, so a job
+  // that is due stays due. Left at 0 that spun the loop into the "just
+  // looping" fallback below on every OTA window. Wait the window out instead.
+  if(!tts && ota_lora_busy()){
+    const uint32_t left = ota_lora_offer_ms_left();
+    tts = left > 1000u ? left : 1000u;
+  }
+
   if( !tts && loopcounter > 25){
     log_w("just looping, will sleep\r\n");
     tts = 12000; // set to sleep to keep updating sensor data
