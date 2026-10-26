@@ -11,12 +11,21 @@ static uint8_t id_code = 0;
 static bool unknown = false;
 static bool overruled = false;
 static float v24 = 0, v25 = 0;
+static float spread24 = 0, spread25 = 0;
+static bool clip24 = false, clip25 = false;
 
 // A battery divider that is really there reads a battery: somewhere between a
 // deeply discharged cell and a full one, and steady across the samples. An
 // open ADC pin reads whatever charge sits on it, and not twice the same.
-static bool looks_like_a_battery(float v, float spread) {
-  return v >= 2.0f && v <= 4.6f && spread < 0.15f;
+//
+// A pin at full scale is no evidence either way. The divider (100k/330k
+// against the 1.0 V reference) clips at 4.19 V, so a full battery can get
+// there - but so does any pin that carries more than 1 V, and that reads as
+// steady as a battery. The first 2.5 boards showed exactly that on the old
+// divider pin PB08: 4.19 V without a spread, which outvoted their correct ID
+// pin and put them on the 2.4 pin map.
+static bool looks_like_a_battery(float v, float spread, bool clipped) {
+  return !clipped && v >= 2.0f && v <= 4.6f && spread < 0.15f;
 }
 
 void hw_detect(void) {
@@ -60,11 +69,10 @@ void hw_detect(void) {
   // wrong - an older board with something of its own on PA27, a 2.5 with the
   // resistor missing - and the divider decides. Both open, both plausible,
   // or a battery too flat to tell: the ID pin stands.
-  float spread24 = 0, spread25 = 0;
-  v24 = batt_sample(PIN_V_READ_HW24, &spread24);
-  v25 = batt_sample(PIN_V_READ_HW25, &spread25);
-  const bool bat24 = looks_like_a_battery(v24, spread24);
-  const bool bat25 = looks_like_a_battery(v25, spread25);
+  v24 = batt_sample(PIN_V_READ_HW24, &spread24, &clip24);
+  v25 = batt_sample(PIN_V_READ_HW25, &spread25, &clip25);
+  const bool bat24 = looks_like_a_battery(v24, spread24, clip24);
+  const bool bat25 = looks_like_a_battery(v25, spread25, clip25);
   if (version == HW_2_5 && bat24 && !bat25) {
     version = HW_LEGACY;
     overruled = true;
@@ -90,8 +98,27 @@ uint8_t hw_rev_code(void) {
 uint8_t hw_id_code(void)    { return id_code; }
 bool hw_id_unknown(void)    { return unknown; }
 bool hw_id_overruled(void)  { return overruled; }
-float hw_divider_v24(void)  { return v24; }
-float hw_divider_v25(void)  { return v25; }
+float hw_divider_v(void)    { return version == HW_2_5 ? v25 : v24; }
+
+// "4.08 V (spread 210 mV)" or "4.19 V (full scale)". Integer formatting: the
+// build has no float printf.
+static int pin_text(char *out, size_t len, float v, float spread, bool clipped) {
+  const unsigned mv = (unsigned)(v * 1000.0f + 0.5f);
+  if (clipped) {
+    return snprintf(out, len, "%u.%02u V (full scale)", mv / 1000u, (mv % 1000u) / 10u);
+  }
+  const unsigned spread_mv = (unsigned)(spread * 1000.0f + 0.5f);
+  return snprintf(out, len, "%u.%02u V (spread %u mV)", mv / 1000u, (mv % 1000u) / 10u, spread_mv);
+}
+
+const char *hw_divider_text(void) {
+  static char text[80];
+  int n = snprintf(text, sizeof(text), "2.4 pin ");
+  n += pin_text(text + n, sizeof(text) - n, v24, spread24, clip24);
+  n += snprintf(text + n, sizeof(text) - n, ", 2.5 pin ");
+  pin_text(text + n, sizeof(text) - n, v25, spread25, clip25);
+  return text;
+}
 
 const char *hw_name(void) {
   switch (version) {

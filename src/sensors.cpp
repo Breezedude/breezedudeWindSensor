@@ -149,7 +149,7 @@ uint8_t battery_soc_percent(float v) {
 // as read_batt_perc() does it. hw_detect() uses it on both candidate pins to
 // see where the divider really is - the ID pin says which revision, the
 // divider shows where it sits, and the two have to agree.
-float batt_sample(uint8_t pin, float *spread){
+float batt_sample(uint8_t pin, float *spread, bool *clipped){
   analogReference(AR_INTERNAL1V0);
   analogReadResolution(10);
   pinMode(pin, INPUT);
@@ -169,6 +169,7 @@ float batt_sample(uint8_t pin, float *spread){
   pinDisable(pin);
   const float scale = 0.0040925f; // 100k/330k, 1.0 V reference - as below
   if(spread){ *spread = (float)(vmax - vmin) * scale; }
+  if(clipped){ *clipped = (vmax >= 1023u); }
   return ((float)sum / 7.0f) * scale;
 }
 

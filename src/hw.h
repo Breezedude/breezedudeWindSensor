@@ -39,8 +39,10 @@ const char *hw_name(void);     // for the boot log
 uint8_t hw_id_code(void);      // the raw two bits, PA28 high, PA27 low
 bool hw_id_unknown(void);      // a code this firmware has no pin map for
 bool hw_id_overruled(void);    // the divider contradicted the ID pin and won
-float hw_divider_v24(void);    // what the 2.4 divider pin read at boot, V
-float hw_divider_v25(void);    // what the 2.5 divider pin read at boot, V
+float hw_divider_v(void);       // what the divider pin in use read at boot, V
+// What both divider pins read at boot, for the log:
+// "2.4 pin 4.19 V (full scale), 2.5 pin 4.08 V (spread 20 mV)".
+const char *hw_divider_text(void);
 
 // The pins that differ between revisions.
 uint8_t hw_pin_v_read(void);

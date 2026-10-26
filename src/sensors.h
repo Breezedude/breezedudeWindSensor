@@ -121,8 +121,9 @@ void set_sensor_power_override(int8_t mode);
 int8_t get_sensor_power_override();
 void read_batt_perc();
 // One sample of the battery divider on a given ADC pin, volts; the spread of
-// the seven readings in *spread. For hw_detect(), which has to find the pin.
-float batt_sample(uint8_t pin, float *spread);
+// the seven readings in *spread, and in *clipped whether any of them sat at
+// full scale. For hw_detect(), which has to find the pin.
+float batt_sample(uint8_t pin, float *spread, bool *clipped);
 void battery_update_power_state(float v);
 uint8_t battery_soc_percent(float v);
 float position_lat();
