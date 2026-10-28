@@ -48,6 +48,10 @@ void set_sensor_power_override(int8_t mode){
 
 int8_t get_sensor_power_override(){ return sensor_power_override; }
 
+// How long the brownout interrupt stays masked while the sensor supply comes
+// up, see switch_sensor_power().
+#define SENSOR_INRUSH_MS 20
+
 // File scope rather than a function static, so the sleep path can ask whether
 // it still makes sense to arm SERCOM0 for a sensor that has no supply.
 static bool current_power_state = false;
@@ -69,8 +73,28 @@ void switch_sensor_power(bool state){
   }
   if(state && !current_power_state){ // turn on
     current_power_state = true;
+    // Switching the sensor on charges its input capacitance through the
+    // P-FET at once, and that dips the supply far enough for BOD33 - whose
+    // handler then cut the sensor straight off again, on every attempt (seen
+    // on a 2.3 board with a WS80: "WS sensor power ON", "Sensor supply was
+    // cut by a brownout", gate back at 3.3 V). The brownout interrupt is
+    // masked while the sensor comes up; a dip that happens in that window is
+    // reported, and a real brownout after it is still caught. Only for the
+    // UART sensors, which stay powered: the Davis supply is switched for every
+    // direction reading and has no input capacitance worth the wait.
+    if(uses_uart){ SYSCTRL->INTENCLR.reg = SYSCTRL_INTENCLR_BOD33DET; }
     pinMode(PIN_PS_WS,OUTPUT);
     digitalWrite(PIN_PS_WS, 0);
+    if(uses_uart){
+      delay(SENSOR_INRUSH_MS);
+      const bool dipped = (SYSCTRL->INTFLAG.reg & SYSCTRL_INTFLAG_BOD33DET) != 0;
+      SYSCTRL->INTFLAG.reg = SYSCTRL_INTFLAG_BOD33DET;
+      NVIC_ClearPendingIRQ(SYSCTRL_IRQn);
+      SYSCTRL->INTENSET.reg = SYSCTRL_INTENSET_BOD33DET;
+      if(dipped){
+        log_w("Sensor switch-on dipped the supply below the brownout level\r\n");
+      }
+    }
     if(uses_uart){
       // Re-connect UART pins to SERCOM0 peripheral before the sensor can respond
       pinPeripheral(PIN_RX, PIO_SERCOM);
