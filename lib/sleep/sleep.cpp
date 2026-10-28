@@ -29,6 +29,8 @@ void setup_BOD33_interrupt() {
   NVIC_EnableIRQ(SYSCTRL_IRQn);
 }
 
+volatile bool bod33_sensor_cut = false;
+
 // Emergency brownout ISR.
 // Fires instead of a CPU reset when VDD falls below the BOD33 threshold.
 // Immediately isolates the UART TX pin (idles HIGH → leaks ~10 mA into the
@@ -51,6 +53,10 @@ extern "C" void SYSCTRL_Handler(void) {
     // Assert sensor power-off gate: PB03 = PIN_PS_WS (active-high → VCC off).
     PORT->Group[1].DIRSET.reg = (1u << 3);
     PORT->Group[1].OUTSET.reg = (1u << 3);
+    // switch_sensor_power() still believes the sensor is on and would ignore
+    // every request to switch it on again - the sensor stayed dark until the
+    // next reset. This tells it otherwise.
+    bod33_sensor_cut = true;
 
     // ISR returns normally. The CPU resumes after __WFI() in deepsleep() and
     // the main loop's UV path will enter 30-minute standby sleep cycles until

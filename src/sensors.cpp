@@ -56,6 +56,17 @@ bool sensor_power_is_on(){ return current_power_state; }
 
 void switch_sensor_power(bool state){
   const bool uses_uart = sensor_uses_uart();
+  if(bod33_sensor_cut){
+    // The brownout handler cut the supply and released the UART pins on its
+    // own. Bring the bookkeeping in line, so the request below is carried out
+    // instead of being taken for one that is already done.
+    bod33_sensor_cut = false;
+    if(current_power_state){
+      current_power_state = false;
+      if(uses_uart){ SENSOR_UART.end(); }
+      log_w("Sensor supply was cut by a brownout\r\n");
+    }
+  }
   if(state && !current_power_state){ // turn on
     current_power_state = true;
     pinMode(PIN_PS_WS,OUTPUT);

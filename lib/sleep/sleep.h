@@ -44,6 +44,9 @@ void wdt_reset();
 bool set_cpu_div(int divisor);
 
 void setup_BOD33_interrupt();
+// Set by the brownout handler when it cut the sensor supply behind the back of
+// switch_sensor_power() in src/sensors.cpp, which clears it.
+extern volatile bool bod33_sensor_cut;
 
 void attachInterruptWakeup(uint32_t pin, voidFuncPtr callback, uint32_t mode, bool en_rtc);
 void setup_PM(bool en_pulse_counter, bool en_rtc_counter);
