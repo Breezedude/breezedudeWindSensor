@@ -227,6 +227,14 @@ static bool verbose_from_usb = false;
 // console_line_pending().
 static uint32_t console_last_byte_ms = 0;
 static uint32_t console_line_start_ms = 0;  // first byte of the unfinished debug UART line
+static uint32_t console_wake_ms = 0;        // millis() of the last console wakeup
+static bool console_wake_hold = false;
+#define CONSOLE_WAKE_HOLD_MS 20
+
+void console_note_wakeup(){
+  console_wake_ms = millis();
+  console_wake_hold = true;
+}
 static int console_uart_co = 0;   // characters of an unfinished debug UART line
 
 #define CONSOLE_LINE_TIMEOUT_MS 100   // see console_line_pending()
@@ -270,7 +278,15 @@ static void read_console(Stream &stream, char *buffer, int &co, bool is_usb){
         // configuration change, and nothing happened. Commands take no value
         // worth typing, so a lone known command word counts as "=1".
         if(!run_bare_command(buffer, co)){
-          process_line(buffer, co, &apply_setting); // Line complete
+          if(memchr(buffer, '=', co) == nullptr){
+            // Neither a command nor KEY=VALUE: say so, with the line as it
+            // arrived. A word that lost its first letter on the way ("TATUS")
+            // used to vanish without a trace.
+            buffer[co] = '\0';
+            log_w("Unknown command: "); log_w(buffer); log_w("\r\n");
+          } else {
+            process_line(buffer, co, &apply_setting); // Line complete
+          }
         }
       }
       if(settings.verbose_usb != verbose_before){
@@ -316,6 +332,14 @@ void read_serial_cmd(){
 // ending a line - a noisy RX line - cannot hold it longer than
 // CONSOLE_LINE_MAX_MS from the line's first byte.
 bool console_line_pending(){
+  // Right after a console wakeup the byte whose start bit woke the station is
+  // still on the wire, and nothing is in the buffer yet. This used to be a
+  // later sleep_allowed, which the scheduler overwrote on its next pass -
+  // measured: still "awake 0 ms" after a console wakeup.
+  if(console_wake_hold){
+    if((millis() - console_wake_ms) < CONSOLE_WAKE_HOLD_MS) return true;
+    console_wake_hold = false;
+  }
   if(console_uart_co <= 0) return false;
   const uint32_t now = millis();
   return (now - console_last_byte_ms) < CONSOLE_LINE_TIMEOUT_MS &&

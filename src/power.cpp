@@ -301,10 +301,10 @@ void wakeup(){
   // until the radio reports TX done, see tx_send_in_progress().
   //
   // A console wakeup is the exception: the start bit that woke the station
-  // belongs to a byte that is still on the wire, so stay up long enough for it
-  // to arrive; console_line_pending() then holds the loop for the rest of the
-  // line.
-  sleep_allowed = (last_wake_source == WAKEUP_CONSOLE) ? time() + 5 : time();
+  // belongs to a byte that is still on the wire. console_line_pending() holds
+  // the loop until it and the rest of the line are in.
+  sleep_allowed = time();
+  if(last_wake_source == WAKEUP_CONSOLE){ console_note_wakeup(); }
 }
 
 // Wake reasons that end a sleep window. Any other wakeup (a LoRa DIO edge, a
