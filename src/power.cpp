@@ -72,7 +72,12 @@ bool usb_host_connected(){
   // was gone - measured 8 mA instead of the normal sleep. A host that suspends
   // the bus itself (a sleeping PC) now lets the station go to low power as
   // well, which is what it should do then.
-  return TinyUSBDevice.mounted() && !TinyUSBDevice.suspended();
+  //
+  // usb_connected is the second, independent opinion: handle_usb_link_watchdog()
+  // clears it 1.5 s after the frame number stopped moving. TinyUSB only marks
+  // the device suspended after it saw a suspend interrupt, and with the data
+  // lines left floating by a pulled cable a stray resume can clear that again.
+  return usb_connected && TinyUSBDevice.mounted() && !TinyUSBDevice.suspended();
 }
 
 static bool keep_usb_active_during_sleep(){
