@@ -535,15 +535,20 @@ void go_sleep(){
         res = read_windnerd();
       }
       
-      if(is_wsxx() && res == RESP_COMPLETE){ // if RESP_COMPLETE, we received a data block, so it is ok to sleep for ~ 4 seconds without listening to serial data
+      // A complete block: nothing is coming from the sensor until shortly
+      // before the next one, so sleep without listening to it - noise on the
+      // sensor line cannot wake the station in that time. When the next block
+      // is due is measured from the blocks themselves, see
+      // wsxx_sleep_before_next_block_ms().
+      if(is_wsxx() && res == RESP_COMPLETE){
         int32_t t = next_tx_time - time();
         if(t > 0){
-          if(settings.sensor_type == s_WS85){      rtc_sleep_cfg( min(t,8350)); }
-          if(settings.sensor_type == s_WS80){      rtc_sleep_cfg( min(t,4685)); } // sleep 4750ms if tts is still longer, or less if it less
-          //log_i("will sleep1: ", actual_sleep); 
-          //log_flush();
-          sleep(false); // sleep without UART interrupt
-          wakeup_source = WAKEUP_NONE;
+          const uint32_t s = min((uint32_t)t, wsxx_sleep_before_next_block_ms());
+          if(s > 5u){
+            rtc_sleep_cfg(s);
+            sleep(false); // sleep without UART interrupt
+            wakeup_source = WAKEUP_NONE;
+          }
         }
       }
 

@@ -133,6 +133,10 @@ void baro_start_reading();
 void forward_analog_test_serial();
 bool set_value(char* key,  char* value);
 int read_wsxx();
+// How long the station may sleep without listening to a WS80/WS85 text
+// sensor after a complete block: until shortly before the next block is due,
+// from the block period measured by read_wsxx(). 0 when that is already now.
+uint32_t wsxx_sleep_before_next_block_ms();
 int read_ws85_uart();
 
 bool init_baro();

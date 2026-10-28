@@ -720,65 +720,157 @@ bool set_value(char* key,  char* value){
 // RESP_COMPLETE 2: data complete
 // RESP_ERROR 1: error
 // RESP_OK 0: data ok, continue
+// The WS80/WS85 text block, read in pieces: one call per wakeup, each reading
+// until the line goes quiet for a moment.
+//
+// The parse state lives across calls. It used to be local, so a block that
+// paused for longer than the read window - the sensor reads its SHT30 and
+// Si1132 in the middle of a block - was lost from the pause on: the next call
+// looked for the block header again, which had long gone by, and the station
+// went without data until the next block. A block that stays silent for
+// WSXX_BLOCK_GAP_MS is given up on, so a broken one cannot leave stale lines
+// behind for the next.
+//
+// A block starts at its "FreqSel" (or "WH80"/"WS85") header. A station that
+// woke too late for the header also accepts the "WindDir" line as the start,
+// so a slightly late wakeup still yields wind, temperature and humidity. Such
+// a block does not count for the period below, its start time is not known.
+//
+// The time a block started is what the next wakeup is planned from, see
+// wsxx_sleep_before_next_block_ms(). It used to be planned from the moment
+// the block had been parsed, which moves with the length of the block, the
+// log output and the transmission that may follow - and the sensor's own clock
+// drifts with temperature on top. The period is now measured.
+#define WSXX_BLOCK_GAP_MS   300u  // silence that ends an unfinished block
+#define WSXX_WAKE_GUARD_MS   60u  // wake this long before the next block is due
+
+static struct {
+  bool     found;        // inside a block
+  bool     late_entry;   // block entered at WindDir, start time unknown
+  int      line_len;
+  int      eq_count;
+  int      comp1_pos, comp2_pos, comp3_pos;
+  uint32_t last_byte_ms; // time() of the last byte, for WSXX_BLOCK_GAP_MS
+  uint32_t start_ms;     // time() the block's header was seen
+} wsxx;
+
+static uint32_t wsxx_period_ms = 0;     // measured block period, 0 until known
+static uint32_t wsxx_last_start_ms = 0; // start of the last complete block with a known start
+
+static void wsxx_reset_block(){
+  wsxx.found = false;
+  wsxx.late_entry = false;
+  wsxx.line_len = 0;
+  wsxx.eq_count = 0;
+  wsxx.comp1_pos = wsxx.comp2_pos = wsxx.comp3_pos = 0;
+}
+
+// A complete block with a known start: learn the period from it. A gap that is
+// about a multiple of the period (blocks missed in between) only moves the
+// reference; one that fits nothing starts the learning over.
+static void wsxx_note_block_start(uint32_t start_ms){
+  if(wsxx_last_start_ms){
+    const uint32_t gap = start_ms - wsxx_last_start_ms;
+    if(!wsxx_period_ms){
+      if(gap >= 3000u && gap <= 10000u){
+        wsxx_period_ms = gap;
+        log_d("WSXX block period [ms]: ", wsxx_period_ms);
+      }
+    } else {
+      const uint32_t k = (gap + wsxx_period_ms / 2u) / wsxx_period_ms;   // periods spanned
+      if(k == 1u && gap > wsxx_period_ms - wsxx_period_ms / 10u && gap < wsxx_period_ms + wsxx_period_ms / 10u){
+        wsxx_period_ms = (wsxx_period_ms * 7u + gap) / 8u;               // follow the drift slowly
+      } else if(k < 1u || k > 4u){
+        wsxx_period_ms = 0;                                              // something changed, learn again
+      }
+    }
+  }
+  wsxx_last_start_ms = start_ms;
+}
+
+uint32_t wsxx_sleep_before_next_block_ms(){
+  if(wsxx_period_ms && wsxx_last_start_ms){
+    const int32_t due = (int32_t)(wsxx_last_start_ms + wsxx_period_ms - WSXX_WAKE_GUARD_MS - time());
+    return due > 0 ? (uint32_t)due : 0u;
+  }
+  // Not measured yet: the fixed windows this used to be, counted from now.
+  return (settings.sensor_type == s_WS85) ? 8350u : 4685u;
+}
+
 int read_wsxx(){
   constexpr int WSXX_LINE_BUFFER_SIZE = 128; // size of one parsed line
   static char line_buffer[WSXX_LINE_BUFFER_SIZE];
-  int line_len = 0;
-  bool found_data = false;
-  int eq_count = 0;
   uint32_t last_data = micros();
   static uint32_t serial_wait = 1200;
   uint32_t wait_budget = serial_wait;
-  bool parsed_complete_block = false;
 
   // Keep WS80 polling windows short to avoid long active CPU time.
   if(settings.sensor_type == s_WS80 && wait_budget > 500){
     wait_budget = 500;
   }
 
-// Compare String 1
+  // A block that went quiet in the middle is not continued much later.
+  if((wsxx.found || wsxx.line_len) && (time() - wsxx.last_byte_ms) > WSXX_BLOCK_GAP_MS){
+    wsxx_reset_block();
+  }
+
   const char comp1_arr[] = "FreqSel";
   const int comp1_len = sizeof(comp1_arr) - 1;
-  int comp1_pos = 0;
-
-// Compare String 2
   const char* comp2_arr = (settings.sensor_type == s_WS85) ? "WS85" : "WH80";
   const int comp2_len = 4;
-  int comp2_pos = 0;
-
-  //uint32_t micros_start = micros();
-
+  const char comp3_arr[] = "WindDir";
+  const int comp3_len = sizeof(comp3_arr) - 1;
 
   while(micros()- last_data < wait_budget){
     while (SENSOR_UART.available()){
-      //led_error(1); // blink LED, for debugging
       const char c = (char)SENSOR_UART.read();
-      //DEBUGSER.write(c);
       if(c >= 127){
         continue; // skip garbage
       }
+      wsxx.last_byte_ms = time();
 
-      if(c == '=') {eq_count++;} else {eq_count =0;}
+      if(c == '=') {wsxx.eq_count++;} else {wsxx.eq_count = 0;}
 
-      if(c == comp1_arr[comp1_pos]) {comp1_pos++;}
-      else {comp1_pos = (c == comp1_arr[0]) ? 1 : 0;}
+      if(c == comp1_arr[wsxx.comp1_pos]) {wsxx.comp1_pos++;}
+      else {wsxx.comp1_pos = (c == comp1_arr[0]) ? 1 : 0;}
 
-      if(c == comp2_arr[comp2_pos]) {comp2_pos++;}
-      else {comp2_pos = (c == comp2_arr[0]) ? 1 : 0;}
+      if(c == comp2_arr[wsxx.comp2_pos]) {wsxx.comp2_pos++;}
+      else {wsxx.comp2_pos = (c == comp2_arr[0]) ? 1 : 0;}
 
-      if((comp1_pos == comp1_len) || (comp2_pos == comp2_len)){ // if we found pattern, increase wait time to get full block
-        found_data = true;
-        if(settings.sensor_type == s_WS80){ wait_budget = 500;}
-        else if(settings.sensor_type == s_WS85){ wait_budget = 3800;}
+      if(c == comp3_arr[wsxx.comp3_pos]) {wsxx.comp3_pos++;}
+      else {wsxx.comp3_pos = (c == comp3_arr[0]) ? 1 : 0;}
+
+      if(!wsxx.found){
+        if(wsxx.comp1_pos == comp1_len || wsxx.comp2_pos == comp2_len){
+          wsxx.found = true;
+          wsxx.start_ms = wsxx.last_byte_ms;
+          wsxx.line_len = 0;
+        } else if(wsxx.comp3_pos == comp3_len){
+          // Late: the header has gone by. The marker itself is the start of
+          // the WindDir line, so it goes into the line buffer.
+          wsxx.found = true;
+          wsxx.late_entry = true;
+          memcpy(line_buffer, comp3_arr, comp3_len);
+          wsxx.line_len = comp3_len;
+          wsxx.comp3_pos = 0;
+          continue;
+        }
+        if(wsxx.found){
+          if(settings.sensor_type == s_WS80){ wait_budget = 500;}
+          else if(settings.sensor_type == s_WS85){ wait_budget = 3800;}
+        }
       }
+      if(wsxx.comp1_pos == comp1_len) wsxx.comp1_pos = 0;
+      if(wsxx.comp2_pos == comp2_len) wsxx.comp2_pos = 0;
+      if(wsxx.comp3_pos == comp3_len) wsxx.comp3_pos = 0;
 
       last_data = micros();
 
-      if(found_data && eq_count > 35) { // block ends with 37x =, if detected, lower wait time
+      if(wsxx.found && wsxx.eq_count > 35) { // block ends with 37x =, if detected, lower wait time
         wait_budget = 1;
       }
 
-      if(!found_data){
+      if(!wsxx.found){
         continue;
       }
 
@@ -787,39 +879,39 @@ int read_wsxx(){
       }
 
       if(c == '\n'){
-        if(line_len > 0){
+        if(wsxx.line_len > 0){
           if(usb_connected && settings.verbose_usb){
             // The sensor's own output, passed through for debugging. The line
             // is stored without its line end, so one is added - without it
             // every block came out as a single run-on line.
-            Serial.write(line_buffer, line_len);
+            Serial.write(line_buffer, wsxx.line_len);
             Serial.write("\r\n");
           }
-          if(process_line(line_buffer, line_len, &set_value)){
+          if(process_line(line_buffer, wsxx.line_len, &set_value)){
             serial_wait = 120; // decrease value if one valid measuremnt was fount to dertimne if it is ws80 or ws85
-            parsed_complete_block = true;
+            if(!wsxx.late_entry){
+              wsxx_note_block_start(wsxx.start_ms);
+            }
+            wsxx_reset_block();
             return RESP_COMPLETE;
           }
-          line_len = 0;
+          wsxx.line_len = 0;
         }
         continue;
       }
 
-      if(line_len < (WSXX_LINE_BUFFER_SIZE - 1)){
-        line_buffer[line_len++] = c;
+      if(wsxx.line_len < (WSXX_LINE_BUFFER_SIZE - 1)){
+        line_buffer[wsxx.line_len++] = c;
       } else {
         // Drop overlong line to avoid carrying stale partial data.
-        line_len = 0;
+        wsxx.line_len = 0;
       }
     }
-    //led_error(0);
   }
 
-  // Do not carry a very short timeout into the next wake cycle.
-  // If we did not complete a block, fall back to a safe default window.
-  if(!parsed_complete_block){
-    serial_wait = 1200;
-  }
+  // Do not carry a very short timeout into the next wake cycle. The block, if
+  // one was being read, carries on with the next call.
+  serial_wait = 1200;
   return RESP_OK;
 }
 
