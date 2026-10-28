@@ -226,11 +226,22 @@ static bool verbose_from_usb = false;
 // millis() of the last byte received on either console, for
 // console_line_pending().
 static uint32_t console_last_byte_ms = 0;
+static uint32_t console_line_start_ms = 0;  // first byte of the unfinished debug UART line
 static int console_uart_co = 0;   // characters of an unfinished debug UART line
 
+#define CONSOLE_LINE_TIMEOUT_MS 100   // see console_line_pending()
+#define CONSOLE_LINE_MAX_MS     1000
+
 static void read_console(Stream &stream, char *buffer, int &co, bool is_usb){
+  // The rest of a debug UART line that was given up on is dropped, so the next
+  // command does not get glued to it.
+  if(!is_usb && co > 0 && stream.available() &&
+     (millis() - console_last_byte_ms) >= CONSOLE_LINE_TIMEOUT_MS){
+    co = 0;
+  }
   while (stream.available()){
     console_last_byte_ms = millis();
+    if(!is_usb && co == 0){ console_line_start_ms = console_last_byte_ms; }
     if(is_usb){
       usb_connected = true;
       usb_last_activity_ms = millis();
@@ -301,10 +312,14 @@ void read_serial_cmd(){
 // now stays awake while a line is coming in, but not for ever: a line that
 // stops half way (noise, a dropped cable) is given up after
 // CONSOLE_LINE_TIMEOUT_MS and the station sleeps; the rest of it, if it comes,
-// is picked up on the next wakeup.
-#define CONSOLE_LINE_TIMEOUT_MS 100
+// is picked up on the next wakeup. Bytes that keep trickling in without ever
+// ending a line - a noisy RX line - cannot hold it longer than
+// CONSOLE_LINE_MAX_MS from the line's first byte.
 bool console_line_pending(){
-  return console_uart_co > 0 && (millis() - console_last_byte_ms) < CONSOLE_LINE_TIMEOUT_MS;
+  if(console_uart_co <= 0) return false;
+  const uint32_t now = millis();
+  return (now - console_last_byte_ms) < CONSOLE_LINE_TIMEOUT_MS &&
+         (now - console_line_start_ms) < CONSOLE_LINE_MAX_MS;
 }
 
 void log_v_hex_dump(const uint8_t *data, size_t len){
