@@ -166,6 +166,8 @@ bool create_versionfile(const char *filename);
 void handle_usb_link_watchdog();
 bool parse_file(char * filename);
 void read_serial_cmd();
+// True while a debug UART command line has started but not ended yet.
+bool console_line_pending();
 void log_v_hex_dump(const uint8_t *data, size_t len);
 void log_reset_cause();
 bool format_flash();

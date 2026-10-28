@@ -391,7 +391,7 @@ loopcounter++;
   }
 
 // Check if everything is done --> sleep
-  if(!state.analog_test_mode && !tx_send_in_progress() && !ota_lora_busy() && !boot_usb_hold_active && sleep_allowed && time_reached(sleep_allowed) && (time() > 2500)){ // allow sleep after 2500 ms to get a chance to detect USB / CDC commands
+  if(!state.analog_test_mode && !tx_send_in_progress() && !ota_lora_busy() && !boot_usb_hold_active && !console_line_pending() && sleep_allowed && time_reached(sleep_allowed) && (time() > 2500)){ // allow sleep after 2500 ms to get a chance to detect USB / CDC commands
     go_sleep();
   }
 

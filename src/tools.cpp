@@ -223,8 +223,14 @@ static bool run_bare_command(char *line, int len);
 // stays on.
 static bool verbose_from_usb = false;
 
+// millis() of the last byte received on either console, for
+// console_line_pending().
+static uint32_t console_last_byte_ms = 0;
+static int console_uart_co = 0;   // characters of an unfinished debug UART line
+
 static void read_console(Stream &stream, char *buffer, int &co, bool is_usb){
   while (stream.available()){
+    console_last_byte_ms = millis();
     if(is_usb){
       usb_connected = true;
       usb_last_activity_ms = millis();
@@ -284,9 +290,21 @@ void read_serial_cmd(){
   // other reason - bounded by the send interval. Senders must retry.
   if(debug_enabled()){
     static char uart_buffer[CMDBUFFERSIZE];
-    static int uart_co = 0;
-    read_console(DEBUGSER, uart_buffer, uart_co, false);
+    read_console(DEBUGSER, uart_buffer, console_uart_co, false);
   }
+}
+
+// A debug UART line that has begun but not ended. With UART_WAKE=1 the first
+// start bit wakes the station, which then had nothing left to do and slept
+// again within a millisecond - before the rest of "STATUS" had arrived, which
+// at 115200 baud takes about 0.7 ms. The command was never answered. The loop
+// now stays awake while a line is coming in, but not for ever: a line that
+// stops half way (noise, a dropped cable) is given up after
+// CONSOLE_LINE_TIMEOUT_MS and the station sleeps; the rest of it, if it comes,
+// is picked up on the next wakeup.
+#define CONSOLE_LINE_TIMEOUT_MS 100
+bool console_line_pending(){
+  return console_uart_co > 0 && (millis() - console_last_byte_ms) < CONSOLE_LINE_TIMEOUT_MS;
 }
 
 void log_v_hex_dump(const uint8_t *data, size_t len){

@@ -299,7 +299,12 @@ void wakeup(){
   // barometer conversion had to be waited for after every wakeup; now the loop
   // sleeps as soon as nothing is left to do. A transmission still keeps it awake
   // until the radio reports TX done, see tx_send_in_progress().
-  sleep_allowed = time();
+  //
+  // A console wakeup is the exception: the start bit that woke the station
+  // belongs to a byte that is still on the wire, so stay up long enough for it
+  // to arrive; console_line_pending() then holds the loop for the rest of the
+  // line.
+  sleep_allowed = (last_wake_source == WAKEUP_CONSOLE) ? time() + 5 : time();
 }
 
 // Wake reasons that end a sleep window. Any other wakeup (a LoRa DIO edge, a
