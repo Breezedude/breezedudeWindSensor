@@ -221,7 +221,7 @@ static void print_data(){
     } else if(settings.use_baro){
       log_v("Baro: no reading\r\n");
     }
-    if(is_wsxx()) {
+    if(is_wsxx() && settings.sensor_type != s_WS80) { // a WS80 block is read only up to Humi
       log_v("VCC: ", sensor.wsxx_vcc);
     }
     log_v("\r\n");

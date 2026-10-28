@@ -674,24 +674,42 @@ void forward_analog_test_serial(){
 }
 
 // Set measurement value read from WS80 UART
+//
+// Returns true once the block holds everything the station uses, which ends
+// the read and lets the station sleep until shortly before the next block.
+// For a WS80 that is the Humi line: what follows it - light, UV, the missing
+// pressure sensor and the sensor's own supply voltage - is not sent anywhere,
+// and reading it kept the CPU awake for about a fifth of every block. A WS85
+// has no Humi line and still ends at BatVoltage. The Temperature line of the
+// same block is what says it is a WS80, so a WS85 that is still being
+// auto-detected is never cut short.
+static bool ws80_block_seen = false;
+
+static bool wsxx_block_complete(){
+  ws80_block_seen = false;
+  sensor.last_data = time();
+  log_d("WSXX data complete\r\n");
+  return true;
+}
+
 bool set_value(char* key,  char* value){
   //printf("%s = %s\r\n",key, value);
 
   if(strcmp(key,"WindDir")==0) {sensor.wind_dir_raw = atoi(value); add_wind_history_dir(sensor.wind_dir_raw); return false;}
   if(strcmp(key,"WindSpeed")==0) {sensor.wind_speed = parse_decimal_fast(value)*3.6f; add_wind_history_wind(sensor.wind_speed); log_v("WindSpeed: ", sensor.wind_speed); return false;}
   if(strcmp(key,"WindGust")==0) {sensor.wind_gust = parse_decimal_fast(value)*3.6f; add_wind_history_gust(sensor.wind_gust); log_v("WindGust: ", sensor.wind_gust); return false;}
-  if(strcmp(key,"Temperature")==0) {sensor.temperature = parse_decimal_fast(value); if(settings.sensor_type != s_WS80){settings.sensor_type = s_WS80; log_i("Detected WS80\n");} return false;} // WS80 only - autodetection
+  if(strcmp(key,"Temperature")==0) {sensor.temperature = parse_decimal_fast(value); ws80_block_seen = true; if(settings.sensor_type != s_WS80){settings.sensor_type = s_WS80; log_i("Detected WS80\n");} return false;} // WS80 only - autodetection
   if(strcmp(key,"GXTS04Temp")==0) {sensor.temperature = parse_decimal_fast(value);  if(settings.sensor_type != s_WS85){settings.sensor_type = s_WS85; log_i("Detected WS85\n");} return false;} // WS85 only
-  if(strcmp(key,"Humi")==0) {sensor.humidity = atoi(value); return false;}
+  if(strcmp(key,"Humi")==0) {
+    sensor.humidity = atoi(value);
+    return ws80_block_seen ? wsxx_block_complete() : false;
+  }
   if(strcmp(key,"Light")==0) {sensor.light_lux = atoi(value); return false;}
   if(strcmp(key,"UV_Value")==0) {sensor.uv_level = parse_decimal_fast(value); return false;}
   if(strcmp(key,"CapVoltage")==0) {sensor.cap_voltage = parse_decimal_fast(value); return false;} // WS85
   if(strcmp(key,"BatVoltage")==0) {
-    sensor.wsxx_vcc = parse_decimal_fast(value); 
-    sensor.last_data =time();
-    
-    log_d("WSXX data complete\r\n");
-    return true;
+    sensor.wsxx_vcc = parse_decimal_fast(value);
+    return wsxx_block_complete();
   }
 
   //log_i(" ->not_found\n");
