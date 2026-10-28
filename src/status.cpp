@@ -82,6 +82,11 @@ static void json_escape(char *dst, size_t dst_len, const char *src){
   dst[out] = '\0';
 }
 
+// Set by status_print_json_window() for the one document it prints.
+static bool duty_window_given = false;
+static uint32_t duty_window_awake_ms = 0;
+static uint32_t duty_window_total_ms = 0;
+
 size_t status_build_json(char *out, size_t out_len){
   if(out == nullptr || out_len < 32u){
     return 0;
@@ -103,7 +108,12 @@ size_t status_build_json(char *out, size_t out_len){
   // Duty figures in per mille of the time since the last HWInfo report took
   // them; the report itself only carries a class of the awake duty.
   uint32_t awake_ms = 0, awake_total_ms = 0, rx_ms = 0, rx_total_ms = 0;
-  power_duty_get(&awake_ms, &awake_total_ms);
+  if(duty_window_given){
+    awake_ms = duty_window_awake_ms;
+    awake_total_ms = duty_window_total_ms;
+  } else {
+    power_duty_get(&awake_ms, &awake_total_ms);
+  }
   radio_rx_duty_get(&rx_ms, &rx_total_ms);
   const unsigned long awake_pm = awake_total_ms ? (unsigned long)(((uint64_t)awake_ms * 1000u) / awake_total_ms) : 0UL;
   const unsigned long rx_pm    = rx_total_ms    ? (unsigned long)(((uint64_t)rx_ms    * 1000u) / rx_total_ms)    : 0UL;
@@ -198,6 +208,41 @@ size_t status_build_json(char *out, size_t out_len){
     return 0;
   }
   return (size_t)n;
+}
+
+void status_print_json_window(uint32_t awake_ms, uint32_t total_ms){
+  duty_window_given = true;
+  duty_window_awake_ms = awake_ms;
+  duty_window_total_ms = total_ms;
+  status_print_json();
+  duty_window_given = false;
+}
+
+// STATUS_INTERVAL=n: the document every n minutes, for bench tests that read
+// the awake share or the battery over hours without anyone sending STATUS -
+// the debug UART console cannot be relied on to receive it. Printed when the
+// station is up anyway, it adds no wakeup; its awake_pm covers exactly the
+// time since the previous line. Off by default.
+void status_periodic(){
+  static uint32_t last = 0;
+  if(!settings.status_interval_min){
+    last = 0;
+    return;
+  }
+  const uint32_t now = time();
+  if(!last){
+    last = now;
+    uint32_t a, t;
+    power_status_window_take(&a, &t);   // start the first window here
+    return;
+  }
+  if((now - last) < (uint32_t)settings.status_interval_min * 60000UL){
+    return;
+  }
+  last = now;
+  uint32_t awake_ms, total_ms;
+  power_status_window_take(&awake_ms, &total_ms);
+  status_print_json_window(awake_ms, total_ms);
 }
 
 void status_print_json(){

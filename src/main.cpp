@@ -10,6 +10,7 @@
 #include "sleep.h"
 #include "display.h"
 #include "tools.h"
+#include "status.h"
 #include "radio.h"
 #include "ota_ab.h"
 #include "ota_lora.h"
@@ -324,6 +325,7 @@ loopcounter++;
   // normal sleep/wakeup flow without requiring a reboot.
   read_serial_cmd();
   handle_usb_link_watchdog();
+  status_periodic();
 
   // Hard-stop normal operation until a valid user configuration is present.
   if(!settings_ok){

@@ -705,6 +705,7 @@ SETTING_FN(set_protection_board, settings.use_protection_board    = atoi(v))
 SETTING_FN(set_debug,       log_set_debug(atoi(v)))
 SETTING_FN(set_errors,      log_set_error(atoi(v)))
 SETTING_FN(set_usb_verbose, settings.verbose_usb   = atoi(v))
+SETTING_FN(set_status_interval, settings.status_interval_min = (uint16_t)constrain(atoi(v), 0, 1440))
 SETTING_FN(set_uart_wake,   settings.uart_wake     = atoi(v))
 SETTING_FN(set_testmode,    settings.testmode      = atoi(v))
 SETTING_FN(set_wdt,         settings.use_wdt       = atoi(v))
@@ -898,6 +899,7 @@ static const SettingEntry setting_table[] = {
   {"DEBUG",                      set_debug,       SETTING_CFG},
   {"ERRORS",                     set_errors,      SETTING_CFG},
   {"USB_VERBOSE",                set_usb_verbose, SETTING_CFG},
+  {"STATUS_INTERVAL",            set_status_interval, SETTING_CFG}, // minutes, 0 = off
   {"UART_WAKE",                  set_uart_wake,   SETTING_CFG},
   {"TESTMODE",                   set_testmode,    SETTING_CFG},
   // A command, not a setting: it is not stored and does not appear in a DUMP.

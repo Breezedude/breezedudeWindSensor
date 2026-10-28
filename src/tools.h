@@ -56,6 +56,7 @@ typedef struct {
   bool repeater_sched = false;  // on top of it: listen only around the packets that are expected
   uint32_t repeater_scan_interval = 3600000; // ms from one scan window to the next
   uint32_t repeater_scan_duration = 360000;  // ms a scan window lasts, 0 switches scanning off
+  uint16_t status_interval_min = 0;  // STATUS line on the log every n minutes, 0 = off (bench tests)
 
   uint32_t broadcast_interval_weather = BROADCAST_INTERVAL;
   uint32_t broadcast_interval_name = 1000*60*5; // 5 min

@@ -30,6 +30,16 @@ static uint32_t wake_started_ms = 0;   // millis() at wakeup(), for the awake ti
 // measured anyway; time spent before the first sleep does not count.
 static uint32_t duty_awake_ms = 0;
 static uint32_t duty_total_ms = 0;
+// The same, counted from one periodic STATUS line to the next, so that line's
+// awake_pm covers exactly its own interval - see status_periodic().
+static uint32_t status_awake_ms = 0;
+static uint32_t status_total_ms = 0;
+void power_status_window_take(uint32_t *awake_ms, uint32_t *total_ms){
+  *awake_ms = status_awake_ms;
+  *total_ms = status_total_ms;
+  status_awake_ms = 0;
+  status_total_ms = 0;
+}
 void power_duty_get(uint32_t *awake_ms, uint32_t *total_ms){
   *awake_ms = duty_awake_ms;
   *total_ms = duty_total_ms;
@@ -248,6 +258,8 @@ uint32_t sleep(bool enable_uart_interrupt){
   sleeptime_cum += (t > awake_ms) ? t - awake_ms : 0;
   duty_awake_ms += awake_ms;
   duty_total_ms += t;
+  status_awake_ms += awake_ms;
+  status_total_ms += t;
 
   // Disable Debug uart again
   //if(debug_enabled()){

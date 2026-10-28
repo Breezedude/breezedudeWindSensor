@@ -40,6 +40,7 @@ uint8_t reset_history_count() { return g_resets; }
 uint8_t reset_history_last_cause() { return g_reset_last; }
 static uint32_t g_awake_ms = 0, g_awake_total = 0, g_rx_ms = 0, g_rx_total = 0;
 void power_duty_get(uint32_t *a, uint32_t *t) { *a = g_awake_ms; *t = g_awake_total; }
+void power_status_window_take(uint32_t *a, uint32_t *t) { *a = 0; *t = 0; }
 void radio_rx_duty_get(uint32_t *r, uint32_t *t) { *r = g_rx_ms; *t = g_rx_total; }
 static bool g_noise = false;
 static int16_t g_noise_min = 0, g_noise_avg = 0, g_noise_max = 0;

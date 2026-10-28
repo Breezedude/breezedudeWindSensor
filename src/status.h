@@ -19,3 +19,8 @@ size_t status_build_json(char *out, size_t out_len);
 
 // Builds and prints it, followed by CRLF.
 void status_print_json();
+// The same with awake_pm taken from the given window instead of the one since
+// the last HWInfo report.
+void status_print_json_window(uint32_t awake_ms, uint32_t total_ms);
+// Prints the document every STATUS_INTERVAL minutes; call from the main loop.
+void status_periodic();

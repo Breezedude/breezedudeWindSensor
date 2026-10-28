@@ -12,6 +12,7 @@ typedef enum {
 typedef struct {
   char station_name[STATION_NAME_LEN];
   Sensor sensor_type;
+  uint16_t status_interval_min = 0;
 } Settings;
 
 typedef struct {
