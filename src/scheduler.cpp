@@ -254,8 +254,14 @@ static TxAttemptResult send_msg_weather(){
   
   WindSample current_wind = get_wind_from_hist(settings.wind_age);
   if(!current_wind.valid){
-    log_w("No wind sample in the last [s]: ", settings.wind_age / 1000u);
-    return TX_ATTEMPT_NONE;
+    if(!settings.testmode){
+      log_w("No wind sample in the last [s]: ", settings.wind_age / 1000u);
+      return TX_ATTEMPT_NONE;
+    }
+    // TESTMODE is for checking the radio coverage, usually without a sensor
+    // attached: the values below are replaced by the test values anyway.
+    current_wind.wind = 0;
+    current_wind.dir_raw = 0;
   }
   led_status(1);
   sensor.wind_gust = get_gust_from_hist(settings.gust_age);
