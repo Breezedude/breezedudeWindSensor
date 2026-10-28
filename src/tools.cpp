@@ -405,16 +405,18 @@ void handle_usb_link_watchdog(){
     return;
   }
 
-  const bool dtr = Serial.dtr();
+  // Frames are the evidence, not DTR: after the cable is pulled DTR keeps the
+  // last state the host set, and with it the link counted as connected for
+  // good - see usb_host_connected() in power.cpp.
   const bool fsm_disconnected = usb_fsm_disconnected();
   const bool frame_progress = usb_frame_changed();
 
-  if(frame_progress || dtr) {
+  if(frame_progress) {
     usb_last_activity_ms = now;
   }
 
   const bool recent_activity = usb_last_activity_ms && ((now - usb_last_activity_ms) <= 1500UL);
-  bool connected = (dtr || recent_activity) && !fsm_disconnected;
+  bool connected = recent_activity && !fsm_disconnected && !TinyUSBDevice.suspended();
 
   if(usb_detach_event && !usb_ignore_detach_event){
     connected = false;

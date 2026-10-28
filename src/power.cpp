@@ -63,9 +63,16 @@ void mark_uart_wakeup(){
 }
 
 bool usb_host_connected(){
-  // Use USB enumeration as primary signal. DTR remains a fallback for hosts
-  // that do not expose mount state reliably.
-  return TinyUSBDevice.mounted() || usb_connected || Serial.dtr();
+  // A host that is there sends a start-of-frame every millisecond; when the
+  // frames stop, TinyUSB reports the device suspended. That is the signal,
+  // because this board has no VBUS sensing: pulled without a reset, the USB
+  // stack never sees a disconnect, mounted() stays true and DTR keeps the last
+  // state the host set. Going by those, a station that had USB at boot kept
+  // the USB peripheral and the 48 MHz clock running for good once the cable
+  // was gone - measured 8 mA instead of the normal sleep. A host that suspends
+  // the bus itself (a sleeping PC) now lets the station go to low power as
+  // well, which is what it should do then.
+  return TinyUSBDevice.mounted() && !TinyUSBDevice.suspended();
 }
 
 static bool keep_usb_active_during_sleep(){
