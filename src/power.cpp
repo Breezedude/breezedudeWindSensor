@@ -371,7 +371,24 @@ void go_sleep(){
   if(first_sleep && !keep_usb){
     log_d("Disable USB\r\n");
     usb_ignore_detach_event = true;
-    USB->DEVICE.CTRLA.bit.ENABLE = 0;                   
+    // Quiet the USB interrupt before switching the peripheral off. A bus that
+    // was in use - a station that booted with the cable in and lost it later
+    // - leaves suspend/wakeup and endpoint flags behind, and a pending USB
+    // interrupt makes every __WFI() return at once: the station then ran its
+    // sleep loop at 48 MHz until the RTC fired, 7 mA instead of standby,
+    // while the log looked like normal RTC wakeups. A station that booted
+    // without USB never had a flag set, which is why only the unplug case
+    // showed it.
+    NVIC_DisableIRQ(USB_IRQn);
+    USB->DEVICE.INTENCLR.reg = USB_DEVICE_INTENCLR_MASK;
+    USB->DEVICE.INTFLAG.reg = USB_DEVICE_INTFLAG_MASK;
+    for(uint8_t ep = 0; ep < 8; ep++){
+      USB->DEVICE.DeviceEndpoint[ep].EPINTENCLR.reg = USB_DEVICE_EPINTENCLR_MASK;
+      USB->DEVICE.DeviceEndpoint[ep].EPINTFLAG.reg = USB_DEVICE_EPINTFLAG_MASK;
+    }
+    NVIC_ClearPendingIRQ(USB_IRQn);
+    USB->DEVICE.CTRLB.bit.DETACH = 1;   // pull-up on D+ off, the host side sees nobody
+    USB->DEVICE.CTRLA.bit.ENABLE = 0;
     while(USB->DEVICE.SYNCBUSY.bit.ENABLE){};
     first_sleep = false;
     usb_connected = false;
