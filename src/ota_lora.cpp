@@ -10,6 +10,7 @@
 #include "power.h"
 #include "hw.h"
 #include "fanet_sched.h"
+#include "status.h"
 #include <ArduinoUniqueID.h>
 #include <uECC.h>
 
@@ -1165,6 +1166,14 @@ void ota_lora_begin() {
 static uint8_t awake_duty_class() {
   uint32_t awake_ms = 0, total_ms = 0;
   power_duty_get(&awake_ms, &total_ms);
+  // The STATUS document once per report, on the debug log: its awake_pm is
+  // read here right before the counters start over, so it always covers a
+  // whole report period - the same figure the class below is made from. A
+  // station on the bench then shows its awake share without anyone having to
+  // send STATUS at the right moment. Costs one line of log every ten minutes.
+  if(debug_enabled()){
+    status_print_json();
+  }
   power_duty_reset();
   if(!total_ms) return HWINFO_AWAKE_BELOW_1_PCT;
   const uint32_t permille = (uint32_t)(((uint64_t)awake_ms * 1000u) / total_ms);
