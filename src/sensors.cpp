@@ -771,7 +771,11 @@ int read_wsxx(){
       if(c == '\n'){
         if(line_len > 0){
           if(usb_connected && settings.verbose_usb){
+            // The sensor's own output, passed through for debugging. The line
+            // is stored without its line end, so one is added - without it
+            // every block came out as a single run-on line.
             Serial.write(line_buffer, line_len);
+            Serial.write("\r\n");
           }
           if(process_line(line_buffer, line_len, &set_value)){
             serial_wait = 120; // decrease value if one valid measuremnt was fount to dertimne if it is ws80 or ws85
