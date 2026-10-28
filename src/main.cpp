@@ -277,6 +277,11 @@ void setup(){
   if(settings_ok && settings.use_wdt){
     wdt_enable(WDT_PERIOD,false);
     log_i("WDT runtime: ON\r\n");
+    // Which clock the debug console receives on: with UART_WAKE it is the
+    // internal 8 MHz oscillator, awake and asleep, otherwise the main clock.
+    // The two behave differently enough that a console test has to know.
+    log_i(settings.uart_wake ? "Console UART: wake from standby ON (8 MHz clock)\r\n"
+                             : "Console UART: wake from standby OFF\r\n");
     log_flush();
   } else if(settings_ok){
     log_w("WDT: OFF - a test setting, a station in the field always runs with the watchdog\r\n");
