@@ -581,14 +581,27 @@ void go_sleep(){
       // sensor line cannot wake the station in that time. When the next block
       // is due is measured from the blocks themselves, see
       // wsxx_sleep_before_next_block_ms().
+      //
+      // A scheduled repeater's next window bounds that sleep as well. This
+      // sleep sets the RTC itself, so the deadline go_sleep() planned for the
+      // window was gone, and a window that opened in it was slept through.
+      // When the window is what ends the sleep, the wakeup ends the sleep
+      // window too, so the radio is switched on for it.
       if(is_wsxx() && res == RESP_COMPLETE){
         int32_t t = next_tx_time - time();
         if(t > 0){
-          const uint32_t s = min((uint32_t)t, wsxx_sleep_before_next_block_ms());
+          uint32_t s = min((uint32_t)t, wsxx_sleep_before_next_block_ms());
+          bool window_due = false;
+          if(repeater_sched_active()){
+            const uint32_t d = sched_next_deadline(time());
+            if(d != SCHED_NO_DEADLINE && d <= s){ s = d; window_due = true; }
+          }
           if(s > 5u){
             rtc_sleep_cfg(s);
             sleep(false); // sleep without UART interrupt
-            wakeup_source = WAKEUP_NONE;
+            if(!window_due){ wakeup_source = WAKEUP_NONE; }
+          } else if(window_due){
+            break;
           }
         }
       }
