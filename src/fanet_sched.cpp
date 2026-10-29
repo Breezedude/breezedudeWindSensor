@@ -22,6 +22,9 @@
 #define SCHED_LEARN_TIMEOUT_MS 900000u
 // A sender may skip this many periods and still be recognised by its rhythm.
 #define SCHED_SKIP_MAX      4u
+// Within this, a packet's deviation from its due time is clock drift: it trims
+// the period and the phase. Beyond it, lateness is a delay at the sender.
+#define SCHED_TRIM_MS       300
 // HWInfo is sent every ten minutes (ota_lora.cpp), so its rhythm is learned
 // within these bounds. Two empty windows drop it - see sched_note_hwinfo().
 #define SCHED_HW_PERIOD_MIN_MS 15000u
@@ -43,6 +46,7 @@ struct Station {
   uint8_t  misses;
   uint8_t  state;
   uint8_t  skip_k;     // how many periods the last gap spanned, to spot a changed interval
+  int32_t  last_late;  // ms the last packet in its window came after its due time
   // The HWInfo rhythm of the same station, followed separately.
   uint32_t hw_period;
   uint32_t hw_last;
@@ -263,7 +267,17 @@ void sched_note_weather(uint32_t id, uint32_t t_rx) {
     // allowed? If it does not, the sender changed its interval and the period
     // is learned again.
     const uint32_t k = s->period ? (gap + s->period / 2u) / s->period : 0u;
-    if (k >= 1u && k <= SCHED_SKIP_MAX && matches(gap, k * s->period)) {
+    // The moment this packet was due, if it came in the window that was open
+    // for it - tick() above has moved next past any window that went by empty.
+    const bool in_window = s->state == SCHED_SYNCED &&
+                           reached(t_rx, window_open(s)) && !reached(t_rx, window_close(s));
+    const uint32_t due = s->next;
+    // A packet inside the window that was open for it fits, whatever the gap
+    // to the one before: after a delayed packet the next punctual one comes a
+    // gap that much shorter than the period, and taking that for a changed
+    // interval threw the learned rhythm away.
+    if ((in_window && k >= 1u && k <= SCHED_SKIP_MAX) ||
+        (k >= 1u && k <= SCHED_SKIP_MAX && matches(gap, k * s->period))) {
       // Only earliness widens the guard. Lateness is covered by the tail, and
       // feeding it in here would open the window earlier and earlier for a
       // station that is merely waiting out its own cooldown.
@@ -286,8 +300,50 @@ void sched_note_weather(uint32_t id, uint32_t t_rx) {
         s->err_avg = 0;
         s->guard = SCHED_GUARD_START_MS;
         say("interval", s);
+        s->skip_k = (uint8_t)k;
+        s->next = t_rx + s->period;
+        return;
       }
       s->skip_k = (uint8_t)k;
+      // The sender keeps a fixed grid (tx_grid.cpp): a packet held back by
+      // listen-before-talk or the cooldown is late, but the next one is sent
+      // on time again. Moving the whole prediction by the lateness, as this
+      // did while senders had no grid, opened the next window that much too
+      // late: the punctual packet came before it, the window stayed empty,
+      // and two or three of those in a row made the gaps look like a longer
+      // interval - seen on BDF2BF as periods of 91, 121 and 213 s for a
+      // station sending every 30 or 40 s, and two thirds of its packets
+      // never forwarded.
+      //
+      // So a packet that is late by more than a little does not move the
+      // prediction at all. Small errors, either way, trim the period and move
+      // the phase by a quarter - that is two clocks drifting apart, and a
+      // quarter of under 300 ms stays inside the narrowest guard. An early
+      // packet is followed fully: no delay makes a packet early, only a clock
+      // or a period that is off. And a lateness that repeats - two packets in
+      // a row late by about the same - is not a delay but a sender whose grid
+      // moved, after a restart say; then the prediction moves with it.
+      if (in_window) {
+        const int32_t late = (int32_t)(t_rx - due);
+        const int32_t prev_late = s->last_late;
+        s->last_late = late;
+        if (late > -SCHED_TRIM_MS && late < SCHED_TRIM_MS) {
+          s->period = (uint32_t)((int32_t)s->period + late / 8);
+          if (late > 0) {
+            s->next = due + s->period + (uint32_t)late / 4u;
+            return;
+          }
+        } else if (late > 0) {
+          const int32_t diff = late - prev_late;
+          const bool repeats = prev_late >= SCHED_TRIM_MS && diff > -SCHED_TRIM_MS && diff < SCHED_TRIM_MS;
+          if (!repeats) {
+            s->next = due + s->period;
+            return;
+          }
+        }
+      } else {
+        s->last_late = 0;
+      }
     } else if (plausible(gap)) {
       s->period = gap;
       s->state = SCHED_CHECK;
@@ -297,9 +353,8 @@ void sched_note_weather(uint32_t id, uint32_t t_rx) {
       say("relearn", s);
     }
   }
-  // Every packet re-anchors the prediction on the moment it actually arrived.
-  // A station that was held back by its cooldown has moved its whole rhythm by
-  // that much, so this is what keeps the window on the sender.
+  // Anything else - an early packet, one outside its window, a rhythm being
+  // learned or found again - anchors the prediction on the moment it arrived.
   s->next = t_rx + s->period;
 }
 

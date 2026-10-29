@@ -99,11 +99,61 @@ int main() {
   uint32_t t = sync_station(ID_A, 100000, T);
   info_of(ID_A, &s);
   const uint32_t period_before = s.period;
-  t = s.next + 3500;                 // held back by the cooldown after a name packet
+  const uint32_t due = s.next;
+  t = due + 3500;                    // held back by the cooldown after a name packet
   sched_note_weather(ID_A, t);
   check(info_of(ID_A, &s) && s.state == SCHED_SYNCED, "a packet 3.5 s late is still the same rhythm");
   check(s.period == period_before, "  ... the period is left alone");
-  check(s.next == t + period_before, "  ... and the prediction moves with the sender");
+  check(s.next == due + period_before, "  ... the prediction stays on the sender's grid");
+  // The sender keeps its slot (tx_grid.cpp): the next packet is on time again.
+  check(sched_rx_wanted(due + period_before), "  ... so the window is open when the next one comes on time");
+  sched_note_weather(ID_A, due + period_before);
+  check(info_of(ID_A, &s) && s.state == SCHED_SYNCED && s.misses == 0, "  ... and it is caught");
+
+  printf("\na grid sender with a late packet every third time\n");
+  fresh(3600000, 0);
+  t = sync_station(ID_A, 100000, T);
+  info_of(ID_A, &s);
+  uint32_t slot = s.next;
+  uint32_t caught = 0, missed = 0;
+  for (int i = 0; i < 30; i++) {
+    const uint32_t arrival = slot + ((i % 3 == 0) ? 2500u : 20u);
+    if (sched_rx_wanted(arrival)) { sched_note_weather(ID_A, arrival); caught++; }
+    else missed++;
+    slot += T;
+  }
+  info_of(ID_A, &s);
+  check(caught == 30 && missed == 0, "thirty packets, every one caught");
+  check(s.period > T - 100 && s.period < T + 100, "  ... and the period is still the sender's");
+
+  printf("\na sender whose grid moved for good\n");
+  fresh(3600000, 0);
+  sync_station(ID_A, 100000, T);
+  info_of(ID_A, &s);
+  slot = s.next + 4000;              // restarted: every packet 4 s later from now on
+  for (int i = 0; i < 3; i++) {
+    sched_rx_wanted(slot);
+    sched_note_weather(ID_A, slot);
+    slot += T;
+  }
+  info_of(ID_A, &s);
+  check(s.state == SCHED_SYNCED && s.misses == 0, "late by the same three times: still caught");
+  check(s.next > slot - 200 && s.next < slot + 200, "  ... and the prediction has moved to the new grid");
+
+  printf("\ntwo clocks drifting apart\n");
+  fresh(3600000, 0);
+  sync_station(ID_A, 100000, T);
+  info_of(ID_A, &s);
+  slot = s.next;
+  caught = 0; missed = 0;
+  for (int i = 0; i < 60; i++) {
+    slot += T + 40;                  // the sender's 40 s are 40.04 s here
+    if (sched_rx_wanted(slot)) { sched_note_weather(ID_A, slot); caught++; }
+    else missed++;
+  }
+  info_of(ID_A, &s);
+  check(missed == 0, "sixty packets 1 per mille slow, none missed");
+  check(s.period > T + 20 && s.period < T + 60, "  ... the period has followed the drift");
 
   printf("\na punctual sender narrows the window\n");
   fresh(3600000, 0);
