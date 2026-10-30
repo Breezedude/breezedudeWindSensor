@@ -8,7 +8,7 @@
 // The window opens this long before the packet is expected. Only the repeater's
 // own timing has to fit in here, so it stays small; it follows the prediction
 // error and doubles after an empty window.
-#define SCHED_GUARD_MIN_MS  150u
+#define SCHED_GUARD_MIN_MS  250u   // t_rx is the end of a packet: covers its airtime, the wakeup and the radio start
 #define SCHED_GUARD_MAX_MS  2000u
 #define SCHED_GUARD_START_MS 500u
 // Anything outside this is not a broadcast interval and is not learned.

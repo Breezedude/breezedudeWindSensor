@@ -129,6 +129,13 @@ void en_rx_sleep(){
     if((lora_module == LORA_SX1262) || (lora_module == LORA_LLCC68)){
         // Use plain continuous receive – duty-cycle auto mode was unreliable
         // on LLCC68 with FANET's SF7/BW250 preamble timing.
+        //
+        // Wake the chip first: asleep it holds BUSY high, and RadioLib waits
+        // for BUSY before every command, up to its 1 s SPI timeout. A scheduled
+        // repeater that switched the receiver on in time for a packet then
+        // showed nothing for 1.1 s and did not hear it, which fits a window
+        // starting that much late. standby() pulls NSS without waiting for BUSY.
+        radio_phy->standby();
         static_cast<SX126x*>(radio_phy)->clearIrqFlags(0xFFFF);
         int err = radio_phy->startReceive();
         if (err != RADIOLIB_ERR_NONE){
