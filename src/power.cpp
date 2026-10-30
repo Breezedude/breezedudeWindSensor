@@ -347,7 +347,7 @@ static bool sleep_window_over(){
   return wakeup_source == WAKEUP_RTC || wakeup_source == WAKEUP_USB
          || wakeup_source == WAKEUP_CONSOLE
          || Serial.available()
-         || (debug_enabled() && DEBUGSER.available());
+         || console_byte_pending();
 }
 
 // Service a LoRa packet that arrived while sleeping.
@@ -556,6 +556,7 @@ void go_sleep(){
   // UART sensor, just sleep
   else if(sensor_uses_uart()){ // UART based sensor
     int res = -1;
+    const uint32_t window_end = time() + time_to_sleep;
 
     while(!sleep_window_over()){
       sleep(true); // sleep til UART interrupt
@@ -582,32 +583,39 @@ void go_sleep(){
       // is due is measured from the blocks themselves, see
       // wsxx_sleep_before_next_block_ms().
       //
-      // A scheduled repeater's next window bounds that sleep as well. This
-      // sleep sets the RTC itself, so the deadline go_sleep() planned for the
-      // window was gone, and a window that opened in it was slept through.
-      // When the window is what ends the sleep, the wakeup ends the sleep
-      // window too, so the radio is switched on for it.
+      // This sleep sets the RTC itself, which used to lose everything
+      // go_sleep() had planned: the station's own transmission came seconds
+      // late (33-44 s apart instead of 40), a queued forward up to 37 s late,
+      // and a repeater window was slept through. So the end of the sleep
+      // window bounds this sleep, and so do a forward and the next edge of the
+      // schedule, which a packet may have moved. When one of those is what
+      // ends it, the wakeup ends the sleep window. Otherwise the RTC goes back
+      // to the end of the window.
       //
       // A packet can wake this sleep too. It is serviced right there: left for
-      // the next pass, it waited for the sensor's next block, up to 4.7 s. Its
-      // copy went out that much late - up to 8.4 s measured at the ground
-      // station against the intended 0.5-1.5 s - and the schedule took the
-      // late moment for the arrival, moved its windows off the sender and
-      // missed the packets after it. Then the rest of the sleep is slept,
-      // unless a forward is waiting: service_lora_during_sleep() has set the
-      // RTC for that, and it ends the sleep window.
-      bool window_starts = false;
+      // the next pass, it waited for the sensor's next block, up to 4.7 s, and
+      // the schedule took that late moment for its arrival. Then the rest of
+      // the sleep is slept, unless a forward is waiting:
+      // service_lora_during_sleep() has set the RTC for that.
+      bool window_ends = false;
       while(is_wsxx() && res == RESP_COMPLETE){
-        const int32_t t = next_tx_time - time();
-        if(t <= 0){ break; }
-        uint32_t s = min((uint32_t)t, wsxx_sleep_before_next_block_ms());
-        bool window_due = false;
+        const int32_t left = (int32_t)(window_end - time());
+        if(left <= 5){
+          window_ends = true;
+          break;
+        }
+        uint32_t until = (uint32_t)left;
+        const uint32_t fwd = fanet_forward_delay_ms();
+        if(fwd && fwd < until){ until = fwd; }
         if(repeater_sched_active()){
           const uint32_t d = sched_next_deadline(time());
-          if(d != SCHED_NO_DEADLINE && d <= s){ s = d; window_due = true; }
+          if(d != SCHED_NO_DEADLINE && d < until){ until = d; }
         }
+        const uint32_t block = wsxx_sleep_before_next_block_ms();
+        const bool deadline_first = until <= block;
+        const uint32_t s = deadline_first ? until : block;
         if(s <= 5u){
-          window_starts = window_due;
+          window_ends = deadline_first;
           break;
         }
         rtc_sleep_cfg(s);
@@ -618,10 +626,18 @@ void go_sleep(){
           wakeup_source = WAKEUP_NONE;
           continue;
         }
-        if(!window_due){ wakeup_source = WAKEUP_NONE; }
+        if(!deadline_first){
+          wakeup_source = WAKEUP_NONE;
+          const int32_t rest = (int32_t)(window_end - time());
+          if(rest > 5){
+            rtc_sleep_cfg((uint32_t)rest);
+          } else {
+            window_ends = true;
+          }
+        }
         break;
       }
-      if(window_starts){ break; }
+      if(window_ends){ break; }
 
     }
   }

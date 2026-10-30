@@ -240,6 +240,22 @@ static int console_uart_co = 0;   // characters of an unfinished debug UART line
 #define CONSOLE_LINE_TIMEOUT_MS 100   // see console_line_pending()
 #define CONSOLE_LINE_MAX_MS     1000
 
+// SERCOM1 stops in standby unless UART_WAKE is on, and what it reads around a
+// wakeup is not always a character. Such a byte used to end the sleep window,
+// and then count as the start of a command line.
+static bool console_byte_usable(int c){
+  return c == '\r' || c == '\n' || (c >= 0x20 && c < 0x7F);
+}
+
+bool console_byte_pending(){
+  if(!debug_enabled()) return false;
+  while(DEBUGSER.available()){
+    if(console_byte_usable(DEBUGSER.peek())) return true;
+    DEBUGSER.read();
+  }
+  return false;
+}
+
 static void read_console(Stream &stream, char *buffer, int &co, bool is_usb){
   // The rest of a debug UART line that was given up on is dropped, so the next
   // command does not get glued to it.
@@ -248,6 +264,10 @@ static void read_console(Stream &stream, char *buffer, int &co, bool is_usb){
     co = 0;
   }
   while (stream.available()){
+    if(!is_usb && !console_byte_usable(stream.peek())){
+      stream.read();
+      continue;
+    }
     console_last_byte_ms = millis();
     if(!is_usb && co == 0){ console_line_start_ms = console_last_byte_ms; }
     if(is_usb){
@@ -332,6 +352,10 @@ void read_serial_cmd(){
 // ending a line - a noisy RX line - cannot hold it longer than
 // CONSOLE_LINE_MAX_MS from the line's first byte.
 bool console_line_pending(){
+  // Without UART_WAKE a command is only ever heard by luck, and the hold cost a
+  // repeater the start of its receive windows: 100 ms awake before the radio
+  // was switched on, longer than the window's lead.
+  if(!settings.uart_wake) return false;
   // Right after a console wakeup the byte whose start bit woke the station is
   // still on the wire, and nothing is in the buffer yet. This used to be a
   // later sleep_allowed, which the scheduler overwrote on its next pass -
