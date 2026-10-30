@@ -587,24 +587,41 @@ void go_sleep(){
       // window was gone, and a window that opened in it was slept through.
       // When the window is what ends the sleep, the wakeup ends the sleep
       // window too, so the radio is switched on for it.
-      if(is_wsxx() && res == RESP_COMPLETE){
-        int32_t t = next_tx_time - time();
-        if(t > 0){
-          uint32_t s = min((uint32_t)t, wsxx_sleep_before_next_block_ms());
-          bool window_due = false;
-          if(repeater_sched_active()){
-            const uint32_t d = sched_next_deadline(time());
-            if(d != SCHED_NO_DEADLINE && d <= s){ s = d; window_due = true; }
-          }
-          if(s > 5u){
-            rtc_sleep_cfg(s);
-            sleep(false); // sleep without UART interrupt
-            if(!window_due){ wakeup_source = WAKEUP_NONE; }
-          } else if(window_due){
-            break;
-          }
+      //
+      // A packet can wake this sleep too. It is serviced right there: left for
+      // the next pass, it waited for the sensor's next block, up to 4.7 s. Its
+      // copy went out that much late - up to 8.4 s measured at the ground
+      // station against the intended 0.5-1.5 s - and the schedule took the
+      // late moment for the arrival, moved its windows off the sender and
+      // missed the packets after it. Then the rest of the sleep is slept,
+      // unless a forward is waiting: service_lora_during_sleep() has set the
+      // RTC for that, and it ends the sleep window.
+      bool window_starts = false;
+      while(is_wsxx() && res == RESP_COMPLETE){
+        const int32_t t = next_tx_time - time();
+        if(t <= 0){ break; }
+        uint32_t s = min((uint32_t)t, wsxx_sleep_before_next_block_ms());
+        bool window_due = false;
+        if(repeater_sched_active()){
+          const uint32_t d = sched_next_deadline(time());
+          if(d != SCHED_NO_DEADLINE && d <= s){ s = d; window_due = true; }
         }
+        if(s <= 5u){
+          window_starts = window_due;
+          break;
+        }
+        rtc_sleep_cfg(s);
+        sleep(false); // sleep without UART interrupt
+        if(loraReceivedFlag && (settings.lora_smart_rcv || settings.repeater)){
+          service_lora_during_sleep();
+          if(fanet_forward_delay_ms()){ break; }
+          wakeup_source = WAKEUP_NONE;
+          continue;
+        }
+        if(!window_due){ wakeup_source = WAKEUP_NONE; }
+        break;
       }
+      if(window_starts){ break; }
 
     }
   }
