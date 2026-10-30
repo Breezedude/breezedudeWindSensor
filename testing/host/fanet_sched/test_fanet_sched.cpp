@@ -184,8 +184,23 @@ int main() {
   printf("\nfinding the sender again\n");
   uint32_t t_back = s.next + 30;                  // it turns up in the window it was due in
   sched_note_weather(ID_A, t_back);
-  check(info_of(ID_A, &s) && s.state == SCHED_SYNCED && s.misses == 0, "a packet that fits the rhythm resyncs it");
+  check(info_of(ID_A, &s) && s.state == SCHED_RESYNC, "a packet after empty windows: the gap proves nothing yet");
+  check(sched_rx_wanted(t_back + 1000), "  ... so the receiver stays on to measure the next one");
+  t_back += T;
+  sched_note_weather(ID_A, t_back);
+  check(info_of(ID_A, &s) && s.state == SCHED_SYNCED && s.misses == 0 && s.period == T, "the next one a period later: the rhythm was right all along");
   check(!sched_rx_wanted(t_back + 1000), "  ... and the receiver sleeps again");
+
+  printf("\nwindows that keep missing do not teach a longer interval\n");
+  fresh(3600000, 0);
+  t = sync_station(ID_A, 100000, T);
+  for (int i = 0; i < 4; i++) {
+    t += 3 * T;                                   // two windows empty, through no fault of the sender
+    sched_note_weather(ID_A, t);
+    t += T;                                       // heard, the receiver was on
+    sched_note_weather(ID_A, t);
+    check(info_of(ID_A, &s) && s.state == SCHED_SYNCED && s.period == T, "  the period stays the sender's");
+  }
 
   printf("\na sender that stays away frees its slot\n");
   fresh(3600000, 0);
@@ -211,12 +226,12 @@ int main() {
   t = sync_station(ID_A, 100000, T);
   t += 3 * T + 700;                               // battery low: three times the interval
   sched_note_weather(ID_A, t);
-  check(info_of(ID_A, &s) && s.state == SCHED_SYNCED && s.period == T,
-        "one gap of three periods is a lost packet, not a new interval");
+  check(info_of(ID_A, &s) && s.state == SCHED_RESYNC && s.period == T,
+        "one gap of three periods proves nothing: listen to the next one");
   t += 3 * T + 700;
   sched_note_weather(ID_A, t);
   check(info_of(ID_A, &s) && s.state == SCHED_SYNCED && s.period == 3 * T + 700,
-        "the same gap twice is the new interval, and is taken over");
+        "the same gap with the receiver on all the way is the new interval");
   t += 7000;                                      // now something entirely different
   sched_note_weather(ID_A, t);
   check(info_of(ID_A, &s) && s.state == SCHED_CHECK && s.period == 7000, "an interval that fits nothing is learned anew");

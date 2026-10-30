@@ -47,6 +47,7 @@ struct Station {
   uint8_t  state;
   uint8_t  skip_k;     // how many periods the last gap spanned, to spot a changed interval
   int32_t  last_late;  // ms the last packet in its window came after its due time
+  bool     verify;     // listening through one whole gap to measure the interval
   // The HWInfo rhythm of the same station, followed separately.
   uint32_t hw_period;
   uint32_t hw_last;
@@ -285,25 +286,46 @@ void sched_note_weather(uint32_t id, uint32_t t_rx) {
       const uint32_t early = err > 0 ? (uint32_t)err : 0u;
       s->err_avg = (3u * s->err_avg + early) / 4u;
       s->guard = clamp_guard(4u * s->err_avg + 50u);
+      // A gap of k periods proves nothing as long as the receiver was off for
+      // part of it: it is what a changed interval looks like, and just as much
+      // what windows look like that missed their packets. Two empty windows
+      // end in a resync, so the gap is then always three periods, whatever the
+      // sender does - and "the same k twice" took that for a new interval: a
+      // station sending every 40 s was followed at 120 s on the bench, two
+      // packets out of three not forwarded, until the next scan window put it
+      // right for a moment.
+      //
+      // So the interval is measured, not inferred: the receiver stays on for
+      // one whole gap, and that gap is what the sender does. A period later
+      // and the rhythm was right all along; k periods later and that is the
+      // new interval - scheduler.cpp multiplies it by three when the battery
+      // runs low. The cost is one gap of listening per suspicion.
+      if (s->verify) {
+        s->verify = false;
+        if (k >= 2u) {
+          s->period = gap;
+          s->err_avg = 0;
+          s->guard = SCHED_GUARD_START_MS;
+          s->state = SCHED_SYNCED;
+          s->misses = 0;
+          s->skip_k = 0;
+          say("interval", s);
+          s->next = t_rx + s->period;
+          return;
+        }
+      } else if (k >= 2u && (s->state == SCHED_RESYNC || s->skip_k == (uint8_t)k)) {
+        s->state = SCHED_RESYNC;
+        s->verify = true;
+        s->misses = 0;
+        s->skip_k = 0;
+        s->deadline = t_rx + (k + 1u) * s->period;
+        s->next = t_rx + s->period;
+        say("verify", s);
+        return;
+      }
       if (s->state != SCHED_SYNCED) say("back", s);
       s->state = SCHED_SYNCED;
       s->misses = 0;
-      // A gap of k periods is a lost packet the first time. Twice in a row with
-      // the same k it is the sender's new interval - scheduler.cpp multiplies
-      // the broadcast interval when the battery runs low, by exactly three.
-      // Without this the repeater keeps the old rhythm, wakes for k-1 windows
-      // per cycle that can never have anything in them, and resyncs after every
-      // second of them: measured on the rig at 40 % of the time with the
-      // receiver on, against a per cent once the interval is taken over.
-      if (k >= 2u && s->skip_k == (uint8_t)k) {
-        s->period = gap;
-        s->err_avg = 0;
-        s->guard = SCHED_GUARD_START_MS;
-        say("interval", s);
-        s->skip_k = (uint8_t)k;
-        s->next = t_rx + s->period;
-        return;
-      }
       s->skip_k = (uint8_t)k;
       // The sender keeps a fixed grid (tx_grid.cpp): a packet held back by
       // listen-before-talk or the cooldown is late, but the next one is sent
@@ -350,6 +372,7 @@ void sched_note_weather(uint32_t id, uint32_t t_rx) {
       s->guard = SCHED_GUARD_START_MS;
       s->misses = 0;
       s->skip_k = 0;
+      s->verify = false;
       say("relearn", s);
     }
   }
