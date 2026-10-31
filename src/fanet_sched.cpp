@@ -32,7 +32,7 @@
 #define SCHED_HW_MISS_LIMIT 2u
 // The HWInfo window starts out wide enough for an assumed interval, so it needs
 // more room than a weather window ever does.
-#define SCHED_HW_GUARD_MAX_MS 12000u
+#define SCHED_HW_GUARD_MAX_MS 16000u
 
 struct Station {
   uint32_t id;
@@ -106,7 +106,11 @@ static bool matches(uint32_t gap, uint32_t expected) {
 static uint32_t window_open(const Station *s)  { return s->next - s->guard; }
 static uint32_t window_close(const Station *s) { return s->next + SCHED_TAIL_MS; }
 static uint32_t hw_window_open(const Station *s)  { return s->hw_next - s->hw_guard; }
-static uint32_t hw_window_close(const Station *s) { return s->hw_next + SCHED_TAIL_MS; }
+// A window this wide is an assumed period, not a late sender: the clock offset
+// that opens it early can just as well make the packet late.
+static uint32_t hw_window_close(const Station *s) {
+  return s->hw_next + (s->hw_guard > SCHED_TAIL_MS ? s->hw_guard : SCHED_TAIL_MS);
+}
 
 static void say(const char *what, const Station *s) {
   char line[96];
@@ -389,17 +393,19 @@ void sched_note_hwinfo(uint32_t id, uint32_t t_rx) {
 
   const uint32_t gap = t_rx - s->hw_last;
   const uint8_t was = s->hw_state;
-  s->hw_last = t_rx;
   s->hw_hits++;
 
   if (was != SCHED_FREE) {
     const uint32_t k = s->hw_period ? (gap + s->hw_period / 2u) / s->hw_period : 0u;
-    if (was == SCHED_CHECK && k == 1u && hw_plausible(gap)) {
-      // The second packet, and the first real measurement. It was taken with
-      // our own clock, so the offset between the two oscillators is inside the
-      // number - up to a per cent, six seconds over ten minutes - and the
-      // window can close down to the width the weather rhythm uses.
-      s->hw_period = gap;
+    if (was == SCHED_CHECK && k >= 1u && k <= SCHED_SKIP_MAX && hw_plausible(gap / k) &&
+        reached(t_rx, hw_window_open(s)) && !reached(t_rx, hw_window_close(s))) {
+      // The second packet, and the first real measurement - over two periods
+      // if the one between was lost. It was taken with our own clock, so the
+      // offset between the two oscillators is inside the number - two per cent
+      // on the bench, twelve seconds over ten minutes - and the window can
+      // close down to the width the weather rhythm uses.
+      s->hw_last = t_rx;
+      s->hw_period = gap / k;
       s->hw_err_avg = 0;
       s->hw_guard = SCHED_GUARD_START_MS;
       s->hw_state = SCHED_SYNCED;
@@ -408,7 +414,8 @@ void sched_note_hwinfo(uint32_t id, uint32_t t_rx) {
       say_hw("synced", s);
       return;
     }
-    if (k >= 1u && k <= SCHED_SKIP_MAX && matches(gap, k * s->hw_period)) {
+    if (was != SCHED_CHECK && k >= 1u && k <= SCHED_SKIP_MAX && matches(gap, k * s->hw_period)) {
+      s->hw_last = t_rx;
       const int32_t err = (int32_t)(s->hw_next - t_rx);
       const uint32_t early = err > 0 ? (uint32_t)err : 0u;
       s->hw_err_avg = (3u * s->hw_err_avg + early) / 4u;
@@ -420,9 +427,11 @@ void sched_note_hwinfo(uint32_t id, uint32_t t_rx) {
     }
     // Off the rhythm: ota_lora.cpp runs three timers, and the hourly ones put a
     // packet between the ten minute ones. It is forwarded like any other, but
-    // it must not drag the prediction off the rhythm that holds.
+    // it must not drag the prediction off the rhythm that holds, and neither
+    // may it count as the start of the next measurement.
     return;
   }
+  s->hw_last = t_rx;
 
   // First HWInfo of this station. One packet says nothing about the interval,
   // but the protocol does, so the ten minutes from ota_lora.cpp are taken on

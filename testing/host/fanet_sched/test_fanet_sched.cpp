@@ -268,6 +268,35 @@ int main() {
   check(s.hw_guard <= 500, "  ... and the window narrows to the measured case");
   check(!sched_rx_wanted(hw_due + 2000), "  ... it closes on the packet, like any window");
 
+  printf("\na clock two per cent off, and an hourly packet in between\n");
+  fresh(3600000, 0);
+  sync_station(ID_A, 100000, T);
+  t_hw = 180000 + T / 2;
+  sched_note_hwinfo(ID_A, t_hw);
+  feed_weather(ID_A, t_hw + 350000);
+  sched_note_hwinfo(ID_A, t_hw + 350000);         // an hourly report: rounds to one period, outside the window
+  info_of(ID_A, &s);
+  check(s.hw_state == SCHED_CHECK && s.hw_next == t_hw + SCHED_HW_SEED_MS, "an off-rhythm report leaves the expectation alone");
+  feed_weather(ID_A, t_hw + 612000);
+  check(sched_rx_wanted(t_hw + 612000), "twelve seconds after the assumed ten minutes the window is still open");
+  sched_note_hwinfo(ID_A, t_hw + 612000);
+  info_of(ID_A, &s);
+  check(s.hw_state == SCHED_SYNCED && s.hw_period == 612000, "  ... and the gap measured is from the rhythm's own last packet");
+  check(!sched_rx_wanted(t_hw + 613000), "  ... the window closes on it");
+
+  printf("\nthe second HWInfo lost: measured over two periods\n");
+  fresh(3600000, 0);
+  sync_station(ID_A, 100000, T);
+  t_hw = 180000 + T / 2;
+  sched_note_hwinfo(ID_A, t_hw);
+  feed_weather(ID_A, t_hw + 1212000);             // one per cent off
+  info_of(ID_A, &s);
+  check(s.hw_state == SCHED_CHECK && s.hw_next == t_hw + 2 * SCHED_HW_SEED_MS, "one lost report does not give the rhythm up");
+  check(sched_rx_wanted(t_hw + 1212000), "the window for the next one is open");
+  sched_note_hwinfo(ID_A, t_hw + 1212000);
+  info_of(ID_A, &s);
+  check(s.hw_state == SCHED_SYNCED && s.hw_period == 606000, "  ... and the period is half the gap");
+
   printf("\nan unknown station's HWInfo is not followed\n");
   sched_note_hwinfo(ID_B, hw_due + 3000);
   check(!info_of(ID_B, &s), "no slot for a station that never sent weather");

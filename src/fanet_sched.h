@@ -37,7 +37,7 @@
 // repeater does not pass them on - this mode forwards what a station reports
 // about itself, it does not carry an update session.
 #define SCHED_HW_SEED_MS       600000u  // ota_lora.cpp: OTA_HWINFO_DYNAMIC_INTERVAL_S
-#define SCHED_HW_SEED_GUARD_MS   8000u  // one per cent of clock offset over ten minutes, doubled
+#define SCHED_HW_SEED_GUARD_MS  15000u  // 2.5 % of clock offset over ten minutes; measured: 2 %, both ways possible
 //
 // Everything here works on the millisecond clock of time(), which survives
 // standby. The caller passes it in rather than the module reading it, so the
