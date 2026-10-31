@@ -194,9 +194,19 @@ uint32_t sleep(bool enable_uart_interrupt){
   // set a wakeup source, otherwise USB IRQ traffic would break the normal flow.
   quiet_pins_for_standby();
   wake_mark(WP_DEEP);
+  // A packet that arrived while the station was awake has had its one DIO1 edge,
+  // and no other comes until it is read. Sleeping on it left it for whatever woke
+  // the station next: seen as a WS80 block, 4.7 s later, which the schedule then
+  // took for its arrival. With interrupts off the check cannot miss one arriving
+  // right before __WFI, which still returns for a pending interrupt; the handler
+  // runs when they go back on.
   do {
-    deepsleep(keep_usb);
-  } while (keep_usb && wakeup_source == WAKEUP_NONE);
+    __disable_irq();
+    if(!lora_packet_waiting()){
+      deepsleep(keep_usb);
+    }
+    __enable_irq();
+  } while (keep_usb && wakeup_source == WAKEUP_NONE && !lora_packet_waiting());
   restore_pins_after_standby();
   wake_mark(WP_WAKE);
 
@@ -536,6 +546,11 @@ void go_sleep(){
     wakeup_source = WAKEUP_NONE;
   }
   wake_mark(WP_RTC);
+
+  // Re-arming the receiver below drops the flag of a packet that arrived since the
+  // main loop last looked, and with it the packet. After the RTC setup, because
+  // this sets the RTC itself when the packet queues a forward.
+  service_lora_during_sleep();
 
   // Ensure radio is in the correct state for the sleep window (RX if conditions
   // are met, PHY sleep otherwise). This also covers the period before the first

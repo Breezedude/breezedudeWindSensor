@@ -26,6 +26,8 @@ extern volatile int wakeup_source;
 extern PhysicalLayer* radio_phy;
 extern volatile bool transmittedFlag;
 extern volatile bool loraReceivedFlag;
+// A received packet waits to be read, and the sleep loops will read it.
+bool lora_packet_waiting();
 
 // Runtime counters reset on boot, exposed via HW Info debug type 3
 extern uint16_t fanet_forward_counter;

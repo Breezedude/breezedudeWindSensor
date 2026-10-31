@@ -124,6 +124,12 @@ void irq_lora_rec(){
   // the main loop and also from go_sleep() after the wakeup path.
 }
 
+// rx_armed, because a flag left over from before the receiver was switched off
+// announces nothing, and the deep undervoltage sleep would never get to rest.
+bool lora_packet_waiting(){
+  return loraReceivedFlag && rx_armed && (settings.lora_smart_rcv || settings.repeater);
+}
+
 void en_rx_sleep(){
     loraReceivedFlag = false;
     if((lora_module == LORA_SX1262) || (lora_module == LORA_LLCC68)){
