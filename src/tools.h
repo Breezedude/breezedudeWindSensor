@@ -99,6 +99,8 @@ extern bool settings_ok;
 extern uint32_t sleeptime_cum;
 extern volatile bool usb_detach_event;
 extern volatile bool usb_ignore_detach_event;
+// The host is gone and the station should restart instead of switching USB off.
+bool usb_restart_wanted();
 
 extern const char* wakeup_source_string[];
 

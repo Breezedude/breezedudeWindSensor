@@ -381,6 +381,11 @@ void go_sleep(){
 
 // shut down the USB peripheral
   if(first_sleep && !keep_usb){
+    if(usb_restart_wanted()){
+      log_i("USB host gone, restarting\r\n");
+      log_flush();
+      NVIC_SystemReset();
+    }
     log_d("Disable USB\r\n");
     usb_ignore_detach_event = true;
     // Quiet the USB interrupt before switching the peripheral off. A bus that

@@ -21,6 +21,9 @@ Settings settings;
 RuntimeState state;
 volatile bool usb_detach_event = false;
 volatile bool usb_ignore_detach_event = false;
+static volatile bool usb_was_mounted = false; // a host enumerated the station since this boot
+#define USB_RESTART_MAGIC 0x55524553UL   // 'URES'
+static uint32_t g_usb_restart __attribute__((section(".noinit")));
 static uint32_t usb_last_activity_ms = 0;
 
 bool format_flash(){
@@ -388,6 +391,7 @@ void log_v_hex_dump(const uint8_t *data, size_t len){
 }
 
 extern "C" void tud_mount_cb(void) {
+  usb_was_mounted = true;
   usb_connected = true;
   usb_last_activity_ms = millis();
   usb_detach_event = false;
@@ -405,6 +409,25 @@ extern "C" void tud_umount_cb(void) {
   if(!usb_ignore_detach_event) {
     usb_detach_event = true;
   }
+}
+
+// A host that was there and is gone leaves the station at 7 mA for good, even
+// with the USB interrupt quieted and the peripheral switched off, while a
+// station that booted without USB sleeps at a quarter of a milliampere. Whatever
+// stays behind, a reset clears it, and the cable is gone anyway.
+//
+// Once, though: a host that enumerates the station and then suspends the bus
+// looks the same, and would come back after every reset. So the mark survives
+// the reset, and only a boot that went to sleep without seeing a host clears it.
+bool usb_restart_wanted(){
+  const bool restarted_before = g_usb_restart == USB_RESTART_MAGIC;
+  if(!usb_was_mounted){
+    g_usb_restart = 0;
+    return false;
+  }
+  if(restarted_before) return false;
+  g_usb_restart = USB_RESTART_MAGIC;
+  return true;
 }
 
 static bool usb_fsm_disconnected(){
