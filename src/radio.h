@@ -39,6 +39,8 @@ void set_fanet_send_flag(void);
 void irq_lora_rec();
 
 void en_rx_sleep();
+// The chip has left RX by some way other than dis_rx_sleep().
+void radio_rx_stopped();
 
 void dis_rx_sleep();
 

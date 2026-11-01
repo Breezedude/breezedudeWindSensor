@@ -547,9 +547,9 @@ void go_sleep(){
   }
   wake_mark(WP_RTC);
 
-  // Re-arming the receiver below drops the flag of a packet that arrived since the
-  // main loop last looked, and with it the packet. After the RTC setup, because
-  // this sets the RTC itself when the packet queues a forward.
+  // Switching the receiver off below loses a packet that arrived since the main
+  // loop last looked. After the RTC setup, because this sets the RTC itself when
+  // the packet queues a forward.
   service_lora_during_sleep();
 
   // Ensure radio is in the correct state for the sleep window (RX if conditions

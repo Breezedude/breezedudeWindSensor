@@ -1,14 +1,9 @@
 #include "radio.h"
 #include "sensors.h"
 #include "fanet_sched.h"
+#include "fwd_queue.h"
 
 LORA_MODULE lora_module = LORA_NONE;
-
-// Forward queue: one packet buffer to relay received FANET packets
-static bool     forward_pending    = false;
-static uint8_t  forward_buf[255]   = {0};
-static int      forward_len        = 0;
-static uint32_t forward_after_time = 0;
 
 
 #define FANET_FORWARD_RSSI_THRESHOLD -92 // dBm, only forward packets with weaker signal to extend range of distant nodes
@@ -42,6 +37,7 @@ uint16_t fanet_rx_counter      = 0;
 // when its instantaneous RSSI reads the channel.
 static bool rx_on = false;
 static bool rx_armed = false;
+static uint32_t rx_armed_at = 0;
 static uint32_t rx_on_since = 0;
 static uint32_t rx_on_ms = 0;
 static uint32_t rx_duty_since = 0;
@@ -130,8 +126,29 @@ bool lora_packet_waiting(){
   return loraReceivedFlag && rx_armed && (settings.lora_smart_rcv || settings.repeater);
 }
 
+void radio_rx_stopped(){
+  rx_armed = false;
+}
+
+// Restarting a receiver that is on cuts off a packet on air, and go_sleep() came
+// through here at every wakeup: eight times per 40 s and about 30 ms of airtime,
+// more than half a per cent of the packets. So it stays as it is. What the restart
+// also did was to repair a chip that had got stuck, and that has to go on working.
+// A packet whose interrupt edge went missing would block the receiver for good, so
+// the chip itself is asked. For anything else, such as a chip that has left RX, it
+// is restarted now and then all the same.
+#define RX_REARM_MS 60000u
+static bool rx_stays_on(uint32_t now){
+  if(!rx_armed) return false;
+  if(radio_phy->getIrqFlags() & RADIOLIB_SX126X_IRQ_RX_DONE){
+    loraReceivedFlag = true;
+  }
+  return loraReceivedFlag || (now - rx_armed_at) < RX_REARM_MS;
+}
+
 void en_rx_sleep(){
     loraReceivedFlag = false;
+    rx_armed = false;
     if((lora_module == LORA_SX1262) || (lora_module == LORA_LLCC68)){
         // Use plain continuous receive – duty-cycle auto mode was unreliable
         // on LLCC68 with FANET's SF7/BW250 preamble timing.
@@ -151,6 +168,7 @@ void en_rx_sleep(){
         static_cast<SX126x*>(radio_phy)->clearDio1Action();
         attachInterruptWakeup(PIN_LORA_DIO1, irq_lora_rec, RISING, false);
         rx_armed = true;
+        rx_armed_at = time();
         //log_i("Radio: RX mode active (LLCC68/SX1262)\r\n");
     } else if(lora_module == LORA_SX1276){
         int err = radio_phy->startReceive();
@@ -276,7 +294,7 @@ void radio_sleep(){
                      (settings.lora_smart_rcv && sensor.batt_perc >= 90 && (sensor.pv_charging || sensor.pv_done));
   rx_on = en_rx;
   if(en_rx){
-    en_rx_sleep();
+    if(!rx_stays_on(now)){ en_rx_sleep(); }
   } else {
     // dis_rx_sleep() detaches the EIC interrupt and puts radio in standby first,
     // then sleep() drives it into lowest-power PHY sleep (~1µA on SX126x).
@@ -305,11 +323,12 @@ bool fanet_rx(){
     // Fixed buffer instead of a VLA: getPacketLength() is unvalidated radio
     // input, 0 would form a zero-length array and 255 is a large stack
     // allocation on the path right after a deep-sleep wakeup.
-    if(numBytes <= 0 || numBytes > (int)sizeof(forward_buf)) {
+    if(numBytes <= 0 || numBytes > FWD_QUEUE_PACKET_MAX) {
       log_w("FANET RX: bad packet length, dropped len=", numBytes);
+      rx_armed = false; // nothing was read, so its IRQ is still set: only a re-arm clears it
       return true; // packet consumed, caller re-arms RX
     }
-    uint8_t byteArr[sizeof(forward_buf)];
+    uint8_t byteArr[FWD_QUEUE_PACKET_MAX];
     int state = radio_phy->readData(byteArr, numBytes);
     // readData() leaves the radio in standby; caller must re-arm RX when safe.
     rx_armed = false;
@@ -376,27 +395,25 @@ bool fanet_rx(){
         sched_note_hwinfo(sender_id, t_rx);
       }
     }
-    if (header->forward && !forward_pending && rssi_ok) { // repeater: forward all; smart_rcv: only weak signals
+    if (header->forward && rssi_ok) { // repeater: forward all; smart_rcv: only weak signals
       if (fwd_dedup_check_and_add(sender_id, header->type)) {
         byteArr[0] &= ~(1u << 6); // clear forward bit
-        if (numBytes <= (int)sizeof(forward_buf)) {
-          memcpy(forward_buf, byteArr, numBytes);
-          forward_len     = numBytes;
-          forward_pending = true;
-          uint32_t delay_ms = 500u + (millis() % 1000u);
-          forward_after_time = time() + delay_ms;
-          log_i("FANET: queued fwd type=0x");
-          log_write_hex(header->type, 2);
-          log_i(" from ");
-          log_write_hex(header->vendor, 2);
-          log_i(":");
-          log_write_hex(header->address, 4);
-          log_i(" len=");
-          log_write(numBytes);
-          log_i(" delay=");
-          log_write(delay_ms);
-          log_i("ms\r\n");
+        const uint32_t delay_ms = 500u + (millis() % 1000u);
+        if (!fwd_queue_add(byteArr, numBytes, time(), delay_ms)) {
+          log_w("FANET: fwd queue full\r\n");
+          return true;
         }
+        log_i("FANET: queued fwd type=0x");
+        log_write_hex(header->type, 2);
+        log_i(" from ");
+        log_write_hex(header->vendor, 2);
+        log_i(":");
+        log_write_hex(header->address, 4);
+        log_i(" len=");
+        log_write(numBytes);
+        log_i(" delay=");
+        log_write(delay_ms);
+        log_i("ms\r\n");
       } else {
         log_d("FANET: skip fwd (dedup) from ");
         log_write_hex(header->vendor, 2);
@@ -411,22 +428,23 @@ bool fanet_rx(){
 }
 
 uint32_t fanet_forward_delay_ms() {
-  if (!forward_pending) return 0;
-  if (time_reached(forward_after_time)) return 0;
-  return forward_after_time - time();
+  return fwd_queue_delay_ms(time());
 }
 
 // Call from main loop (when no TX is active) to transmit a queued forward packet.
 bool fanet_forward_check() {
-  if(!forward_pending || !time_reached(forward_after_time)) {
+  const uint8_t expired = fwd_queue_expire(time());
+  if(expired){
+    log_w("FANET fwd: too old, dropped: ", (uint32_t)expired);
+  }
+  FwdPacket *fwd = fwd_queue_due(time());
+  if(!fwd) {
     return false;
   }
-  forward_pending = false;
   dis_rx_sleep();
   if(settings.lora_lbt && !lbt_channel_free()) {
     // Channel busy – reschedule with a fresh random delay
-    forward_pending = true;
-    forward_after_time = time() + 500 + (millis() % 1500);
+    fwd_queue_defer(fwd, time(), 500 + (millis() % 1500));
     radio_sleep();
     log_w("FANET fwd: channel busy, deferred\r\n");
     return false;
@@ -434,7 +452,9 @@ bool fanet_forward_check() {
   // Arm TX-done callback just before transmit (not in dis_rx_sleep, to avoid
   // spurious interrupt while the radio is being put to PHY sleep).
   radio_phy->setPacketSentAction(set_fanet_send_flag);
-  int state = radio_phy->startTransmit(forward_buf, forward_len);
+  const int forward_len = fwd->len;
+  int state = radio_phy->startTransmit(fwd->data, forward_len);
+  fwd_queue_release(fwd); // the chip has its own copy now
   if(state != RADIOLIB_ERR_NONE) {
     log_w("FANET fwd: TX failed, code=", state);
     radio_sleep();

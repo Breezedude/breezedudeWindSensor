@@ -1432,6 +1432,7 @@ bool ota_lora_poll() {
 
   uint8_t packet[255] = {0};
   int state = radio_phy->readData(packet, numBytes);
+  radio_rx_stopped(); // readData() leaves the radio in standby
   if(state != RADIOLIB_ERR_NONE) {
     en_rx_sleep();
     return true;
