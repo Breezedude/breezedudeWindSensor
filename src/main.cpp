@@ -129,6 +129,12 @@ void setup(){
     if(settings.repeater && settings.sensor_type == s_invalid) {
       settings.broadcast_interval_weather = 0;
     }
+    // A scheduled repeater hears nothing but its windows and its scans, so
+    // without scans it would never find a station.
+    if(settings.repeater_sched && !settings.repeater_scan_duration){
+      settings.repeater_scan_duration = SCHED_SCAN_DEFAULT_MS;
+      log_w("REPEATER_SCAN_DURATION=0 would never find a station, using the default\r\n");
+    }
     // The classic repeater keeps the table too, for its repeater report, but
     // has no use for scan windows: it listens all the time anyway.
     sched_configure(settings.repeater_scan_interval,

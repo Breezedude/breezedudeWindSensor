@@ -61,7 +61,7 @@ struct Station {
 
 static Station tab[SCHED_MAX_STATIONS];
 static uint32_t scan_interval_ms = 3600000u;
-static uint32_t scan_duration_ms = 360000u;
+static uint32_t scan_duration_ms = SCHED_SCAN_DEFAULT_MS;
 static uint32_t scan_next = 0;     // due right after boot, so a fresh station learns at once
 static uint32_t scan_until = 0;
 static bool scanning = false;
@@ -445,19 +445,9 @@ void sched_note_hwinfo(uint32_t id, uint32_t t_rx) {
   say_hw("expect", s);
 }
 
-static bool nothing_known(void) {
-  for (uint8_t i = 0; i < SCHED_MAX_STATIONS; i++) {
-    if (tab[i].state != SCHED_FREE) return false;
-  }
-  return true;
-}
-
 bool sched_rx_wanted(uint32_t now) {
   tick(now);
   if (scanning) return true;
-  // Nothing learned and no scan window to learn in: then there is nothing to
-  // plan around and the repeater listens, as it would without this mode.
-  if (!scan_duration_ms && nothing_known()) return true;
   for (uint8_t i = 0; i < SCHED_MAX_STATIONS; i++) {
     const Station *s = &tab[i];
     if (s->hw_state == SCHED_CHECK || s->hw_state == SCHED_SYNCED) {

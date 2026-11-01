@@ -213,7 +213,20 @@ int main() {
   check(info_of(ID_A, &s) && s.state == SCHED_RESYNC, "resyncing");
   sched_rx_wanted(probe + 4 * T);                 // silent for far longer than the patience
   check(station_count() == 0, "slot given back");
-  check(sched_rx_wanted(probe + 5 * T), "  ... with nothing left to plan for, it listens again");
+  check(!sched_rx_wanted(probe + 5 * T), "  ... with nothing left to plan for, it does not listen");
+
+  printf("\nno station anywhere: one window an hour and nothing else\n");
+  fresh(3600000, 360000);
+  uint32_t rx_minutes = 0;
+  for (uint32_t minute = 0; minute < 600; minute++) {
+    if (sched_rx_wanted(1000 + minute * 60000u)) rx_minutes++;
+  }
+  check(rx_minutes == 60, "six minutes an hour over ten hours");
+  const uint32_t hour10 = 1000 + 10 * 3600000u;
+  check(!sched_rx_wanted(hour10 - 1000), "asleep right before the next hour");
+  check(sched_rx_wanted(hour10), "on again at the full hour");
+  sched_note_weather(ID_A, hour10 + 1000);
+  check(sched_rx_wanted(hour10 + 400000), "a station heard in it is listened for past the window");
 
   printf("\nnothing known yet, but a scan window\n");
   fresh(300000, 60000);

@@ -17,6 +17,11 @@
 // find stations that appeared since, and to catch the name packets that are
 // only sent every few minutes.
 //
+// With no station known it is the only time the receiver is on. Being set up as
+// a repeater does not mean there is anybody to repeat, and such a station should
+// not sit in RX around the clock. The price is up to one interval until a new
+// station is forwarded.
+//
 // HWInfo (type 0x0A) is followed as a second rhythm per station, so a station's
 // hardware and firmware report gets forwarded too and not only when it happens
 // to fall into a scan. Two differences to the weather rhythm, both because it
@@ -44,6 +49,7 @@
 // whole state machine can be exercised on a host.
 
 #define SCHED_MAX_STATIONS 5
+#define SCHED_SCAN_DEFAULT_MS 360000u
 #define SCHED_NO_DEADLINE  0xFFFFFFFFu
 
 // How long a window stays open past the moment a packet is expected. A station
