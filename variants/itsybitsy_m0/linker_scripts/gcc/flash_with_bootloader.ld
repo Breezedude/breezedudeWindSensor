@@ -25,7 +25,7 @@
  */
 MEMORY
 {
-  FLASH (rx) : ORIGIN = 0x00004000, LENGTH = 0x0001C000 /* Runtime bank; staging bank begins at 0x20000 */
+  FLASH (rx) : ORIGIN = 0x00004000, LENGTH = 0x0001DD00 /* Runtime bank, OTA_SLOT0_SIZE in src/ota_ab.h; staging bank begins at 0x21D00 */
   RAM (rwx) : ORIGIN = 0x20000000, LENGTH = 0x00008000
 }
 
