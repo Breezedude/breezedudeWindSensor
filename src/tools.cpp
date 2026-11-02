@@ -10,6 +10,7 @@
 #include "status.h"
 #include "sensors.h"
 #include "power.h"
+#include "selftest.h"
 #include <Adafruit_TinyUSB.h>
 
 extern LORA_MODULE lora_module;
@@ -764,6 +765,7 @@ SETTING_FN(set_ota_fast,    settings.ota_fast   = atoi(v))
 
 // --- console commands ---
 SETTING_FN(cmd_get_uuid,    cmd_print_uuid())
+SETTING_FN(cmd_selftest,    selftest_request(v))
 SETTING_FN(cmd_sleep,       usb_connected = false)
 SETTING_FN(cmd_skip_lora,   state.skip_lora = true)
 SETTING_FN(cmd_delay,       delay(atoi(v)))                    // for WDT testing
@@ -961,6 +963,7 @@ static const SettingEntry setting_table[] = {
   {"OTA_BOOT_SLOT",              cmd_ota_boot_slot, SETTING_CMD},
 
   {"STATUS",                     cmd_status,      SETTING_CMD}, // one JSON line
+  {"SELFTEST",                   cmd_selftest,    SETTING_CMD}, // function test, see selftest.h
   {"BOOTLOADER",                 cmd_bootloader,  SETTING_CMD}, // restart into UF2
   {"TIME_SKIP",                  cmd_time_skip,   SETTING_CMD}, // seconds, for wrap tests
   {"WS_POWER",                   cmd_ws_power,    SETTING_CMD}, // 0/1/A, sensor supply

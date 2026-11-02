@@ -12,6 +12,9 @@
 // All numbers are integers - newlib-nano leaves printf float support out, and
 // scaled integers parse more reliably anyway. Units are in the key names.
 
+const char* lora_module_name();
+const char* baro_name();
+
 // Builds the JSON document into out. Returns the length written, or 0 if it
 // did not fit (in which case out is left as a valid, truncation-flagged
 // document rather than half a line of JSON).

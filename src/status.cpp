@@ -35,7 +35,7 @@ static const char* sensor_type_name(){
   }
 }
 
-static const char* lora_module_name(){
+const char* lora_module_name(){
   switch(lora_module){
     case LORA_SX1276: return "SX1276";
     case LORA_SX1262: return "SX1262";
@@ -44,7 +44,7 @@ static const char* lora_module_name(){
   }
 }
 
-static const char* baro_name(){
+const char* baro_name(){
   switch(chip_baro){
     case BARO_BMP280: return "BMP280";
     case BARO_SPL06:  return "SPL06";

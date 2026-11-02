@@ -17,6 +17,7 @@
 #include "power.h"
 #include "scheduler.h"
 #include "fanet_sched.h"
+#include "selftest.h"
 
 #ifndef BREEZEDUDE_DEVELOP_MODE
 #define BREEZEDUDE_DEVELOP_MODE 0
@@ -310,6 +311,10 @@ static uint32_t last_call = 0;
 static bool s = false;
 
 loopcounter++;
+
+  if(selftest_poll()){
+    return;
+  }
 
   if(settings.use_wdt){
     wdt_reset();
