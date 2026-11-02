@@ -11,6 +11,7 @@
 #include "sensors.h"
 #include "power.h"
 #include "selftest.h"
+#include "fanet_id.h"
 #include <Adafruit_TinyUSB.h>
 
 extern LORA_MODULE lora_module;
@@ -1234,8 +1235,17 @@ uint32_t time(){
   return millis() + sleeptime_cum;
 }
 
+// By the raw ID pin, not by hw_version(): that one can be overruled by what the
+// battery divider reads at this boot, or pinned by HW_REVISION in the settings,
+// and the address of a station must not depend on either. An older board reads
+// its pad high and keeps its address for good. hw_detect() is the first thing
+// setup() does, so the answer can be kept.
 uint16_t get_fanet_id(){
-  return UniqueID[0] + ((UniqueID[1])<<8);
+  static uint16_t id = 0;
+  if(!id){
+    id = hw_id_code() ? fanet_id_from_uuid(UniqueID, UniqueIDsize) : fanet_id_legacy(UniqueID);
+  }
+  return id;
 }
 
 // Frees an I2C bus whose slave was caught mid-transfer by a reset and holds
