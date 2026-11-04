@@ -7,7 +7,5 @@
 tools/__pycache__/__init__.cpython-311.pyc
 tools/__pycache__/
 build/
-pcb/mini_2.0/jlcpcb/
-pcb/mini_2.0/breezedude_mini-backups/
 tools/lora_ota_backend/node_modules/
 testing/host/*/build/
