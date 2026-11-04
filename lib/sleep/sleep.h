@@ -15,16 +15,6 @@ extern volatile uint32_t sercom1_rxs_count;
 extern volatile uint32_t sercom1_rxc_count;
 extern volatile uint32_t sercom1_err_count;
 extern volatile uint32_t sercom1_last_status;
-#ifdef WS85_TRACE
-// WS85_TRACE debug build only: what SERCOM0 did while the sensor UART was armed,
-// see SERCOM0_Handler() in sleep.cpp and ws85_trace_report() in src/sensors.cpp.
-#define WS85_TRACE_RX_TIMES 40  // byte arrival times kept per wake cycle
-extern volatile uint32_t sercom0_rxs_count;
-extern volatile uint32_t sercom0_rxc_count;
-extern volatile uint32_t sercom0_err_count;
-extern volatile uint32_t sercom0_rx_us[WS85_TRACE_RX_TIMES];
-extern volatile uint8_t  sercom0_rx_n;
-#endif
 void enable_sercom0_int();
 void disable_sercom0_int();
 // The debug UART, set up once to keep receiving while the station sleeps.

@@ -1,7 +1,6 @@
 #include <Arduino.h>
 #include <Adafruit_TinyUSB.h>
 #include "wiring_private.h" // pinPeripheral(), to put muxed pins back after a sleep
-#include "wake_profile.h"
 
 #include "power.h"
 #include "defines.h"
@@ -178,8 +177,6 @@ uint32_t sleep(bool enable_uart_interrupt){
   if(sensor_uart_armed){
     enable_sercom0_int();
   }
-  wake_profile_report(div_cpu);
-  wake_mark(WP_FLUSH0);
   // Drain both outputs before sleeping: the SERCOM clocks stop in standby, so
   // anything still sitting in the UART TX buffer would be lost or corrupted.
   log_flush();
@@ -187,13 +184,11 @@ uint32_t sleep(bool enable_uart_interrupt){
   // Nothing to do here for the debug console any more. It is set up once, by
   // configure_debug_uart_standby() after each DEBUGSER.begin(), and stays that
   // way through the sleep - which is precisely what stops it losing bytes.
-  wake_mark(WP_FLUSH1);
   bool keep_usb = keep_usb_active_during_sleep();
 
   // With USB test mode active we use light sleep and ignore wakeups that do not
   // set a wakeup source, otherwise USB IRQ traffic would break the normal flow.
   quiet_pins_for_standby();
-  wake_mark(WP_DEEP);
   // A packet that arrived while the station was awake has had its one DIO1 edge,
   // and no other comes until it is read. Sleeping on it left it for whatever woke
   // the station next: seen as a WS80 block, 4.7 s later, which the schedule then
@@ -208,7 +203,6 @@ uint32_t sleep(bool enable_uart_interrupt){
     __enable_irq();
   } while (keep_usb && wakeup_source == WAKEUP_NONE && !lora_packet_waiting());
   restore_pins_after_standby();
-  wake_mark(WP_WAKE);
 
   uint32_t p = micros();
 
@@ -224,33 +218,8 @@ uint32_t sleep(bool enable_uart_interrupt){
   }
 
   if(sensor_uart_armed && settings.sensor_type == s_WS85_UART) {
-#ifdef WS85_TRACE
-    // WS85_TRACE: the state the wakeup finds the sensor UART in, before
-    // disable_sercom0_int() changes it. tr_wake_us is time zero of the report,
-    // see ws85_trace_report() in sensors.cpp.
-    ws85uart.tr_wake_src = (uint8_t)wakeup_source;
-    ws85uart.tr_flag = SERCOM0->USART.INTFLAG.reg;
-    ws85uart.tr_status = SERCOM0->USART.STATUS.reg;
-    ws85uart.tr_wake_us = micros();
-#endif
     disable_sercom0_int();
-#ifdef WS85_TRACE
-    ws85uart.tr_disable_us = micros();
-#endif
     ws85uart.resync((uint8_t)div_cpu); // cheaper than begin(), see WS85WindSensor::resync()
-#ifdef WS85_TRACE
-    // WS85_TRACE: the receiver as the parser will find it.
-    ws85uart.tr_restart_us = micros();
-    ws85uart.tr_ctrla = SERCOM0->USART.CTRLA.reg;
-    ws85uart.tr_ctrlb = SERCOM0->USART.CTRLB.reg;
-    ws85uart.tr_baud = SERCOM0->USART.BAUD.reg;
-    ws85uart.tr_ie = SERCOM0->USART.INTENSET.reg;
-    // CLKCTRL reads back the channel its ID field names, so an 8 bit write of
-    // just the ID selects the SERCOM0 core channel first. Routing is untouched.
-    *((uint8_t *)&GCLK->CLKCTRL.reg) = SERCOM0_GCLK_ID_CORE;
-    ws85uart.tr_gen = GCLK->CLKCTRL.bit.GEN;
-    ws85uart.tr_clken = GCLK->CLKCTRL.bit.CLKEN;
-#endif
   }
 
   // Ticks since the read at the previous wakeup: this sleep plus the wake phase
@@ -258,9 +227,6 @@ uint32_t sleep(bool enable_uart_interrupt){
   // synchronised write before every sleep.
   static uint32_t last_read_ms = 0;
   uint32_t t = elapsed_time_counter();
-#ifdef WS85_TRACE
-  ws85uart.tr_tc4_us = micros();
-#endif
   // millis() stands still in standby, so whatever it advanced since that read is
   // awake time the counter holds as well. It is already in millis().
   const uint32_t awake_ms = millis() - last_read_ms;
@@ -278,12 +244,8 @@ uint32_t sleep(bool enable_uart_interrupt){
   // re-enable wdt after sleep
   if(settings.use_wdt) {
     wdt_enable(WDT_PERIOD, false);
-#ifdef WS85_TRACE
-    ws85uart.tr_wdt_us = micros();
-#endif
   }
 
-  wake_mark(WP_SLEEP_RET);
   return t;
 }
 
@@ -384,7 +346,6 @@ void RTC_Handler(void){
 
 // shut everything down, enable deepsleep
 void go_sleep(){
-  wake_mark(WP_GO);
   bool keep_usb = keep_usb_active_during_sleep();
 
   pinDisable(PIN_V_READ_TRIGGER);
@@ -454,7 +415,6 @@ void go_sleep(){
       if(sched_delay < time_to_sleep){ time_to_sleep = sched_delay; }
     }
   }
-  wake_mark(WP_TTS);
   if(time_to_sleep == 0){ return;} // if time_to_sleep = 0, do not sleep at all
   // The RTC is set up further down, once the final sleep time is known (DAVIS
   // integration time, the no-settings interval) - each setup costs synchronised
@@ -536,7 +496,6 @@ void go_sleep(){
   // shared with the drain instead of added after it. sleep() flushes right
   // before standby.
 
-  wake_mark(WP_LOG);
   rtc_sleep_cfg(time_to_sleep);
   // rtc_sleep_cfg() started a new period. An RTC wakeup recorded before it - the
   // end of an OTA offer wait or a TX-done wait, or a short period that ran out
@@ -545,7 +504,6 @@ void go_sleep(){
   if(wakeup_source == WAKEUP_RTC){
     wakeup_source = WAKEUP_NONE;
   }
-  wake_mark(WP_RTC);
 
   // Switching the receiver off below loses a packet that arrived since the main
   // loop last looked. After the RTC setup, because this sets the RTC itself when
@@ -556,22 +514,18 @@ void go_sleep(){
   // are met, PHY sleep otherwise). This also covers the period before the first
   // TX, when radio_sleep() has not yet been called from the TX-done path.
   radio_sleep();
-  wake_mark(WP_RADIO);
 
 // Using TC3 for hardware pulsecounting on Falling edge on pin PA04 (D17). No interrupts needed.
   if(settings.sensor_type == s_DAVIS6410){ // pulse counting anemometer
     uint32_t t = 0;
     arm_pulse_counter(); // full setup only on the first cycle, or when something undid it
-    wake_mark(WP_ARM);
 
     while(!sleep_window_over()){ // ignore other wakeups (external pin Interrupt, if configured)
       t += sleep(false);
       service_lora_during_sleep();
     }
     pulsecount = pulse_count_since_arm();
-    wake_mark(WP_PULSE);
     calc_pulse_sensor(pulsecount, t);
-    wake_mark(WP_DIR);
   } 
   // UART sensor, just sleep
   else if(sensor_uses_uart()){ // UART based sensor
@@ -581,9 +535,6 @@ void go_sleep(){
     while(!sleep_window_over()){
       sleep(true); // sleep til UART interrupt
       service_lora_during_sleep();
-#ifdef WS85_TRACE
-      ws85uart.tr_lora_us = micros();
-#endif
 
       if(is_wsxx()){
         //led_error(1);
@@ -676,5 +627,4 @@ void go_sleep(){
   }
   */
   wakeup();
-  wake_mark(WP_WAKEUP);
 }

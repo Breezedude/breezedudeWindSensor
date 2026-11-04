@@ -15,7 +15,7 @@
 //
 // Each result is one line, "ST " followed by a JSON object, all numbers integers:
 //
-//   ST {"begin":1,"fw":"1.2.2","bl":"v4.2.0","hw":"2.5","id":"BD1234","uuid":"...",...}
+//   ST {"begin":1,"fw":"1.2.1","bl":"v4.2.0","hw":"2.5","id":"BD1234","uuid":"...",...}
 //   ST {"t":"baro","ok":1,"chip":"HP203B","p_pa":96512,"t_dc":231}
 //   ST {"end":1,"ok":1,"failed":0}
 void selftest_request(const char *arg);

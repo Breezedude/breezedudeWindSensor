@@ -3,9 +3,8 @@
 // After a standby wakeup the station's receiver delivers the tail of a 33 byte
 // frame: its first bytes are lost while the receiver starts up, and now and then
 // a byte decoded out of step comes in front of the rest. The bursts marked as
-// recorded are what the rig showed with the WS85_TRACE build (seen=[...] in the
-// W85 q= lines); the others are made from them. run.bat builds it twice, the
-// second time with WS85_TRACE, which adds the checks on the trace fields.
+// recorded are what the rig showed with a trace build of the receive path; the
+// others are made from them.
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -81,9 +80,6 @@ struct Outcome {
 static Outcome receive(WS85WindSensor &ws, HardwareSerial &uart, const Bytes &burst) {
   Outcome o;
   g_log.clear();
-#ifdef WS85_TRACE
-  ws.tr_reset();
-#endif
   ws.lastByte = g_micros;
   for (uint8_t b : burst) {
     uart.rx.push_back(b);
@@ -141,9 +137,6 @@ int main() {
   printf("\nleading bytes lost to the wakeup\n");
   o = receive(ws, uart, hex("1C 00 85 00 04 00 85 00 00 43 D5 FF FF FF FF 02 99 FF FF 00 00 00 00 01 3B 00 00 FF FF CD BF"));
   check(o.valid && o.m.windDirection == 315, "recorded seen=31[1C 00 85 ...]: 2 put back");
-#ifdef WS85_TRACE
-  check(ws.tr_framed && ws.tr_put == 2 && ws.tr_replaced == 0 && ws.tr_dropped == 0, "  ... trace: frame=put2");
-#endif
   o = receive(ws, uart, hex("00 85 00 04 00 85 00 00 43 D5 FF FF FF FF 02 84 FF FF 00 00 00 00 00 00 00 00 FF FF 04 76"));
   check(o.valid && close_to(o.m.temperatureC, 24.4f), "recorded seen=30[00 85 00 ...]: 3 put back");
   o = receive(ws, uart, hex("85 00 04 00 85 00 00 43 D5 FF FF FF FF 02 99 FF FF 00 00 00 00 01 3B 00 00 FF FF CD BF"));
@@ -158,9 +151,6 @@ int main() {
   o = receive(ws, uart, hex("E0 1C 00 85 00 04 00 85 00 00 43 D5 FF FF FF FF 02 99 FF FF 00 00 00 00 01 3B 00 00 FF FF CD BF"));
   check(o.valid && o.m.windDirection == 315, "recorded seen=32[E0 1C 00 85 ...]");
   check(o.log.find("CRC error") == std::string::npos, "  ... without a CRC error on the way");
-#ifdef WS85_TRACE
-  check(ws.tr_framed && ws.tr_put == 1 && ws.tr_replaced == 1 && ws.tr_dropped == 0, "  ... trace: frame=put1,rep1");
-#endif
   o = receive(ws, uart, cat(hex("E0"), tail(a, 4)));
   check(o.valid, "in front of 4 lost bytes");
   o = receive(ws, uart, cat(hex("E0 7F"), tail(a, 3)));
@@ -168,16 +158,10 @@ int main() {
   o = receive(ws, uart, cat(hex("E0"), d));
   check(o.valid && o.m.windDirection == 7, "in front of a complete frame");
   check(o.before_quiet, "  ... taken as soon as its last byte is in");
-#ifdef WS85_TRACE
-  check(ws.tr_framed && ws.tr_put == 0 && ws.tr_replaced == 0 && ws.tr_dropped == 1, "  ... trace: frame=put0,drop1");
-#endif
 
   printf("\nwhat must not become a measurement\n");
   o = receive(ws, uart, hex("1C 00 85 00 04 00 85 00 00 FF 02 82 FF FF 00 00 00 00 00 13 00 00 FF FF 88 73"));
   check(!o.valid, "recorded bytes lost in the middle (watchdog stall)");
-#ifdef WS85_TRACE
-  check(!ws.tr_framed, "  ... trace: frame=none");
-#endif
   check(o.log.find("CRC error") != std::string::npos, "  ... reported as a CRC error");
   Bytes broken = a;
   broken[20] ^= 0x10;
